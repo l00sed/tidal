@@ -1,0 +1,65 @@
+setcps(0.5)
+let chords =
+      ("<d'min7 g'dom7 c'maj7 c'maj7>")
+    roots = "<d g c c>"
+  in do
+  d1 $ up (fastGap 2 $ arpg chords)
+    # sound "superpiano"
+    # gain 0.7
+    # room 1
+    # legato 10
+  d2 $ sound "[bd:3 [sn cymbols*3]]"
+    # gain 1.2
+    # room 0.4
+    # pan (slow 4 $ sine)
+  d3 $ echoWith 4 (1/8) (|* gain "0.8")
+    $ stutWith 4 (1/8) (|* gain "0.8")
+    $ sound "[cp:4]"
+    # gain 0.8
+    # room 1
+  d4 $ every 4 (mask "~")
+    $ n "2 2 2 2"
+    # gain 0.3
+    # s "cr:4"
+  d5 $ up chords
+    # sound "superhammond"
+    # voice 6
+    # lpf (range 200 1200 $ slow 0.3 sine)
+  d6 $ struct "t*2"
+    $ scramble 4
+    $ up (arpg chords)
+    # sound "bass:1"
+  d7 $ s "birds*4"
+    # n (irand 10)
+    # pan rand
+    # gain 0.5
+    # room 0.5
+  d8
+    $ every 8 (mask "~ ~ ~ ~ ~ ~")
+    $ s "jap"
+    # n (irand 10)
+    # pan rand
+    # gain 1.1
+    # room 0.5
+  d10
+    $ s "vinyl"
+    # gain 0.9
+
+hush
+
+d1 $ amp 0
+d1 $ amp 1
+d2 $ amp 0
+d2 $ amp 1
+d3 $ amp 0.01
+d3 $ amp 1
+d4 $ amp 0
+d4 $ amp 1
+d5 $ amp 0
+d5 $ amp 1
+d6 $ amp 0
+d6 $ amp 1
+d8 $ amp 0
+d8 $ amp 1
+d9 $ amp 0
+d9 $ amp 1
