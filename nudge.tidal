@@ -1,0 +1,23 @@
+setcps(1)
+d1 $ every 2 (mask "~")
+  $ s "bd ~ ~ ~ ~ ~ ~ ~"
+d1 $ silence
+d2 $ every 2 (mask "~")
+  $ s "cr ~ sn:1 sn:2*2 cr*3 sn:4 ~ ~"
+d2 $ silence
+d3 $ every 2 (mask "~")
+  $ note "a5 b5 c5 d5 [d5 e5*2] b5 a5 a5"
+  # s "sax"
+  # gain 1.2
+  # distort 0.1
+  # slide 1
+  # room 0.2
+  # release 5
+  # legato 5
+d3 $ silence
+d4 $ note "<a4 [a4*2 as4] a4 d4 a4>"
+  # s "trump"
+  # slide 1
+  # room 1
+  # release 10
+  # legato 10
