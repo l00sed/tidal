@@ -1,0 +1,11 @@
+setcps(0.5)
+d1
+  $ note "d5 d5 e4"
+  # sound "bass"
+  # gain 1.1
+  # room 1
+  # distort 0.2
+  # attack 0.1
+  # release 0.8
+  # slide 5
+  # legato 10

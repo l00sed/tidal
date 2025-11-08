@@ -500,30 +500,35 @@ d5 $ sound "ab:5 ab:4 ~ ~ ab:5 ab:4*2 ~ ~"
 d4 $ silence
 
 let chords =
-      ("<d'min7 g'dom7 c'maj7 c'maj7>")
-    roots = "<d g c c>"
+      ("<d6'min7 f6'dom7 c6'maj7 b5'maj7>")
   in do
   d1 $ up (fastGap 2 $ arpg chords)
     # sound "superpiano"
+    # distort 0.3
     # gain 0.7
     # room 1
     # legato 10
   d2 $ sound "[[kicklinn*2] [dr:10 dr:38]]"
     # gain 1.2
+  d2 $ sound "[bd:3 [sn cymbols*3]]"
+    # gain 1.2
+  d2 $ sound "[ab:4 [sn ab:1*4]]"
+    # gain 0.9
     # room 0.4
     # pan (slow 4 $ sine)
   d3 $ echoWith 4 (1/8) (|* gain "0.8")
     $ stutWith 4 (1/8) (|* gain "0.8")
-    $ sound "[cp:4]"
+    $ sound "[ab:10]"
     # gain 0.8
     # room 1
   d4 $ every 4 (mask "~")
     $ n "2 2 2 2"
     # gain 0.3
-    # s "cr:4"
+    # s "bass:4"
   d5 $ up chords
     # sound "superhammond"
     # voice 6
+    # distort 0.4
     # lpf (range 200 1200 $ slow 0.3 sine)
   d6 $ struct "t*2"
     $ scramble 4
@@ -532,9 +537,10 @@ let chords =
   d7 $ s "birds*4"
     # n (irand 10)
     # pan rand
-    # gain 0.5
+    # gain 0.75
     # room 0.5
-  d8
+  d8 $ s "rain"
+  d9
     $ every 8 (mask "~ ~ ~ ~ ~ ~")
     $ s "jap"
     # n (irand 10)

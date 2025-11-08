@@ -1,0 +1,13 @@
+setcps(0.2)
+hush
+d1 $ sound "bd:3 ~ ~ ~ bd:3 bd:3 ~ ~"
+  # room 0.9
+  # gain 1.2
+d2 $ sound "hh*32"
+d3 $ sound "~ ~ ~ cp:4"
+  # room 0.9
+  # distort 0.3
+  # gain 1
+d4 $ sound "arpy*8"
+d5 $ sound "bd sn"
+  # crush 0.3
