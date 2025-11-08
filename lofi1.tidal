@@ -1,4 +1,504 @@
-setcps(0.5)
+setcps(0.4)
+
+clock.tempo = 60
+silence()
+
+once $ sound "808:1" -- hh closed
+once $ sound "808:2" -- blip
+once $ sound "808:3" -- clap
+once $ sound "808:4"
+once $ sound "808:5" -- wood block
+once $ sound "808:6"
+once $ sound "808:7" -- hh closed
+once $ sound "808:8"
+once $ sound "909:1"
+once $ sound "ab:1"
+once $ sound "ab:2"
+once $ sound "ab:3"
+once $ sound "ab:4" -- kick
+once $ sound "ab:5" -- kick
+once $ sound "ab:6" -- hh open
+once $ sound "ab:7" -- tambourine
+once $ sound "ab:8"
+once $ sound "ab:9" -- ride
+once $ sound "ab:10" -- snare
+once $ sound "ab:11" -- clap
+once $ sound "ab:12"
+once $ sound "ade:1"
+once $ sound "ade:2"
+once $ sound "ade:3"
+once $ sound "ade:4"
+once $ sound "ade:5"
+once $ sound "ade:6"
+once $ sound "ade:7"
+once $ sound "ade:8"
+once $ sound "ade:9"
+once $ sound "ade:10"
+once $ sound "ades2:1"
+once $ sound "ades2:2"
+once $ sound "ades2:3"
+once $ sound "ades2:4"
+once $ sound "ades2:5"
+once $ sound "ades2:6"
+once $ sound "ades2:7"
+once $ sound "ades2:8"
+once $ sound "ades2:9"
+once $ sound "ades3:1"
+once $ sound "ades3:2"
+once $ sound "ades3:3"
+once $ sound "ades3:4"
+once $ sound "ades3:5"
+once $ sound "ades3:6"
+once $ sound "ades3:7"
+once $ sound "ades4:1"
+once $ sound "ades4:2"
+once $ sound "ades4:3"
+once $ sound "ades4:4"
+once $ sound "ades4:5"
+once $ sound "ades4:6"
+once $ sound "ades4:7"
+once $ sound "ades4:8"
+once $ sound "ades4:9"
+once $ sound "alex:0"
+once $ sound "alex:1"
+once $ sound "alex:2"
+once $ sound "alex:3"
+once $ sound "alex:4"
+once $ sound "alex:5"
+once $ sound "alphabet:0"
+once $ sound "alphabet:1"
+once $ sound "alphabet:2"
+once $ sound "alphabet:3"
+once $ sound "alphabet:4"
+once $ sound "amencutup:0"
+once $ sound "amencutup:1"
+once $ sound "amencutup:2"
+once $ sound "amencutup:3"
+once $ sound "amencutup:4"
+once $ sound "amencutup:5"
+once $ sound "armora:0"
+once $ sound "armora:1"
+once $ sound "armora:2"
+once $ sound "armora:3"
+once $ sound "armora:4"
+once $ sound "arp:0"
+once $ sound "arp:1"
+once $ sound "arpy:0"
+once $ sound "arpy:1"
+once $ sound "arpy:2"
+once $ sound "arpy:3"
+once $ sound "arpy:4"
+once $ sound "auto:0"
+once $ sound "baa:0"
+once $ sound "baa:1"
+once $ sound "baa2:0"
+once $ sound "bass:0" -- nice bass
+once $ sound "bass:1"
+once $ sound "bass:2"
+once $ sound "bass:3"
+once $ sound "bass0:0"
+once $ sound "bass0:1"
+once $ sound "bass0:2"
+once $ sound "bass0:3"
+once $ sound "bass1:0"
+once $ sound "bass1:1"
+once $ sound "bass1:2"
+once $ sound "bass1:3"
+once $ sound "bass2:0"
+once $ sound "bass2:1"
+once $ sound "bass2:2"
+once $ sound "bass2:3"
+once $ sound "bass3:0"
+once $ sound "bass3:1"
+once $ sound "bass3:2"
+once $ sound "bass3:3"
+once $ sound "bassdm:0" -- kick
+once $ sound "bassdm:1" -- kick
+once $ sound "bassfoo:0"
+once $ sound "bassfoo:1"
+once $ sound "battles:0"
+once $ sound "battles:1"
+once $ sound "bd:0"
+once $ sound "bd:1"
+once $ sound "bd:2"
+once $ sound "bend:0"
+once $ sound "bend:1"
+once $ sound "bend:2"
+once $ sound "bev:0"
+once $ sound "bev:1"
+once $ sound "bin:0"
+once $ sound "birds:0"
+once $ sound "birds3:0"
+once $ sound "birds3:1"
+once $ sound "bleep:0"
+once $ sound "blip:0"
+once $ sound "blue:0"
+once $ sound "bottle:0"
+once $ sound "breaks125:0"
+once $ sound "breaks152:0"
+once $ sound "breath:0"
+once $ sound "bubble:0"
+once $ sound "can:0"
+once $ sound "casio:0"
+once $ sound "cb:0"
+once $ sound "cc:0" -- crash
+once $ sound "cc:1" -- crash
+once $ sound "cc:2" -- crash
+once $ sound "cc:3" -- crash
+once $ sound "chin:0"
+once $ sound "circus:0"
+once $ sound "clak:0"
+once $ sound "click:0"
+once $ sound "clubkick:0"
+once $ sound "clubkick:1"
+once $ sound "clubkick:2"
+once $ sound "clubkick:3"
+once $ sound "co:0" -- hh clap
+once $ sound "co:1"
+once $ sound "co:2"
+once $ sound "coins:0"
+once $ sound "control:0"
+once $ sound "control:1"
+once $ sound "cosmicg:1"
+once $ sound "cp:0"
+once $ sound "cr:0" --crash
+once $ sound "cr:1" --crash
+once $ sound "cr:2" --crash
+once $ sound "cr:3" --crash
+once $ sound "cr:4" --crash
+once $ sound "crow:0"
+once $ sound "d:0"
+once $ sound "d:1"
+once $ sound "d:2"
+once $ sound "d:3"
+once $ sound "db:0"
+once $ sound "db:1"
+once $ sound "db:2"
+once $ sound "db:3"
+once $ sound "db:4"
+once $ sound "db:5"
+once $ sound "db:6"
+once $ sound "db:7"
+once $ sound "db:8"
+once $ sound "db:9"
+once $ sound "db:10"
+once $ sound "db:11"
+once $ sound "db:12"
+once $ sound "diphone:0"
+once $ sound "diphone:1"
+once $ sound "diphone:2"
+once $ sound "diphone:3"
+once $ sound "diphone:4"
+once $ sound "diphone:5"
+once $ sound "diphone:6"
+once $ sound "diphone:7"
+once $ sound "diphone2:0"
+once $ sound "dist:0"
+once $ sound "dist:1"
+once $ sound "dork2:0"
+once $ sound "dorkbot:0"
+once $ sound "dr:0"
+once $ sound "dr:1"
+once $ sound "dr:2"
+once $ sound "dr:3"
+once $ sound "dr:4"
+once $ sound "dr:5"
+once $ sound "dr:6"
+once $ sound "dr:7"
+once $ sound "dr:8"
+once $ sound "dr:9" -- snare rim
+once $ sound "dr:10" -- snare
+once $ sound "dr:11" -- clap
+once $ sound "dr:12" -- hi tom
+once $ sound "dr:13" -- hh closed
+once $ sound "dr:14" -- hh open
+once $ sound "dr:15" -- low tom
+once $ sound "dr:16" -- lower tom
+once $ sound "dr:17" -- crash
+once $ sound "dr:18" -- low tom
+once $ sound "dr:19" -- splash
+once $ sound "dr:20" -- ride
+once $ sound "dr:21" -- tambourine
+once $ sound "dr:22" -- cowbell
+once $ sound "dr:23" -- crash
+once $ sound "dr:24" -- cowbell
+once $ sound "dr:25" -- bongo
+once $ sound "dr:26" -- bongo high
+once $ sound "dr:27" -- bongo
+once $ sound "dr:28" -- bongo low
+once $ sound "dr:29" -- bongo SLAP
+once $ sound "dr:30" -- bongo LOW
+once $ sound "dr:31" -- cowbell high
+once $ sound "dr:32" -- cowbell
+once $ sound "dr:33" -- maracas
+once $ sound "dr:34" -- wood block
+once $ sound "dr:35" -- bass kick
+once $ sound "dr:36" -- hh closed
+once $ sound "dr:37" -- bass kick open
+once $ sound "dr:38" -- hh open
+once $ sound "dr:39" -- snare
+once $ sound "dr:40" -- clap noisy
+once $ sound "dr:41" -- record snare
+once $ sound "dr2:0"
+once $ sound "dr2:1"
+once $ sound "dr2:2"
+once $ sound "dr2:3"
+once $ sound "dr2:4"
+once $ sound "dr2:5"
+once $ sound "dr55:0"
+once $ sound "dr55:1"
+once $ sound "dr55:2"
+once $ sound "dr_few:0" -- kick
+once $ sound "dr_few:1"
+once $ sound "dr_few:2" -- kick
+once $ sound "dr_few:3" -- kick
+once $ sound "dr_few:4"
+once $ sound "dr_few:5"
+once $ sound "dr_few:6"
+once $ sound "dr_few:7"
+once $ sound "drum:0"
+once $ sound "drum:1" -- snare
+once $ sound "drum:2"
+once $ sound "drum:3"
+once $ sound "drum:4" -- ride
+once $ sound "drumtraks:0"
+once $ sound "drumtraks:1" -- clap
+once $ sound "drumtraks:2" -- cowbell
+once $ sound "e:0"
+once $ sound "e:1"
+once $ sound "east:0"
+once $ sound "electro1:0" -- hh closed
+once $ sound "electro1:1"
+once $ sound "electro1:2"
+once $ sound "electro1:3"
+once $ sound "electro1:4" -- bass decay
+once $ sound "electro1:5" -- bass
+once $ sound "electro1:6" -- bass low
+once $ sound "em2:0"
+once $ sound "em2:1"
+once $ sound "em2:2" -- STANDOFF
+once $ sound "em2:3" -- water flowing
+once $ sound "em2:4" -- birds
+once $ sound "em2:5" -- crazy bird
+once $ sound "erk:0"
+once $ sound "f:0"
+once $ sound "feel:0" -- nice bass kick
+once $ sound "feel:1"
+once $ sound "feel:2"
+once $ sound "feel:3"
+once $ sound "feel:4"
+once $ sound "feel:5"
+once $ sound "feel:6" -- sexy bass
+once $ sound "feelfx:0"
+once $ sound "feelfx:1"
+once $ sound "feelfx:2"
+once $ sound "feelfx:3"
+once $ sound "feelfx:4"
+once $ sound "feelfx:5"
+once $ sound "feelfx:6"
+once $ sound "feelfx:7"
+once $ sound "fest:0"
+once $ sound "fire:0"
+once $ sound "flick:0"
+once $ sound "fm:0"
+once $ sound "fm:1"
+once $ sound "fm:2"
+once $ sound "fm:3"
+once $ sound "fm:4"
+once $ sound "fm:5"
+once $ sound "fm:6"
+once $ sound "fm:7"
+once $ sound "fm:8"
+once $ sound "fm:9"
+once $ sound "foo:0" -- breaks
+once $ sound "foo:1"
+once $ sound "future:0"
+once $ sound "gab:0"
+once $ sound "gabba:0"
+once $ sound "gabbaloud:0"
+once $ sound "gabbalouder:0"
+once $ sound "glasstap:0"
+once $ sound "glitch:0"
+once $ sound "glitch2:0"
+once $ sound "gretsch:0"
+once $ sound "gtr:0"
+once $ sound "h:0"
+once $ sound "h:0"
+once $ sound "hand:0"
+once $ sound "hardcore:0"
+once $ sound "hardkick:0"
+once $ sound "haw:0"
+once $ sound "hc:0" -- hh closed
+once $ sound "hc:1" -- hh closed
+once $ sound "hc:2" -- hh closed
+once $ sound "hc:3" -- hh closed
+once $ sound "hc:4" -- hh closed
+once $ sound "hc:5" -- hh closed
+once $ sound "hh:0"
+once $ sound "hh27:0"
+once $ sound "hit:0"
+once $ sound "hmm"
+once $ sound "ho:0" -- hh open
+once $ sound "ho:1"
+once $ sound "ho:2"
+once $ sound "hoover:0"
+once $ sound "house:0"
+once $ sound "ht:0" -- hi tom
+once $ sound "ht:1"
+once $ sound "ht:2"
+once $ sound "ht:3"
+once $ sound "ht:4"
+once $ sound "ht:5"
+once $ sound "ht:6"
+once $ sound "if:0"
+once $ sound "if:1"
+once $ sound "ifdrums:0"
+once $ sound "incoming:0"
+once $ sound "industrial:0"
+once $ sound "insect:0"
+once $ sound "invaders:0"
+once $ sound "jazz:0"
+once $ sound "jungbass:0"
+once $ sound "jungle:0"
+once $ sound "juno:0"
+once $ sound "jvbass:0"
+once $ sound "kicklinn" -- Nice kick
+once $ sound "koy:0" -- Quonisqaatsi
+once $ sound "kurt:0"
+once $ sound "latibro:0"
+once $ sound "led"
+once $ sound "less:0"
+once $ sound "lighter:0"
+once $ sound "linnhats:0"
+once $ sound "lt:0"
+once $ sound "made:0"
+once $ sound "made2"
+once $ sound "mash:0"
+once $ sound "mash2:0"
+once $ sound "metal:0"
+once $ sound "miniyeah:0"
+once $ sound "monsterb:0"
+once $ sound "moog:0"
+once $ sound "mouth:0"
+once $ sound "mp3:0"
+once $ sound "msg:0"
+once $ sound "mt:0"
+once $ sound "mute:0"
+once $ sound "newnotes:0"
+once $ sound "noise"
+once $ sound "noise2:0"
+once $ sound "notes:0"
+once $ sound "numbers:0"
+once $ sound "numbers:1"
+once $ sound "numbers:2"
+once $ sound "numbers:3"
+once $ sound "numbers:4"
+once $ sound "numbers:5"
+once $ sound "numbers:6"
+once $ sound "numbers:7"
+once $ sound "numbers:8"
+once $ sound "oc:0"
+once $ sound "odx:0"
+once $ sound "off"
+once $ sound "outdoor:0"
+once $ sound "pad:0"
+once $ sound "padlong"
+once $ sound "pebbles"
+once $ sound "perc:0"
+once $ sound "peri:0"
+once $ sound "pluck:0"
+once $ sound "popkick:0"
+once $ sound "print:0"
+once $ sound "proc:0"
+once $ sound "procshort:0"
+once $ sound "psr:0"
+once $ sound "rave:0"
+once $ sound "rave2:0"
+once $ sound "ravemono:0"
+once $ sound "realclaps:0"
+once $ sound "reverbkick"
+once $ sound "rm:0"
+once $ sound "rs"
+once $ sound "sax:0"
+once $ sound "sax:1"
+once $ sound "sax:2"
+once $ sound "sax:3"
+once $ sound "sax:4"
+once $ sound "sax:5"
+once $ sound "sax:6"
+once $ sound "sax:7"
+once $ sound "sax:8"
+once $ sound "sax:9"
+once $ sound "sax:10"
+once $ sound "sax:11"
+once $ sound "sax:12"
+once $ sound "sax:13"
+once $ sound "sd:0"
+once $ sound "seawolf:0"
+once $ sound "sequential:0"
+once $ sound "sf:0"
+once $ sound "sheffield"
+once $ sound "short:0"
+once $ sound "sid:0"
+once $ sound "sine:0"
+once $ sound "sitar:0"
+once $ sound "sn:0"
+once $ sound "sn:1"
+once $ sound "sn:2"
+once $ sound "sn:3"
+once $ sound "sn:4"
+once $ sound "space:0"
+once $ sound "speakspell:0"
+once $ sound "speech:0"
+once $ sound "speechless:0"
+once $ sound "speedupdown:0"
+once $ sound "stab:0"
+once $ sound "stomp:0"
+once $ sound "subroc3d:0"
+once $ sound "sugar:0"
+once $ sound "sundance:0"
+once $ sound "tabla:0"
+once $ sound "tabla2:0"
+once $ sound "tablex:0"
+once $ sound "tacscan:0"
+once $ sound "tech:0"
+once $ sound "techno:0"
+once $ sound "tink:0"
+once $ sound "tok:0"
+once $ sound "toys:0"
+once $ sound "toys:1"
+once $ sound "toys:2"
+once $ sound "toys:3"
+once $ sound "toys:4"
+once $ sound "toys:5" -- colors!
+once $ sound "toys:6"
+once $ sound "toys:7"
+once $ sound "trump:0"
+once $ sound "trump:1"
+once $ sound "trump:2"
+once $ sound "trump:3"
+once $ sound "trump:4"
+once $ sound "ul:0"
+once $ sound "ulgab:0"
+once $ sound "uxay:0"
+once $ sound "v:0"
+once $ sound "voodoo:0"
+once $ sound "wind:0"
+once $ sound "wobble"
+once $ sound "world:0"
+once $ sound "xmas"
+once $ sound "yeah:0"
+
+silence()
+
+d1 $ sound "bass:0 ~ ~"
+d2 $ sound "electro1:0 electro1:0*2 ~ ~ ~ ~"
+  # legato 10
+d3 $ sound "~ ~ ~ ~ ~ ab:8"
+d5 $ sound "ab:5 ab:4 ~ ~ ab:5 ab:4*2 ~ ~"
+
+d4 $ silence
+
 let chords =
       ("<d'min7 g'dom7 c'maj7 c'maj7>")
     roots = "<d g c c>"
@@ -8,7 +508,7 @@ let chords =
     # gain 0.7
     # room 1
     # legato 10
-  d2 $ sound "[bd:3 [sn cymbols*3]]"
+  d2 $ sound "[[kicklinn*2] [dr:10 dr:38]]"
     # gain 1.2
     # room 0.4
     # pan (slow 4 $ sine)
@@ -41,12 +541,13 @@ let chords =
     # pan rand
     # gain 1.1
     # room 0.5
-  d10
+  d9
     $ s "vinyl"
-    # gain 0.9
+    # gain 1
 
 hush
 
+d10 $ amp 0
 d1 $ amp 0
 d1 $ amp 1
 d2 $ amp 0

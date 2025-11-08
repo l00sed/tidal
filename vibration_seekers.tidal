@@ -1,0 +1,24 @@
+d1
+  $ slow 8
+  $ n (arp "up" "f'maj7 f'maj7 a'dom7 a'dom7 d'min7 d'min7")
+  # sound "superpiano"
+  # sustain "2"
+  # velocity (range 0.7 1 rand)
+  # room 1.4
+  # legato 20
+  # size 0.2
+  # lpf 3000
+  # gain 0.9
+  # pan 1.0
+d2
+  $ slow 2
+  $ ply 2
+  $ n ("f'maj7 a'dom7 d'min7") # sound "superpiano" # sustain "2" # velocity (range 0.7 1 rand) # room 0.8 # size 0.2 # lpf 2000 # gain 0.9
+d3
+  $ slow 1
+  $ n ("2*4") |- 24 # sound "superpiano" # sustain "3" # velocity (range 0.7 1 rand) # room 0.8 # size 0.2 # lpf 3000 # gain 1
+d3 silence
+d2 silence
+d4 $ slow 2 $ sound "ab:4*[0|1|2|3] ab:11*[0|1]" # lpf (range 400 1000 sine)
+d5 $ slow 2 $ sound "ab:8*[0|1|2|4] ab:1*[1|2|3]" # gain 1.8 # lpf 1200
+hush

@@ -1,0 +1,70 @@
+setcps 0.5
+
+d1
+  $ slow 4
+  $ n "g3 d3"
+  # legato 3
+  # room 0.4
+  # sound "superpiano"
+  # lpf (slow 16 $ range 400 800 sine)
+  # gain 0.7
+
+d3
+  $ slow 4
+  $ n "~ [b5,d5,fs5] ~ [a5,cs5,fs5]"
+  # legato 3
+  # room 0.4
+  # sound "superpiano"
+  # lpf (slow 16 $ range 400 800 sine)
+  # gain 0.7
+
+d2
+  $ slow 4
+  $ n "[~ fs6 a6] [g6 fs6 cs6] [b5 cs6 d6] [a5 g5] fs5 a5 cs6 fs6"
+  # legato 3
+  # room 0.4
+  # sound "superpiano"
+  # lpf (slow 16 $ range 400 800 sine)
+  # gain 0.7
+
+d4 $ sound "ab:0 ab:0 ~ ab:0 ab:0 ~ [ab:0*2] ab:0"
+d5 $ sound "kicklinn [kicklinn*2] ~ ~ ~ ~ ~ ~ ~"
+d14 $ slow 4 $ sound "[ab:5*4] ~ ~ ~ ~ ~ ~ ~" # gain 0.9
+d13 $ slow 4 $ sound "[sn:9*2] ~ ~ ~ ~ ~ ~ ~" # gain 0.7
+d12 $ slow 2 $ sound "[ht:2*2] ~ ~ ht:4 ht:3 ~ ~ ~" # gain 0.9
+d11 $ slow 4 $ sound "[tt:2*2] ~ ~ ~ ~ ~ ~ ~" # gain 0.9
+d6 $ slow 2 $ sound "hh27*8 ~ ~ ~ ~ ~ ~ ~"
+d9 $ slow 4 $ sound "cp:3"
+d8 $ slow 2 $ sound "ab:1"
+d16 $ slow 4 $ sound "vinyl"
+d7 $ silence
+
+
+
+hush
+d1 $ silence
+
+d2
+  $ n "<c2 a1 f1 g1>"
+  # sound "bass3"
+  # lpf 300
+  # crush 4
+  # gain 0.8
+
+d3
+  $ s "bd ~ sn ~"
+  # crush 3
+  # gain 0.85
+
+d4
+  $ fast 4
+  $ s "hh27*8 ~"
+  # gain 0.9
+  # hpf 8000
+
+d5
+  $ s "vinyl*2"
+  # gain 0.9
+  # lpf 1200
+
+hush
