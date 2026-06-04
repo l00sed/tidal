@@ -1,41 +1,33 @@
 setcps(0.5)
 
 d1
-  $ sound "ab:5*[1] ab:5*[0|1] - -"
+  $ s "ab:5*[1] [ab:4*[0|1] ab:5*[0|1|2]] - -"
   # lpf (range 200 100 $ slow 4 sine)
-  # gain 1.5
+  # release 0.85
+  # gain 2
 
 d2
-  $ sound "- - ab:12*[1|2] -"
+  $ s "- - ab:12*[1|2] -"
   # lpf (range 400 2000 $ slow 4 sine)
-  # gain 1.75
+  # gain 2
 
 d3
   $ slow 2
-  $ sound "ab:9*[1|2] ab:2*[0|1] [ab:7*[0|3]] [ab:8 ab:9]"
+  $ s "ab:9*[1|2] ab:2*[1] [ab:7*[0|3]] [ab:8 ab:9]"
   # legato 5
-  # room 5
+  # room 3
   # lpf (range 800 2000 $ slow 4 sine)
-  # gain 0.8
+  # gain 0.6
 
 d1 silence
 d2 silence
 d3 silence
 
 d4
-  $ sound "ab:10*[0|1|3] ab:12 - kurt:4"
+  $ s "ab:10*[0|1|3] ab:12 - kurt:4"
   # lpf (range 400 1000 $ slow 4 sine)
   # freq (range 400 1000 $ slow 4 sine)
-
-d5
-  $ slow 2
-  $ s "bass2:1*[1|2] - - -"
-  # distort 0.125
-  # release 2
-  # room 1.4
-  # lpf (range 200 400 $ fast 4 sine)
-  # freq (range 400 200 $ fast 4 sine)
-  # gain 0.75
+  # gain 1
 
 d4 silence
 d5 silence
@@ -43,29 +35,46 @@ d6 silence
 
 d6
   $ slow 2
-  $ s "can:1 - - can:4"
+  $ s "can:1*[1|4] - - can:4"
+  # freq (range 440 600 $ fast 4 sine)
+  # gain 0.5
 
 d10
   $ slow 2
-  $ s "kurt:7*[0|3] kurt:2*[0|1] kurt:1 -"
+  $ s "kurt:7*[0|3] kurt:2*[0|1] kurt:1*[0|1] -"
   # lpf (range 100 600 $ slow 1 sine)
   # room 2.5
-  # gain 0.7
+  # gain 0.6
 
 d10 silence
 
+d5
+  $ fast 1
+  $ s "ab:5*2 -"
+  # room 4
+  # distort 0.01
+  # gain 2
+
+d6
+  $ fast 1
+  $ s "- ab:8"
+  # gain 2
+
 d14
-  $ slow 2
-  $ n "b4 _ _ b3 _ _ a3"
-  # s "gtr:1"
-  # freq (range 120 420 $ slow 2 sine)
+  $ slow 4
+  $ note "b6'maj _ _ [b6'maj c7'maj] _ _ b6'maj _ _ [f7'maj c7'maj] _ _"
+  # legato 3
+  # distort 1
+  # octave 0
+  # room 2
+  # s "superhammond"
   # gain 0.4
 
 d14 silence
 
 d7
-  $ slow 6
-  $ n "[ef] [d] [af]"
+  $ slow 3
+  $ n "[ef] [e]"
   # s "superhammond"
   # room 1.5
   # legato 1
@@ -77,14 +86,15 @@ d7
 d7 silence
 
 d12
-  $ slow 6
-  $ note "[af4@32 - - c4@32 - - ef3@32 - -]*2 [af4@32 - - c4@32 - - d3@32 - -]*2 [af4@32 - - c4@32 - - af2@32 - -]*2"
+  $ slow 2
+  $ note "b2'maj f2'maj"
   # s "trump:6"
-  # attack 0.9
   # room 10
   # lpf (range 150 500 $ slow 8 sine)
-  # legato 1
-  # gain 0.9
+  # legato 2
+  # gain 0.8
+
+d12 silence
 
 d13
   $ slow 2
@@ -98,20 +108,34 @@ d13
 
 d11
   $ slow 2
-  $ n "b6 _ _ a6 _ _ g6"
+  $ n "b6'minor _ _ a6'minor _ _"
   # s "superhammond"
-  # lpf 400
-  # speed (range 0.25 2.5 $ fast 23.5 sine)
+  # lpf (range 0 1000 $ fast 2 sine)
+  -- # speed (range 0.25 2.5 $ fast 23.5 sine)
+  # fshift (range 0 10 $ fast 4 sine)
   # gain 0.75
 
 d11 silence
-d12 silence
 d13 silence
 
 d8
   $ slow 2
   -- $ stut 8 1 (1/8)
-  $ n "[b5'minor*3] [b6'minor*3] [c6'minor*3] [c7'minor*3]"
+  $ n "[b5'minor*[1|3]] [b6'minor*[1|3]] [c6'minor*3] [c7'minor*3]"
+  # s "superpiano"
+  # fshift (range 0 10 $ fast 4 sine)
+  # room 10
+  # legato 5
+  # lpf (range 100 300 $ slow 1 sine)
+  # gain 0.65
+
+d8 silence
+
+d12
+  $ slow 1
+  $ stut 2 1 (1/16)
+  $ palindrome
+  $ n "[c7 b7] [b7 af7] [af7 g7] [g7 f7] [d7 c6] [b6 af6]"
   # s "superpiano"
   # fshift (range 0 10 $ fast 4 sine)
   # room 10
@@ -119,30 +143,25 @@ d8
   # lpf (range 100 300 $ slow 1 sine)
   # gain 0.75
 
-d12
-  $ slow 1
-  $ stut 2 1 (1/16)
-  $ n "[c7 b7] [b7 af7] [af7 g7] [g7 f7]"
-  # s "superpiano"
-  # fshift (range 0 10 $ fast 4 sine)
-  # room 10
-  # legato 5
-  # lpf (range 100 300 $ slow 1 sine)
-  # gain 0.75
+d12 silence
 
 d8 silence
 d9 silence
 
 d9
-  $ slow 2
-  $ n "[as, cs] _ _ [as, cs] _ _ gs _ _ [cs]"
+  $ slow 4
+  $ n "[c'maj _ _]*4 [g'maj _ _]*4"
   # s "superpiano"
+  # octave 3
   # room 10
+  # distort 0.1
   # legato 5
-  # lpf (range 800 1200 $ slow 2 sine)
+  # lpf (range 800 1000 $ fast 2 sine)
   # gain 0.5
+
+d10 silence
 
 d10
   $ s "vinyl"
-  # gain 2
+  # gain 1
 

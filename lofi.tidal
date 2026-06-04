@@ -1,0 +1,49 @@
+d1 $ s "jungbass*1 - - - jungbass*2 - - -"
+d2 $ s "hh*16"
+d3
+  $ n "b a c d"
+  # octave 2
+  # s "trump"
+  # legato 10
+  # slide 10
+  # room 10
+  # gain 0.5
+d3 $ silence
+d4 $ s "glitch - - -"
+  # gain 2
+d5
+  $ n "b4 d3"
+  # s "speakspell"
+  # gain 1
+d6
+  $ n "b5 - - - a2 - - - c8"
+  # s "moog"
+  # distort 0.4
+  # slide 5.5
+d1 $ "reverbkick:1 - - - reverbkick:5*2 - - -"
+d4 $ "rave:4 rave:6 rave:3"
+d6 $ "kurt:3 - - kurt:2"
+d5 $ "odx:1"
+hush
+d2 $ "sitar:1 - - - sitar:2 - - - sitar:3 - - -"
+d13 $ "monsterb:3"
+  # gain 1.5
+d14 $ "alphabet:17 alphabet:4 alphabet:18 alphabet:15 alphabet:4 alphabet:2 alphabet:19"
+  # lpf (range 800 1200 $ slow 2 sine)
+d15 $ "breaks157:2"
+d6 $ silence
+d16 $ "bass1:2 - - - bass1:2*2 - - -"
+  # gain 1.5
+d7 $ "breaks125:4"
+d8
+  $ n "c5 e5 f5 g5"
+  # s "arp"
+  # distort 2
+  # gain 0.8
+  # fshift (range 0 5 $ fast 4 sine)
+d9
+  $ n "c4 - - - b4 - - -"
+  # s "ravemono"
+  # gain 1
+d7 $ silence
+

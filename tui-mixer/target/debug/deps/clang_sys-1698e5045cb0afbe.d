@@ -1,0 +1,14 @@
+/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/deps/clang_sys-1698e5045cb0afbe.d: /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/lib.rs /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/support.rs /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/link.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/macros.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/common.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/dynamic.rs
+
+/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/deps/libclang_sys-1698e5045cb0afbe.rlib: /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/lib.rs /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/support.rs /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/link.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/macros.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/common.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/dynamic.rs
+
+/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/deps/libclang_sys-1698e5045cb0afbe.rmeta: /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/lib.rs /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/support.rs /Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/link.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/macros.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/common.rs /Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/dynamic.rs
+
+/Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/lib.rs:
+/Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/support.rs:
+/Users/dwtompkins/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clang-sys-1.8.1/src/link.rs:
+/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/macros.rs:
+/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/common.rs:
+/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out/dynamic.rs:
+
+# env-dep:OUT_DIR=/Users/dwtompkins/Downloads/Tidal/tui-mixer/target/debug/build/clang-sys-c5c28b613b66d469/out
