@@ -1,0 +1,54 @@
+setcps (80/60/4)
+
+-- Kick drum foundation - sparse and deep
+d1 $ slow 2 $ s "bd:3 ~ bd:3 ~"
+  # gain 0.9
+  # room 0.2
+  # size 0.4
+
+-- Snare pattern - laid back with ghost notes
+d2 $ slow 2 $ s "~ [~ sn:2] ~ [[~ sn:2] <sn:2 ~>]"
+  # gain 0.7
+  # room 0.3
+  # size 0.5
+  # lpf 2000
+
+-- Hi-hats - subtle swing
+d3 $ slow 2 $ s "[hh:3 hh:3 hh:3 <hh:3 ~>]*4"
+  # gain (range 0.4 0.6 $ slow 8 sine)
+  # lpf (range 4000 8000 $ slow 16 sine)
+  # room 0.1
+
+-- Crash cymbals - occasional washes
+d4 $ slow 2 $ s "~ ~ ~ <cy:2 ~>"
+  # gain 0.5
+  # room 0.6
+  # size 0.7
+  # hpf 2000
+
+-- Jazz chord voicings - warm Rhodes or keys
+d5 $ slow 2 $ n "[<d9'minor g9'minor c7'major f7'major>]"
+  # s "superpiano"
+  # sustain 2
+  # gain 0.6
+  # room 0.3
+  # lpf 3000
+
+-- Saxophone/trumpet melody - soulful and sparse
+d6 $ slow 2 $ n "~ [d4 f4 a4 ~] ~ [c4 ~ g4 bf4]"
+  # s "brass"
+  # sustain 0.8
+  # gain 1
+  # room 0.4
+  # size 0.9
+  # lpf 4000
+
+-- Bass line - deep and minimal
+d7 $ slow 2 $ n "[d2 ~ a2 ~]*1"
+  # s "bass3"
+  # sustain 0.5
+  # gain 0.8
+  # lpf 800
+  # room 0.2
+
+

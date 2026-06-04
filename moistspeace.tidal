@@ -163,5 +163,4 @@ d10 silence
 
 d10
   $ s "vinyl"
-  # gain 1
-
+  # gain 1.25

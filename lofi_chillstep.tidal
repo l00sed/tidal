@@ -1,0 +1,89 @@
+-- Title: lofi
+-- Recorded: 3/16/2021
+
+setcps (0.5)
+d1
+  $ s "superhammond"
+  # n "[c5,e5,g5] [c5,ef5,g5] [a4,c5,e5] [b4,d5,fs5]"
+  # lpf "300"
+d2
+  $ brak
+  $ s "bd:1*[1|2] hh:7*[0|1|2] ~ ~"
+  # lpf (slow 1 $ range 400 800 saw)
+  # release (slow 1 $ range 0.1 0.5 sine)
+  # room 0.05
+  # pan 0.25
+  # gain 2
+d4
+  $ brak
+  $ s "~ [kurt:1|kurt:4|kurt:2|kurt:5|kurt:6|kurt:3]*[0|1] hh:11*[1|2|1|2] [hh:6*[0|0|1] hh:7*[0|0|1]]"
+  # lpf (slow 1 $ range 800 400 sine)
+  # pan 0.25
+  # gain 1.5
+d5
+  $ slow 1
+  $ n "<cs2'maj d2'maj d3'maj cs3'maj>"
+  # s "superpiano"
+  # lpf (range 50 800 sine)
+  # delay 4
+  -- # attack 1.5
+  -- # distort 1
+  # room 2
+  # pan 0.25
+  # gain 0.75
+
+d7
+  $ slow 1
+  $ n "<d3'maj d2'maj c2'maj c3'maj>"
+  # s "superpiano"
+  # lpf (range 50 800 sine)
+  # octave 8
+  # delay 4
+  -- # attack 1.5
+  -- # distort 1
+  # room 2
+  # pan 0.25
+  # gain 0.75
+
+d6
+  $ slow 4 $ n "[cs7 b6*[0|1] cs7*[0|1]] [e6*[0|1] fs6*[0|1]] ~ [d6*[0|1] fs6] cs6*[0|1]"
+  # octave 6
+  # s "superpiano"
+  # lpf (range 800 1000 sine)
+  -- # distort 2
+  -- # shape 0.4
+  # smooth 0.5
+  # legato 4
+  # room 2
+  # pan 0.25
+  # gain 0.7
+
+d9
+  $ s "vinyl"
+  # gain 1
+
+d10
+  $ slow 1 $ n "[e6*[0|1] fs6*[0|1]] ~ [d6*[0|1] fs6 g6 a6 b6] cs6*[0|1] [cs7*[0|1] b6*[0|1] cs7*[0|1]]"
+  # octave 6
+  # s "superpiano"
+  # lpf (range 800 1000 sine)
+  -- # distort 2
+  -- # shape 0.4
+  # smooth 0.5
+  # legato 4
+  # room 2
+  # pan 0.25
+  # gain 0.8
+d10 silence
+d5 silence
+d6 silence
+d7 silence
+d3 $ jux (rev) $ struct "t*[2|4]" (n (arpg "<a'min7 c'min7>")) # s "superpiano" # legato 2 # room 0.2 # attack 0.8 # release 0.2
+d3 $ jux (rev) $ struct "t(3,5)" (n (arpg "<a'min7 c'min7>")) # s "superpiano" # legato 2 # room 0.2 # attack 0.8 # release 0.2
+d3 $ fast 2 $ repeatCycles 3 $ jux (rev) $ struct "t*2" (n (arpg "<a'min7 c'min7>")) # s "superpiano" # legato 2 # room 0.2 # attack 0.8 # release 0.2
+d3 $ slow 2 $ repeatCycles 3 $ jux (rev) $ struct "t*2" (n (arpg "<a'min7 c'min7>")) # s "superpiano" # legato 2 # room 0.2 # attack 0.8 # release 0.2
+d3 silence
+d2 silence
+d1 $ silence
+xfade 1 $ s "~"
+hush

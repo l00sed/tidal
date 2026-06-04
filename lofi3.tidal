@@ -1,0 +1,1281 @@
+d2 $ stack [
+  degrade $ sound "jhh:4*16" # gain (0.9  + 0.2*rand),
+  every 2 (const $ jux (# nudge 0.001) $ iter 4 $ n "<[0 .. 7] [5 .. 12] [3 .. 10] [8 .. 15]>" # s "amencutup" # gain 1.4) $ degradeBy 0.1 $ sound "vk:3 <vk:2 thh> tsn vk:2 <~ thh> sn:2 [thh vk:2?] [sn jk:2?]" |+| gain 1.1
+]
+
+let clav = struct "t(3,8)"
+
+d2 $ fast 2 $ (0.125~>) $ every 4 ((striateBy 16 0.125).(|*| speed 4)) $ stack [
+ clav $ n "<0 0 -2 -2 -4 -4 -2 -2>",
+ clav $ n "<4 4 5 5 7 7 5 5>"
+] |+| n "-8" |+| s "superpiano" |+| sustain 1 |+| release 1 |+| room 0.9 |+| size 0.8 |+| lpf (1000 + 300*sin 2) |+| crush "7 6 5 4" # orbit 2
+
+let traffic = "0 0 ~ -2 ~ ~ 0 -2 ~ -5 ~ ~ ~ ~ ~ ~"
+d3 $ (0.125~>)
+  -- $ stutWith 4 0.125 ((|+| room 0.8).(|+| size 0.9).(|*| gain 0.7).(|*| crush 2))
+  $ stutWith 4 0.125 ((|*| amp 0.2))
+  $ n "0 0 ~ -2 ~ ~ 0 -2 ~ -5 ~ ~ ~ ~ ~ ~"
+  |+| n "16" |+| n "12"
+  -- |+| s "supervibe"
+  |+| s "blofeld"
+  -- |+| sustain 0.4
+  |*| sustain "<1 0 >" # orbit 3
+  -- # velocity (rand)
+
+
+d1 $ fast 2 $ n "c4*4" # sustain "0.1" # s "blof"
+
+d1 $ silence
+
+hush
+
+
+setcps(130/60/2)
+
+d1 $ stack[
+struct "t(3,8,2)" $ sound "tbd:2" |+| cut 1,
+struct "[t ~ ~ t ~ ~ t ~]" $ s "hh",
+sound "~ sn:2",
+jux (0.125<~) $ struct (cat ["[t ~ ~ t ~ ~ t ~]", "[~ t ~ ~ t ~ ~ t]", "[~ ~ t ~ ~ t ~ ~]"])
+  $ s "gt1" |+| speed "1 1 1"|+| pan (0.8) |+| end 0.8,
+slow 4 $ n "4 6 4 2" |+| n "-36" |+| s "supersaw" |+| lpf 400 |+| gain 0.8
+]
+
+setcps(100/60/2)
+
+d1 $ stack [
+ struct "[1 ~ ~ 1] ~" $ n "4",
+ (0.25<~) $ struct "[t ~ ~ t] [~ <~ ~ ~ t>]" $ n "<-2 0>" |+| pan 0.4,
+ slow 2 $ struct (cat ["t [~ t] t*2 [~ t]", "t [t [~ t] [~ t] t]"])
+ $ n "14" |+| pan 0.7,
+ slow 2 $ struct "[[1 ~ ~ 1 ~ ~ ~ 1] [~ ~ 1 ~ 1 ~ ~ ~]]" $ n "-12"
+]  |+| s "supervibe"
+
+hush
+
+
+setcps(95/60/0.5/7)
+
+d1 $ stack[
+sound "kr:3*7" |+| pan 0.6 # gain (choose[0.7,0.6,0.8]),
+slow 2 $ sound "kr:5(8,14)" |+| pan 0.3,
+struct "t [~ t] ~ t ~ ~ ~" $ s "spells",
+sometimes (rev) $ struct "~ ~ t ~ t [t t?] ~" $ s "spells:2" |+| gain 1.1 # speed (choose[1, 1.01, 0.98]) # hpf (100 + (rand * 100)),
+struct "[~ t] ~ ~ ~ ~ ~ [~ t]" $ s "spells:1"
+] |+| crush 10 |+| lpf 9000 |*| gain 1.1
+
+d2
+   $ slow 2
+   $ n "-1 ~ ~ -3 ~ ~ ~ -4 ~ ~ -5 ~ ~ ~" |+| n "-24"
+   |+| s "supersaw"
+   |+| sustain 2 |+| cut 1 |+| lpf 300
+
+d3 $ jux (|*| speed 1.0001) $ slow 2 $ n "[~ 6] [~ 4] [~ 3] [~ -1] ~ ~ ~ "
+  |+| s "supercomparator"
+  |+| sustain 1 |+| attack 1 |+| cut 2
+  |+| room 0.5 |+| size 0.5 |+| gain 0.8 # orbit 2
+
+
+
+
+
+setcps(130/60/3.5)
+
+d1 $ slow 2 $ stack
+[sound "tbd:1*7",
+sound "bottle"
+]|+| gain 0.8
+
+do
+  resetCycles
+
+d2 $ slow 2 $ sound "fooloopRec"
+
+d4 $ slow 2 $ sound "fooloopRec"
+
+d2 $ silence
+
+
+d3 $ fast 2 $ sound "fooloop2*2"|+| nudge 0.19
+# begin (range 0 0.5 $ slow 50 saw) # cut 1
+
+once $ sound "fooloopReset"
+
+d3 $ silence
+
+hush
+
+
+
+
+-- footwork picnic women
+
+setcps(150/60/2)
+
+d1 $ sound "bd:3 [~ bd:3] cp:2 bd:3"
+
+hush
+
+d1 $ stack [
+every 2 (rev) $ struct "t(3,8,2)" $ s "808bd:1" |+| crush (slow 2 $ "<16 8>"),
+degrade $ n (run 8) |+| sound "tok" # speed (choose[1, 2, 4]) |+| pan 0.2,
+degrade $ sound "kr:7(3,8)" # end 0.06 |+| pan 0.6 |+| hpf 500,
+degradeBy 0.8 $ sound "rsn:1*8" |+| speed 4,
+trunc "<0.5 0.25 0.75 1>" $ sometimes (fast 2 ) $ sound "808:7*4",
+slow 2 $ sound "808:3 ~"
+] |+| gain 1.2
+
+d1 $ sound "rsn:2" |+| speed 2
+
+
+
+
+
+
+-- lofi-minecraft 1
+setcps(100/60/4)
+hush
+
+d1 $ stack[
+fast 2 $ whenmod 8 7 (fast 2) $ sound "hh:8*4",
+struct "<t ~> ~ [~ <~t>] ~" $ sound "lfkick:3",
+sound "~ ~ sn:3 ~" # lpf (1000 + 1000 * rand)
+  |+| hpf 300 |+| room 0.3 |+| size 0.3 |+| pan 0.7 # orbit 2,
+sound "~ [~ ~ ~ hh:5?] ~ ~"
+-- brak $ sound "hh:4*8" |*| speed 0.9 |*| speed "<1 2>" |+| lpf 3000
+] |+| gain 1.1
+
+d1 $ silence
+
+d2 $ slow 4 $ jux (|+| nudge 0.01) $ stutWith 4 0.125 ((|*| gain 0.6).(|*| pan 0.2).(|*| crush 7))
+$ n "0 <-3 2>" |+| stack [
+-- n "0",
+n "4 7",
+chop 2 $ stut 2 0.125 0.5 $ n "11" |+| pan 0.4
+-- every 4 (striate 2) $ fast 2 $ n "14 19" |+| pan 0.8
+] |+| n "-12" # s "superpiano"
+|+| sustain 2  |+| lpf 700 |+| hpf 300 |+| room 0.7 |+| size 0.5
+|*| gain 0.8
+
+let noteList = [0, 2, 4, 6, 7, 9, 11]
+
+d2 $ silence
+
+d3 $ every 2 (|*| gain 0) $ stut 4 0.5 0.125 $ struct "t*4" $ note (choose[0, 2, 4, 6, 7, 9, 11])
+|+| n "24" # s "supervibe" # gain (0.5 + 0.3*rand) |+| pan 0.9
+
+d4 $ every 2 (chop 4) $ sound "trump" |*| speed 0.5
+|+| room 0.5 |+| size 0.8 |+| pan 0 |+| lpf 1000
+
+hush
+
+-- Lofi 3 - Gym(nopedie) in The Basement
+
+setcps(75/60/2)
+
+d1
+   $ linger "<1 0.25 1 1 0.5 1>"
+   $ rarely (rev)
+   $ stack [
+  struct "t <t [~ t]> ~ [~ t?]" $ sound "tsk:5" |+| lpf 300,
+  rarely (|*| speed (-1)) $ sometimes (|+| nudge 0.02) $ struct "t*4" $ sound "tsh:2" |*| gain 0.8,
+  struct "~ t" $ sound "tss:8" |+| end 0.35
+] |*| gain 1.3
+
+d2 $ slow 2
+   $ rarely (|+| crush 6)
+   $ stutWith 2 0.125 ((|+| room 0.5).(|+| size 0.5).(|*| gain 0.5))
+   $ struct "t" $ sound "tas:2" |+| pan 0.2 |+| hpf 1000
+
+d3 $ slow 2 $ (0.125<~)
+   $ rarely ((striate 2).(chop 2))
+   $ every 13 (|*| speed (-1))
+   $ stutWith 4 0.0625 ((|+| room 0.5).(|+| size 0.5).(|*| gain 0.5))
+   $ struct "t" $ sound "<gym:0 gym:1>"
+   |+| pan 0.8 # hpf 300 # lpf 1000 # orbit 2
+
+   d3 $ silence
+
+   hush
+-- lofi 4
+
+d1 $ stack[
+  struct "[t? t?] <~ [~ t]> ~ <~ [~ ~ t?]>" $ sound "tsk:5" |+| lpf 300,
+  rarely (|*| speed (-1)) $ struct "t*4" $ sound "tsh:3",
+  struct "~ t" $ sound "brlsamp:5" |+| pan 0.3,
+  struct "~ t" $ sound "tss:5" |+| end 0.5 |+| lpf 1000 |+| pan 0.7,
+  slow 4 $ chop 4 $ sound "sheffield:2 ~ " |+| end 0.1 |+| cut 1 |+| hpf 1000 |*| gain 0.7 # pan (rand)
+] |*| gain 1.3
+
+d2 $ degradeBy 0.8 $ stutWith 2 0.125 ((|*| room 0.5).(|*| size 0.8).(|*| pan 0.3))
+$ rarely (|*| speed (-1))
+$ rarely (rev)
+$ sometimes (linger 0.25)
+$ sometimes (chop 2)
+$ slow "<2 4 8>" $ n (run 4) |+| sound "planing"
+|+| pan 0.8 |+| hpf 400 |+| lpf 1000
+d3 $ slow 4 $ n "-3 [~ 2? ~ ~]" |+| n "-24" |+| s "supersaw" |+| lpf 300 |+| sustain 0.3
+
+hush
+
+hush
+
+
+
+
+
+
+
+
+
+d1 $ stack [
+  -- fast 2 $ struct "t <~ [~ t]> <t ~> ~" $ sound "tbd" |+| lpf 300,
+  degrade $ fast 4 $ sound "~ 808:2" |+| pan 0.3,
+  fast 4 $ every 2 (|*| gain 0) $ trunc "<0.75 1>" $ sound "<thh:4 thh thh:3>*4" # lpf (4000 + 3000* rand),
+  fast 2 $ struct "t(3,8,2)" $ s "808bd" |*| speed 0.8 |+| gain 3 |+| crush 8,
+  degradeBy 0.2 $ fast "<4 8>" $ sound "~ 808:3" |+| room 0.5 |+| size 0.3
+] |+| crush 3
+
+
+d2 $ striate 4 $ chop "<2 4>" $  n "0 3 -2 2" # s "supervibe" |+| gain 0.8
+
+d3 $ fast 2 $ struct "t(3,8,2)" $ n "0 3 7" |+| n "-24"
+  # sound "supersaw" |+| sustain 0.4 |+| decay 0.4 |+| crush 2 |+| lpf 800
+
+d3 $ silence
+
+d4 $ sometimes (|+| n "-12") $ brak $ sometimesBy 0.3 (fast 2)
+  $ n "12 8 7 0" # sound "superpiano" |+| sustain 0.8 |+| room 0.5 |+| size 0.8 |+| gain 0.8 # orbit 3 # pan (rand)
+  |+| crush 2
+
+  hush
+
+
+
+
+
+  d1 $ stack[
+  struct "t t <t [~ t]><t t>" $ sound "ssk",
+  shuffle 16 $ sound "[~ hh]*4",
+  (0.25~>) $ struct "<t(3,8,2)>" $ sound "ssn:2" |+| pan 0.8,
+  stutWith 4 0.25 ((|+| room 0.5).(|+| size 0.9).(|*| pan 0)) $ iter 3 $ sound "~ ~ brlsamp:3 ~" |*| gain 0.7 # orbit 2,
+  degradeBy 0.7 $ sound "808:2*16" # speed (rand) |+| pan 0.3,
+  whenmod 4 2 (|*| speed 0.8) $ every 2 ((|*| speed (-2)).(fast 2))
+    $ chop 4 $ randslice "<2 4>" $ sound "gym" |+| speed (0.5)
+  ]
+
+
+do
+  setcps (130/60/4)
+  d1 $ stack [
+    -- every 2 (rev) $ fast 2 $ struct "<[t ~ ~ t] t><t  [~ t]  [~ t] t>" $ sound "ssk",
+    fast 2 $ struct "t [~ t] t? ~" $ sound "vk:3" |+| lpf 300,
+    every 4 (chop 4) $ struct "~ [[t t?] ~ ]" $ sound "brl:5",
+    jux (stut 2 0.5 0.125) $ fast 4 $ sound "hh hh hh:2 808:2"|+| hpf 1000 |+| lpf 8000 |+| gain 0.9,
+    slow 2 $ sound "808bd" |*| gain 1.4 |+| speed 0.5 |+| crush 8 |+| pan 0.3
+    -- stutWith 4 0.125 ((|+| room 0.5).(|+| size 0.7).(|*| gain 0.8).(|+| pan 0.2)) $ degradeBy 0.4 $ sound "tav:3 [~tav]" |+| speed (-4) |+| lpf 9000 # orbit 3
+    ]
+  d2 $ fast 2 $ chop 4 $ striate 2
+    $ sound "~ brlsamp:2" |+| speed "<2 2 2 1>" |+| cut 1 |+| gain 0.7
+
+
+      hush
+
+
+setcps(100/60/4)
+
+d1 $ stack [
+sound "hh*4",
+-- fast 2 $ sound "ssk:1 <[~ ssn] ~ > <~ ssn> ~ ",
+every 4 (0.125<~) $ every 2 (chop 4) $ every 8 (stut 4 0.5 0.125) $ n "<3 5 2 7>"
+  # sound "brlsamp*2",
+sometimes (|*| speed 0.5) $ degradeBy 0.3 $ sound "808:2*16" |*| speed 0.5 |+| gain 0.9,
+-- fast 2 $ sound "tbd(3,8)" |+| lpf 300 |+| crush 6,
+sound "~ ssk:1" |+| pan 0.7
+]
+
+d2 $ sometimes (|+| n "12") $ every 2 (chop 8) $ slow 2  $ n "<0 7>" |+| n "-24"
+  # sound "supersaw" |+| gain 0.75|+| lpf 600
+
+hush
+
+
+
+
+
+
+d1 $ stack [
+sound "[bd bd?] sn:2",
+degradeBy 0.6 $ every 2 (fast 2) $ sound "hh*8"
+]
+
+
+hush
+
+
+-- Alice Coltrane - Isis and Osiris cover
+do
+  let pentatonic = "0 2 5 7 11"
+  setcps(90/60/2)
+  d1 $ degradeBy 0.2 $ jux (0.25<~) $ whenmod 5 3 (slow "2? 4 8") $ fast "3 5" $ rev
+     $ n "0 3 5 7 10 12" |+| n "<-12 0 12 24>"
+     # s "supermandolin" |+| sustain 1.1 |+| room 0.8 |+| size 0.8 # orbit 2
+  d2 $ stack [
+    sound "~ <kr:6 808:4> ~ kr:6",
+    sound "[~ ~ < ~ 808sd:1?>] [808:1? ~ 808bd:2] 808bd:2 [~ 808bd:2?]",
+    sound "kr:3*4"|+| speed 1.1 # pan (0.6 + 0.1*rand) # gain (0.8 + 0.2*rand) # room 0.3 # size 0.3 # orbit 2 |+| hpf 2800
+    ] |*| gain 1.2
+
+
+setcps(120/60/2)
+
+d1 $ stack[
+  every 4 (const $ sound "tbd:2(3,8)") $ sound "tbd:2 [sn:2 ~ ~ tbd:2?]",
+  sound "[~ hh:2]*2",
+  every 4 (|*| speed 2) $ sound "[kr:4 kr:3]*4" |*| gain 0.9 |+| cut 1
+  ]
+
+
+  setcps(60/60/2)
+
+  d1 $ stack[
+    sound "[kr <~ kr:1>] [~ kr] tsn:3 ~" |+| gain 1.7,
+    fast 2 $ sometimesBy 0.3 ((|*| speed (-1)).(striate 2)) $ stut 2 0.8 0.5 $ sound "~ kr:5" |+| gain 1.5
+  ] |+| crush 8 |+| hpf 100 |+| lpf 6000
+
+
+
+  setcps (95/60/2)
+
+do
+  d1 $ stack [
+    slow 2 $ sound "kr:4 kr:3*2 kr:3 kr:3*2 kr:3 kr:3 kr:3 kr:3" # gain (0.8 + 0.3*rand) |+| hpf 600 |+| pan 0.7,
+    slow 2 $ sound "kr ~ kr:1 ~ ~ kr ~ [kr:1]",
+    slow 2 $ sound "kr:4 ~ ~ [kr:8*2] ~ ~ ~ ~"
+    ]
+  d2 $ slow 2 $  n "-3 ~ ~ [-3*2] ~ ~ ~ 9?" |+| n "-24" |+| lpf 200 # s "supersaw"
+
+do
+  d2 $ silence
+  d1 $ slow 2 $ sound "kr:4 kr:3*2 kr:3 kr:3*2 kr:3 kr:3 kr:3 kr:3" # gain (0.8 + 0.3*rand) |+| hpf 600 |+| pan 0.7
+
+    hush
+
+
+-- Not Not Not - Kave NV
+
+setcps(110/60/2)
+
+d1 $ stack [
+  slow 2 $ n "~ 12 5 7 ~ ~ 0 2 5 7 ~ ~" # s "supervibe",
+  slow 2 $ n "5 7 9? ~ 2? ~ ~ 12 ~ 9 ~ 7?" # s "supersaw" |+| sustain 0.1 |+| lpf 400,
+  sometimes ((linger 0.5).(rev)) $ slow 2 $ n "12*2 14*2 19 ~ ~ ~ ~ ~ ~ ~ ~ ~" # "supervibe" |+| pan "<0 1>",
+  slow 2 $ n "-5 7 ~ ~ -5 -5? -5 -3 -3 ~ ~ ~" |+| n "-24" # s "supersaw" |+| sustain 0.2 |+| lpf 300
+]
+
+d2 $ stack[
+  sound "tbd:1 tbd:1" |+| room 0.3 |+| size 0.3 |+| lpf 400 # orbit 2,
+  every 2 (|*| gain 0) $ sound "[~ brl:1 sn:3] [~ brlsamp:1 sn:3]",
+  sometimes (stut 2 0.5 0.5) $ struct "[~ ~ t][~ ~ t]" $ sound "brl:3"
+]
+
+
+hush
+
+
+d1 $ "bd:2 sn:2"
+
+anticipate 1 $ sound "bd*4 sn:2 ~"
+
+d1 $ stack[
+fast 0.5 $ sound "bd sn:2" # nudge (rand),
+sound "hh*4"
+]
+
+anticipate 1 $ sound "808:2*4"
+
+-- ideas
+
+
+-- tidal looper testing
+setcps(80/60/2)
+
+d1 $ every 4 (rev) $ stut 4 0.3 0.125 $ sound "tbd:3 tbd:3 sn:2 hh" # gain 0.8 # lpf 3000
+
+d2 $ n "<0 -7 -2 -4>(3,8)" |+| n "-12" # s "supersaw" |+| lpf 200
+
+d3 $ striate 4 $ n "0" |+| s "superhammond" |+| sustain 0.25
+
+
+once $ slow 8 $ s "looper" # n "1"
+
+d2 $ slow 4 $ sound "loop" # n "2" # nudge "0.1"
+d3 $ slow 1 $ sound "loop" # n "1" # nudge "-0.6"
+
+d3 $ silence
+
+d1 $ stack [
+  slow 8 $ s "olooper" # n 2,
+  slow 8 $ s "loop" # n 2,
+  -- slow 8 $ s "loop" # n 1 # pan 0.3 # speed (-1),
+  -- slow 8 $ s "loop" # n 0 # pan 0.6,
+  -- slow 8 $ s "loop" # n 7,
+  -- slow 8 $ s "loop" # n 6 |+| pan 0,
+  s "tbd:3 tbd:3 sn:2 hh"
+]
+
+
+
+once $ s "freeLoops"
+
+
+linput = pI "linput"
+lname = pS "lname"
+
+setcps(120/60/2)
+
+once $ sound "looper"
+
+d1 $ sound "loop"
+
+
+-- CAN Paperhouse
+
+setcps(110/60/4)
+
+-- part 1
+do
+  setcps(110/60/4)
+  d1 $ fast 1 $ stack[
+    sound "kr:6*6"
+    , sound "[kr ~ [kr kr?]] kr:1 "
+    , sometimes (chop 2) $ sound " ~ [~ ~ <~ kr ~ kr:1 kr:7 kr:8*2> ]"
+    , whenmod 4 1 (const $ sound "~") $ sound "kr:3"
+    ] |*| gain 1.1
+  d2 $ slow 4 $ n "4 2 -3 -3" |+| n "-24" # s "supersaw"
+      # decay 0.3
+      # lpf 100
+     |+| crush 2 |*| gain 1.05
+-- Part 2
+do
+  setcps(120/60/4)
+  d1 $ stack[
+    sound "<kr:6 kr:6 kr:5>*6"
+    ,sound "[[kr kr?] [~ kr] [~kr]][kr:1 [~ kr]? [~ kr]?]"
+    , degrade $ sound "kr:3*6" # gain (rand)
+    ]|*| gain 1.1
+  d2 $ slow 4 $ n "4 2 -3 -3" |+| n "-24" # s "supersaw"
+      # decay 0.3
+      # lpf 100
+     |+| crush 2 |*| gain 1.05
+
+-- talking heads esque song
+
+do
+  setcps(110/60/4)
+  d1 $ stack [
+      fast 4 $ sound "kr:6 kr:6 kr:5 kr:6?" # gain "1 1 1 0.8" # hpf 250 # pan 0.7
+      , fast 4 $ degrade $ sound "~ 808:1" # pan 0.3
+      , sound "808bd:3 sn:2 [808bd:3 ~ ~ 808bd:3] <[~ sn:3 ~ ~] [~ kr:1 ~ kr:8 ]>"
+      , striate 4 $ stutWith 4 0.5 ((|*| room 0.5).(|*| size 0.5).(|*| pan 1).(|*| gain 0.6)) $ sound "<bottle tok:2>"
+      , degrade $ fast 2 $ sound "808:2(3,8)" # speed (rand) # pan (rand)
+    ]
+  d2 $ n "0 1 5 2" # s "gg" # gain 1.5
+
+
+
+d1 $ sew "t f <f t> t"
+  -- sew "t <f t> <f [f f] t>"
+  (n "0 .. 15" # s "future") (s "cp:3*16" # speed saw + 1.2)
+
+  d1 $ s "kr:1*8" # gain (euclidFull 5 8 (1)(0.7))
+
+
+
+-- infinite detail trial
+do
+  setcps(135/60/2)
+  d1 $ stack [
+    sound "vk:5 vk:5 {jsn:1, tb:5} vk:5" # gain "1.2 1.1 1 0.9",
+    sound "jhh:3 jhh:2 jhh:3  jhh:4" # lpf 8000 # pan 0.3 # gain 0.9 # crush 8
+    ]
+
+
+
+
+do
+  setcps(130/60/2/3.5)
+  d3 $ stack [
+      slow 8 $ s "olooper" # n 1,
+      slow 8 $ s "loop" # n 1
+      ]
+  d1 $ sound "808bd:2*7" # lpf 300 # gain 1.1
+  d2 $ n "0 [~ 0] [~ -2] [~ -5] [~ -5] [~ -5] [~ -7]" |+| n "-18" # s "supersaw"
+    # voice 0.23 # resonance 0 # sustain 0.27 # cut 1 # lpf 70
+
+    once $ s "freeLoops"
+
+
+    linput = pI "linput"
+    lname = pS "lname"
+
+
+setcps(135/60/2)
+
+d1 $ stack[
+  sometimesBy 0.4 (stut 2 0.5 0.5) $ slow 2 $ n "2 3 4 5 <7 6> 2 <8 5> 2" # s "cpluck" # speed (sew "t t t f" "<1 1.25>" "1.2")
+  , iter 4 $ jux (0.25<~) $ sometimes (rev) $ n "9 <10 9> 11 14" # s "cpluck"
+]
+
+
+
+-- Born under punches
+
+do
+  setcps(110/60/4)
+  -- d1 $ sound "[808bd:2 kr:6]*4"
+  d1 $ stack [
+      fast 2 $ whenmod 8 7 (const $ fast 2 $ sound "sn:1 <kr:6 kr:6 kr:6 <kr:5 kr:8>>")
+        $ sound "808bd:2 <kr:6*2 kr:5> [sn:1 808:5?] <kr:6*2 kr:5>"
+      , degrade $ chop 4 $ sound "insect:1*4" # pan (rand)
+      , fast 2 $ degrade $ iter 4 $ n (run 8) # sound "~ ~ 808lc*2 808mc*2" # pan 0.2
+    ]
+  -- d2 $ slow 4 $
+  --  n "[0 ~ ~  7] [8 ~ ~  7] [8 ~ ~ ~] [7 0 ~ -2][0 -2 0 -2][0 -2 0 -2] 0 [~ ~ ~ -2]"
+  --  |+| n  "-29" # gain 0
+   -- # s "superpwm" # sustain 0.4 # cut 1 # lfo 0
+  d3 $ fast 4 $ stut 3 0.8 1 $ (0.5~>) $ every' 16 12 (|+| gain 1) $ n "[2 1] 0" |+| n "19" # s "supermandolin" |+| lpf 3000 # gain 0 # sustain 0.4
+
+
+
+
+
+
+  sound $ sew "t f t f" "bd" "sn"
+  sound "bd sn bd sn"
+
+  d1 $ sound $ mask "t f t f" "bd sn:2"
+
+
+
+
+
+  --- August 6th set
+
+  do
+    setcps (125/60/4)
+    d1 $ stack [
+      sometimesBy 0.1 ((degrade).(const $ sound "bend*8" |+| n (run 2)))
+      $ sound "shake*16" |*| gain (0.2 + "1 0.9 0.8 0.9")/16 # begin "0 0.01 0.01 0.01" # hpf (2000 + (500 * rand)),
+      degrade $ sound "808:4*16",
+      fast 2 $ sound "808:2(3,8)",
+      sometimes ((|+| room 0.6).(|+| size 0.5).(|+| hpf 1000)) $ sound "808bd:2 [808bd:2 808bd:1] [~ vsn:1 808bd:2? ~] vsn:8" # orbit 3,
+      n "~ [ ~ -15] ~ ~" |+| n "-12" # s "supersaw" # lpf 100 # sustain 0.5
+      ]
+    d2 $ silence
+
+
+  do
+    setcps(98/60/4)
+    d1
+       $ whenmod 8 5 (|*| speed (-1))
+       $ sometimesBy 0.1 (rev)
+       $ every 2 (|+| start 0.1)
+       $ n (run 4) |+| sound "chk" # start 0.9 # begin "0.1" # cut 1
+    d2 $ fast 2 $ stack [
+      sound "bd:2*2",
+      -- sound "hh(3,8)",
+      sound "808:3(3,8)",
+      degrade $ sound "808:2*8" # speed (rand) # crush 3 # gain 0.8
+      ]
+
+  do
+    d1 $ sound "jtv" # start 0.7 # cut 1
+    d2 $ fast 2 $ sound "vk:2 808bd:2*2 sn:1 [sn?]"
+
+  d2 $ silence
+
+  do
+    resetCycles
+    setcps (90/60/4)
+    d1 $ stack [
+      whenmod 32 24 (const $ struct "t ~ t ~ t ~ t ~ t <t ~> ~" $ sound "jcy:7 jcy:8 jcy:6" # gain 0.9) $ sound "jhh ~ jhh ~ <jhh jcy:3 jcy:2> ~ jhh ~ <jhh jhh jhh jcy:2> <jhh jhh ~> ~" # n "6 8 6 7",
+      struct "t ~ t? t ~ ~ ~ ~ ~ ~ ~" $ sound "jk:4" # hpf 60 # lpf 900,
+      struct "~ t ~ ~ t ~ ~ <~ ~ ~ t> <~ ~ ~ t> t? t"
+      $ sound (sew "t t t t t t t t f t t" "jsn:2" "jt:3..7") |*| speed "0.78"
+      ]
+
+
+-- d1 $ stack [ ghost $ sound "~ sn", sound "bd*2 [~ bd]" ]
+
+-- Doomscroll
+
+
+do
+  setcps (100/60/4)
+  -- resetCycles
+  d1 $ slow 4 $ sometimes (|*| speed 2) $ striateBy 32 "[0.006 0.002]*8" $ jux (0.125~>) $ struct "t" $ sound "<lowtest:0 lowtest:1>" # cut 1 # crush 8
+  d2 $ stack[
+      slow 2 $ striateBy 128 0.03 $ sound "ssk" # end 0.125
+      -- ,stutWith 8 0.0625 ((|*| speed 1.5).(|*| room 0.8).(|*| size 0.8).(|*| gain 0.9))
+      -- $ fast (8/5) $ n "9 11 13 6 ~"
+      -- # s "supervibe" # gain 0.6 # pan (rand) # orbit 2
+      -- , slow 8 $ sound "lowtest:2" # cut 1
+    ]
+  -- d3 $ slow 8 $ n "6 11" |+| n "-24" # s "midi"
+
+
+  d3 $ slow 16 $ n "9 10 9 6 9 10 11 4" |+| n "-24" # s "midi"
+
+
+do
+  d1 $ stack[
+    slow 4 $ sometimes ((|*| speed 2).(# distort (0.5 * rand)).(|*| gain 1.2)) $ (striateBy 16 0.6 $ n "<6 11>" |+| n "-12" # s "superhammond") # gain 0.6 # lpf (5000 + 3000*sin(20))
+    ,slow 4 $ sometimes (|*| speed 2) $ striateBy 32 "[0.006 0.002]*8" $ jux (0.125~>) $ struct "t" $ sound "<lowtest:0 lowtest:1>" # cut 1 # crush 8
+    ]
+  d2 $ fast 4 $ striateBy 16 0.1
+     $ sound "ssk*4"
+     # crush 10
+  d3 $ stack [
+      slow 8 $ n "[e7][[ds7 cs7 ~ ~ ][b6 a6 ~ ~][gs6 fs6 ~ ~][e6 ds6 ~ ~]][[cs6 b5 ~ ~ ][a5 gs5 ~ ~][fs5 e5 ~ ~][ds5 cs5 ~ a4]][b4]",
+      slow 8 $ n "[fs7][[e7 ds7 ~ ~ ][cs6 b6 ~ ~][a6 gs6 ~ ~][fs6 e6 ~ ~]][[ds6 cs5 ~ ~ ][b5 a5 ~ ~][gs5 fs5 ~ ~][e5 ds5 ~ gs4]][a4]"  |+| n "12"
+    ] # s "midi"
+
+
+-- Striate idea
+
+
+do
+  setcps(100/60/4)
+  d1
+     $ degradeBy 0.8
+     $ (0.25<~) $ slow 2 $ sometimes ((|*| speed (-1)).(fast 2))
+     $ within (0.25, 0.75) (density 0.75) $ within (0.75, 1) (density 2)
+     $ ((striateBy 32 "0.1 0.5 0.7" $ sound "[ssk ssn hh ssn]*8")
+      |+| speed "4 1.5 2 1.5"
+      |*| speed "[12 6 9 4]/2"
+      |+| delay 0.5
+      |+| delaytime 0.125
+      |+| delayfeedback 0.8)
+      # crush (10 + 5*rand)
+  d2 $ sound "[ssk brl:3 ~]*2" # gain 1.3 # lpf 2000
+
+d1 $ silence
+
+
+-- heaven's falling
+
+do
+  setcps(94/60/4)
+  d1 $ sound "ssk:1*4"
+  d2 $ slow 2
+     $ sometimesBy 0.3 (jux(# smear 0.2))
+     $ (striateBy 4 "<0.4 0.4 0.4 [0.2 0.1 0.05 0.025]>" $ sound "<heaven [heaven:1 heaven] heaven [heaven:2 heaven]>")
+      |*| speed (-1)
+      # cut 1 # gain 1.5
+
+do
+  d1 $ stack [
+    sound "ssk:1*4",
+    striate 32 $ sound "ssk" # distort 0.3,
+    fast 2 $ (striateBy 128 0.0015 $ sound "[~ ssk]*4") |+| speed "1 1.5 2 1.5" |+| speed "3 5 7 4"
+    ]
+  d2 $ jux (|*| speed 2) $ sometimes (|*| speed (-1))
+     $ sometimesBy 0.2 ((|*| lpf 1000).(|*| squiz 0.7))
+     $ striateBy 4 "0.5" $ n "<3 3 4 5>" # sound "heaven"
+      |+| smear 1
+      |+| gain 1.2
+  -- d3 $ n "<f3 f3 a2 e3>" |+| n "2" # s "midi"
+
+  d3 $ silence
+  d2 $ silence
+
+do
+  setcps(101/60/4)
+  d1 $ stack[
+      every 3 (0.25<~) $
+      within (0.25, 0.75) (density 2) $ within (0.75, 1) ((# delay 0.4).(# speed (0.8))) $
+      degradeBy 0.5 $ slow 2 $ (striate 32 $ sound "wf") |*| speed "[1, 2*2]*2"
+      # cut 1 # delayfeedback 0.9 # orbit 2,
+      -- fast 2 $ sound "<ssk brl:3> <[brl:3 ssk?] ssk*2> brl:1 brl:3"
+      sound "[ssk brl:3]*4" # lpf 1000
+      ]
+
+
+d1 $ n "0 2 4 7" |+| n "-12" # s "microkorg"
+d2 $ fast 2 $ sound "ssk(3,8)"
+
+
+-- symbol (lenker)
+
+do
+  setcps(140/60/4)
+  d1 $ sound "ssk:1*4" |+| gain 1.3
+  d2 $ stack[
+        n "d2 fs2 ~ d2 fs2 ~ fs2 d1"
+        |+| n "<0 3 1 1>",
+        -- |+| n "<0 7 4 4>",
+        n "~ ~ ~ ~ ~ d3 ~ ~ "
+      ] |+| stack [n "24", n "36"] # gain 0.8
+      # s "microkorg" # sustain 0.6 # release 0.9 # voice 0 # distort 0.2 # lpf 1500 # nudge (-0.02)
+
+-- SSL
+
+do
+  setcps(137/60/2)
+  let melody = "[g3 ds3 g3 ds3 c3 gs3 g3 as3][ds3 g3 c3 g3 d3 c3 ds3 c3][f3 gs3 ds3 as3 ds3 g3 c3 ds3][gs3 f3 d3 f3 gs3 f3 c3 gs3]"
+  let bass = "[~ <c3 d3>][~ <c3 d3>][[~ ds3] [<c3 d3> ds3]] [ <f3 g3> <g3 gs3> <d3 c3> ~]"
+  d1 $ slow 4 $ sound "<ssl ssl:1>" # gain 1.2
+  d2 $ stack[
+    slow 8 $ n (melody) |+| n "24"
+    -- ,slow 4 $ (0.0625~>) $ n (bass)
+    ]# s "supervibe" # gain 0.5 # sustain 0.5 # room 0.7 # size 0.9 # orbit 2
+  d3 $ slow 4 $ ((1/16)~>) $ n (bass)  # s "supersaw" # lpf 100 # smear (-0.5) # nudge (-0.03) # orbit 3
+  d4 $ slow 8 $ sometimes ((rev).(|*| pan (rand))) $ striateBy 16 0.09 $ sound "ssl:2" # gain 0.9 # room 0.8 # size 0.9 # orbit 4
+
+
+
+  -- vacuous smiles
+
+  do
+    setcps(136/60/2)
+    let c1 = "[[e3, e4] ds4 ~ e3] [gs4 ds4 e3 ds4][~ e3 gs4 ds4][~ e3 ds4 ~]"
+    let c2 = "[[c3, c4] b4 ~ c3] [e5 b4 c3 b4][~ c3 e5 b4][~ c3 b4 ~]"
+    let c3 = "[[d3, d4] b4 ~ d3] [e5 b4 d3 b4][~ d3 e5 b4][~ d3 b4 ~]"
+    let c4 = "[[g3, g4] b4 ~ g3] [e5 b4 g3 b4][~ g3 e5 b4][~ g3 b4 ~]"
+    let c5 = "[[gs3, gs4] b4 ~ gs3] [e5 b4 gs3 b4][~ gs3 e5 b4][~ gs3 b4 ~]"
+    let c6 = "[[a3, a4] b4 ~ a3] [e5 b4 a3 b4][~ a3 e5 b4][~ a3 b4 ~]"
+    let c7 = "[[fs3, fs4] b4 ~ fs3] [e5 b4 fs3 b4][~ fs3 e5 b4][~ fs3 b4 ~]"
+    d1 $ sound "hh*4"
+    -- jump 2 $ slow 4 $ cat[n c1, n c2, n c3, n c2] # s "microkorg"
+    jump 2 $ slow 4 $ cat[n c4, n c4, n c5, n c5, n c6, n c6, n c4, n c7] |+| n "12" # s "microkorg"
+    -- # s "superpiano" # sustain 0.7 # lpf 1000
+
+
+-- wallfacer jam
+do
+  setcps(92/60/2)
+  d1 $ stack [
+    fast 2 $ every 3 ((0.25~>)) $ degradeBy 0.1 $ sound "[ssk ssk? ~ ssk?]" # lpf 500 # gain 1.1,
+    sound "[~ hh]*2",
+    slow 4
+    -- $ sometimes (rev) $ striate 16
+    $ sound "wolf" # pan 0.8 # gain 1.1,
+    slow 4 $ sometimes ((|*| room 0.6).(|*| size 0.7))
+    $ sometimes (|*| speed "[2|4]") $ striateBy 32 0.02 $ sound "wolf:2" # cut 1 |+| gain 0.8 # pan 0 # orbit 1,
+    slow 4 $ striateBy 64 0.02 $ sound "pad:2" # speed 0.9 # cut 1 # hpf 1500,
+    slow 16 $ sound "wolf:1" # lpf 800 # gain 1.4 # end 1,
+    fast (8/5) $ stutWith 2 0.25 ((|+| n "12").(|*| room 0.4).(|+| pan 0.4)) $ n "c5 cs5 as5 c5 f6?" # s "superpwm" # sustain 0.5 # gain 0.7 # lpf 2000 # attack 0.05 # pan 0.25
+    ]
+
+-- jazz fusion jam
+do
+  setcps(100/60/2*(4/7))
+  d1 $ stack[
+    -- sometimesBy 0.8 (trunc (5/7)) $
+    sometimes (linger ("<4/7 2/7 1/7 3/7>")) $
+    sound "jk:6 [~ jk:6] jsn [~ jsn] ~ [~ jk:6] ~" # djf 0.6 # gain 1.2,
+    sound "[~ jsn:11?] ~ [~ [jsn:13|jsn:12]?] ~ ~ ~ [~ [jsn:13|jsn:12|~]?]" # djf 0.6 # speed 1.1 # gain 0.7,
+    -- fast 2 $ struct "t*7" $ sound "[jhh|jhh:1]" # gain 0.6 # pan 0.3
+    sometimesBy 0.1 (rev) $
+    sometimes (|+| gain 0.2) $ fast 2 $ sound (sew "[t|t|f] t t t f [t|f] t" "jhh:2*7" "[jhh:9]*7")
+    # cut 1 # gain 0.8 # pan 0.3 # lpf 10000,
+    -- degradeBy 0.3 $ striate 14 $ sound "bv bv:1"
+    slow 4 $ randslice 7 $ sound "bv"
+    # orbit 2 # gain 0.9 # room 0.9 # size 0.8 # speed (5/6) # hpf 1000,
+    -- slow "2 4" $ striate 4 $ rev $
+    density "<3.5 3.5 7 14>" $
+    randslice 91 $ sound "rh"
+    # cut 1 # end 0.2 # orbit 3 # end 0.6 # hpf 600 # gain 0.8 # pan 0.8 # room 0.8 # size 0.7,
+    slow 2 $ degradeBy 0.9 $
+    sometimes (density "[2|2|7|2]") $
+    sometimes (rev) $
+    rarely (|*| speed (0.5)) $ n (run 7) # sound "trump*7" # cut 1 # orbit 4 # room 0.2 # size 0.1 # speed 0.9
+    ]
+  d2 $ n "6 ~ ~ [~ 15] [~ 18] [~ 21?] [~ 6]" |+| n "-36" # s "supersaw" # lpf 100
+
+
+-- Kate NV - Lu Na
+do
+  setcps(125/60/4)
+  d1 $ stack [
+    sound "bd:2*4"
+    -- sound "[~ sn:1]*2"
+    ]
+  d2 $ n "a5 g6 a5 d6 g6 a5 <~ ~ g6 g6> ~" |-| n "12" # sound "supersaw" # sustain 0.2 # decay 0.2 # lpf 2000
+
+
+d3 $ degradeBy 0.8 $ slow 2 $ n "[0|1|2]" # s "cstm" # gain 1.5 # legato 1
+
+panic
+
+
+
+
+
+-- krautrock
+do
+  setcps(80/60/4)
+  d1 $ stack[
+    fast 2 $ every 2 (linger "[0.5|0.75]") $ sound "jk:1 jk:4*2? [jsn jsn:2?] [[~ jsn:2?]|[kr:8 ~]]",
+    sound "kr:6*4" # gain 1.3 # lpf 9000 # pan 0.4
+    -- fast 2 $ note "[3|0]*4" # sound "jcy" # hpf 1500 # lpf 9000 # gain 0.9
+    ]
+
+
+  do
+    setcps(90/60/4)
+    -- d3 $ stack [
+    -- --   slow 16 $ note "[3|0]" # sound "[jcy|kr:9]" # gain 1,
+    -- --   fast 2 $ sometimes (linger 0.75) $ sound "[jk:2] kr:9*2? jsn:2 ~" # pan 0.8 # gain 1.3,
+    --   sound "kr:6*4" # gain 1.3 # lpf 9000 # pan 0.2
+    --   ]
+    d1 $ fast 2 $ stack [
+        degradeBy 0.3 $
+        -- sound "[<jk:8 ~ ~ ~> jsn:4] [jk:1 vk:1] [ssn:1 kr:1?] <[~ jsn:16] ~ [~ jsn:11?] [kr:7 kr:8]>"
+        sound "[<jk:8 ~ ~ ~> kr:8] [jk:1 vk:1] [kr:8 kr:9?] <[~ kr:9] ~ [~ kr:8?] [kr:7 kr:8]>"
+        |+| gain "[1 0.8] [1 0.8] [1 0.7?] <0.8 0.8 0.8 1>"
+        -- degradeBy 0.7 $ sound "~ ~ [~ kr:1?] ~" |+| gain 0.7
+        # nudge (rand * 0.01)
+        ] # gain "[1.1|1.2]" # crush 13
+    d2 $ slow 2 $ sound "<kr:3 kr:4 kr:4 kr:4> kr:6 kr:3 kr:6" # gain 1.5 |+| pan 0.3
+
+d1 $ silence
+
+  do
+    setcps(135/60/3.5)
+    d1 $ stack [
+      -- sometimes (linger (2/7)) $
+      sound "jk:1 vk:1? <jsn:3 ssn:1> ~ vk:1? [jk:2|jsn:3] <jsn:1 ssn:1>" # gain 1.3,
+      struct "t*7" $ sound "[jhh:3|jhh:4]" # gain 0.8,
+      sound "kr:3" # gain 1.2
+      ]
+
+
+
+  do
+    setcps(155/60/2)
+    d1 $ stack [
+      -- fast 2 $ sound "kr:6 kr:6 kr:5 ~" |+| pan 0.2 |+| speed 1.05 |+| hpf 500 # room 0.3 # orbit 2,
+      -- slow 3.5 $ sound "jk:1 [ssn:1 jk:1] [~ vk:1] [jsn:2 jk:1] [~ jk:1] [ssn:1 jk:1] [~ jsn:3|[jsn:3 ssn:1 kr:9 ~]]",
+      -- degradeBy 0.6 $ slow 3.5 $ sound "jk:1 [kr:9 jk:1] [~ vk:1] [kr:8 jk:1] [~ jk:1] [kr:8 jk:1] [~ kr:9|[kr:8 kr:9 kr:9 ~]]",
+      -- slow 3.5 $ sound "[jcy:2|jcy:4|jcy:3]*7" |+| pan 0.7 # gain 1
+      slow 3.5 $ sound "kr:6*7" |+| pan 0.7 # gain 1
+     ] # gain 1.3
+
+
+    do
+      setcps(155*sin)
+
+
+  -- doomscroll2
+
+  do
+    setcps (100/60/4)
+    d1 $ fast (8/5)
+      $ stutWith 4 (1/128) ((|+| n "12").(|*| room 0.4).(|/| pan 0.25))
+      -- $ n "9 11 13 -6 ~"
+      $ n "15 16 18 11 ~"
+      |+| n "12"
+      # s "superpwm"
+      # sustain 0.1
+      # gain 0.9
+      # lpf (5000 * slow 1 saw) # attack 0.06 # pan 0.25
+      -- # distort 0.8 # smear 0.5
+
+
+
+
+
+
+do
+  setcps(103/60/2)
+  d1 $ stack[
+    slow 2 $ rarely ((fast 2).((1/4)~>).(zoom (0.5, 1))) $ struct "t*2 t(3,8)" $ sound "ssk:1" # lpf 300 # gain 0.9,
+    fast 2 $ sound "~ hh"
+    -- degradeBy 0.4 $ sound "thh:2*8" # lpf 4000 # gain 0.6 # pan 0.4
+    ]
+
+-- gainsbourg / qawwali
+
+do
+  setcps(80/60/2)
+  d1 $ stack[
+    slow 4 $
+    -- degradeBy 0.2 $ slice 8 (run 8) $
+    -- sound "qw" # legato 1 # gain 1.35 # shape 0.7,
+    fast 4 $ sound "<jcy:1 ~> <jhh:2 jhh:3 jhh:1 jhh:9>" # gain 1.1,
+    -- degradeBy 0.8 $ sound "jk:1 jk:2 [ssn:1 jsn:1] [~ ssn:1?]" # gain 1.2,
+    sometimesBy 0.2 (linger "0.5") $
+    sometimesBy 0.2 (within (0.75, 1) (density 2)) $
+    degradeBy 0.6 $
+    sound "[<jk:8 ~ ~ ~> jsn:4] [jk:1 vk:1] [ssn:1 kr:1?] <[~ jsn:16] ~ [~ jsn:11?] [kr:7 kr:8]>"
+    |+| gain "[1 0.8] [1 0.8] [1 0.7?] <0.8 0.8 0.8 1>" |*| gain 1.5,
+    degradeBy 0.7 $ sound "~ ~ [~ kr:1?] ~" |+| gain 0.7
+    # nudge (rand * 0.01) # gain 1.25
+    ] # gain 1.1
+  d2 $ sometimes (stut "[2|4]" 0.5 0.125) $ sound "[~ 808:2]*2" # (sometimes (linger 0.5) $ speed "<[2 1.5][1.5 1.2]>") |*| speed (1.1/2) # gain 0.8 # room 0.8 # orbit 3
+  -- d2
+  --   $ stut 2 0.8 (1/8)
+  --   $ degradeBy 0.2
+  --   $ sometimes (rev)
+  --   $ density "[0.5|2|4]"
+  --   $ (# legato (range (13/16) 1 saw))
+  --   $ (# legato 1)
+  --   $ (# begin (slow 16 (range 0 1 perlin)))
+  --   $ fast "<2 1>/4"
+  --   $ sound "qw:1" # gain 1.7
+  -- d3 $ slow 4 $ n "0 -2 -3 -4" |+| n "4" # s "superhammond"
+  --   # voice (stack ["7","6"]) # size 0.8 # room 0.9 # orbit 2 # gain 0.8
+
+
+d3 $ silence
+
+let amp1 = pF "amp1"
+    amp2 = pF "amp2"
+    amp3 = pF "amp3"
+    amp4 = pF "amp4"
+    amp5 = pF "amp5"
+    amp6 = pF "amp6"
+
+do
+  setcps(90/60/2)
+  d1 $ stack[
+    n "{[~ ~ <0 3 10 7> _ ]!4, [<14 12>!2]/3}" |-| n "12"
+    # s "superfm" # legato 1 # sustain 0.34
+    # amp1 1 # pF "ratio1" 2
+    # amp2 0
+    # amp3 0.5 # pF "ratio3" (slow 2 $ range 0.75 1.5 square)
+    # amp4 1
+    # amp5 (slow 4 $ range 0 0.5 tri) # pF "ratio5" 8.08
+    # amp6 0,
+    slow 4 $ stutWith 8 (1/64) ((|*| speed 0.9).(|*| gain 0.8).(|+| size 0.5)) $ n "17" # s "supersaw"
+    # voice 0 # pan 1 # sustain 0.05 # lpf (slow 8 $ range 1000 2000 saw) # hpf 200
+    ] # triode 0.5 # room 0.3 # size 0.5
+  d2 $ sound "ssk:1*2" |*| gain 1.7
+
+
+do
+  setcps(90/60/2)
+  d1 $ stack[
+    fast (4/5) $
+    jux ((degrade).(0.2<~)) $
+    stutWith 2 0.6 ((# pan 0).(|+| n "12")) $
+    n "[10 3 ~ ~ 7 ~ 2 0 ~ ~]" |-| n "12"
+    # s "superfm" # legato 1 # sustain 0.34
+    # amp1 1 # pF "ratio1" 2
+    # amp2 0
+    # amp3 0.5 # pF "ratio3" (slow 2 $ range 0.75 1.5 square)
+    # amp4 1 # pF "mod43" 1
+    # amp5 (slow 4 $ range 0 0.5 tri) # pF "ratio5" 8.08 # pF "mod51" (fast 2 $ range 0 1 saw)
+    # amp6 0,
+    slow 4 $ stutWith 8 (1/64) ((|*| speed 0.9).(|*| gain 0.8).(|+| room 0.4)) $ n "17" # s "supersaw"
+    # voice 0 # pan 1 # sustain 0.05 # lpf (slow 8 $ range 1000 2000 saw) # hpf 200
+    ] # triode 0.5 # room 0.3 # size 0.5
+  d2 $ stack[
+    sound "ssk:1*2" # gain 1.7,
+    rarely ((1/8)<~) $ sound "kr:3*4" # gain (range 0.6 0.8 tri)
+    ]
+
+
+
+
+
+do
+  resetCycles
+  setcps(140/60/2)
+  d1 $ slow 16
+     $ sometimesBy 0.2 (stutWith 8 (1/16) (|*| room 0.5).(|*| size 0.5).(|*| gain 0.4).(|+| pan 1))
+     $ (sometimesBy 0.3 (within (0.25, 0.75) (chop "[2|4]"))
+     $ sometimes (|* speed "[2 | 0.5]")
+     $ slice 64 (run 64) $ sound "uv" # legato 1)
+     # pan (0.5 + (0.25 * rand))
+
+
+
+do
+  setcps((146 + (2 * sine))/60/4)
+  d1 $ slow 2 $ stack[
+      sound "[kr:6]*4" |*| gain 2 # pan 0.3,
+      fast 2 $ sound "<~ ~ ~ ~> jk [jsn|jsn:2|jsn:3|jsn:4] <jk jk jk jsn:4?>" # gain 1.1,
+      fast 2 $ "[kr:3|jcy:5|jcy:6]*4" # gain (0.8 + 0.1*sine) # hpf 4000 # pan 0.8
+    ] # nudge (0.01 * sine) # gain (1 + 0.08 * sine) # room 0.1 # size 0.4 # orbit 2 # gain 1.1
+
+
+do
+  setcps(70/60/4)
+  d3 $ stack [
+      fast 2 $ struct "t t t? t" $ sound "[jcy:4|jcy:3|jcy:5]*4" # lpf 500 # hpf 700 # gain 0.7 # pan 0.6,
+      fast 2
+      $ sometimesBy 0.1 ((linger 0.75).(degradeBy 0.2))
+      $ every 8 (const $ sound "jsn:2 jsn:1 [kr:7 ~ ~ jsn] kr:8")
+      $ sound "[jk:2 ~ ~ jk:2] jk [jsn:2] [~ jsn?]" # gain 1.1 # speed (0.95),
+      sound "[ ~ jhh:2]*2" # pan 0.1,
+      degradeBy 0.7 $ stut 2 0.4 0.21 $ sound "808:2*4"
+      # speed "[1|1.2|1.5|0.8|2|0.5]*4" # distort 0.3 # lpf 800 # gain 0.1 # room 0.7
+    ] # triode 1.3 # lpf 10000 # gain 1.5
+  -- d2 $ n "<0 1 -6 -6>" |+| n "-24" # s "supersaw" # gain 0.6
+  -- d2 $ struct "t*8" $ n "<0 1>" |+| n "-24" # s "supersaw" # voice 0 # lpf 200 # decay 0.1 # legato "[1|0.9]" # gain 0.9 # triode 1.2
+
+
+do
+  setcps(70/60/4)
+  d1 $ sound "bd*4"
+  d2 $ fast 2 $ struct "t*2"
+     $ stack [
+        -- n "<e f c c>",
+        -- n "<g4 gs4 f4 e4>",
+        n "c6"
+      ] # s "superpiano" # lpf 4000 # room 0.4 # size 0.5 # orbit 2 # distort (0.7 * sine)
+  d4 $ fast 2 $ struct "t(3,8,2)" $ n "<c6 gs5 f5 f5>" # s "superfm" # gain 0.7 # pan 0
+
+d2 $ fast 4 $ degrade $ sometimes (linger 0.5) $ n "~ a2 c3 f2" # s "supersaw" # cut 1 # voice 0 # lpf 200
+
+d2 $ silence
+
+do
+  setcps(90/60/4)
+  d1 $ stack[
+    fast 2
+    $ every 16 (0.25<~)
+    $ every 4 ((linger 0.375).(rev)) $ sound "[<[jhh|jhh:3|jhh:7] jsn> <jk:2 jk:3 jk:2 [kr:9|kr:8|jsn:3]>]*4" # nudge "[0 0.01|0.015]*4",
+    slow 2 $ sound "[jcy|jcy:3]"
+    ] # room 0.1 # size 0.9 # orbit 2 # triode 1.3
+  d2 $ fast 4 $ degrade $ sometimes (linger 0.5) $ n "~ a2 c3 f2" # s "supersaw" # cut 1 # voice 0 # lpf 150
+
+do
+  setcps(105/60/4)
+  d1 $ stack[
+    fast 2
+    $ every 2 (const
+      $ sometimes(linger 0.5)
+      $ "[[jk:1|jk:3|jk:2],jhh?] ~ ~ [<jsn:4 jhh:3> [jsn:2|kr:8]?]"
+      )
+    $ sound "[jhh jsn][jhh [jk:3|kr:9]][jhh jk][jsn jsn:2?]" # nudge "[0 [0.01|0.005]]*4",
+    sound "[jcy:1|jcy:3]*2"
+    ]
+
+
+do
+  setcps(83.8/60/4)
+  d1 $ fast 2 $ sometimes (iter 4) $ slice 8 "3 2 0 2 7 8 5 6" $ sound "doom:1" # legato 1
+
+
+-- Dec 17 rehearsal ideas
+do
+  setcps(156/60/2)
+  d1 $ slow 8 $ slice 8 (run 8) $ sound "lady156:1" # legato 1 # gain 1.1
+  d2 $ slow 4 $ stack [
+      sometimes (within (0, 0.25) (stut 2 0.25 0.5))
+      $ degradeBy 0.4
+      $ sound "[808bd:1 ssk:2?] [[ssn:3 ~ ][~ ssk:2|[808bd:1*2]]] [~ ssn:3 808bd:3? ssk:2] ~"
+      # dry 0.5 # room 0.4 # size 0.5 # orbit 1,
+      slow 2 $ sound "808bd:1" # triode 0.8 # lpf 200,
+      sound "~ ~ ~ [~ [jsn|jsn:3|jsn:7]*[6|7]]" # gain (slow 4 $ range 0.5 0.7 tri) # squiz 1,
+      within (0, (1/2)) (density 2) $ sound "808:7*4"
+    ] # gain 1.05
+
+let amp1 = pF "amp1"
+    amp2 = pF "amp2"
+    amp3 = pF "amp3"
+    amp4 = pF "amp4"
+    amp5 = pF "amp5"
+    amp6 = pF "amp6"
+
+do
+  setcps(168.22/60/2)
+  d1 $ stack [
+      -- slow 2 $ struct "<[t ~ [~ t] ~] [t(3,8,3)]>" $ sound "clubkick" # legato 1 # lpf 3000,
+      sound "[~ ssn:1? ~ jsn?] drum:1",
+      sound "drum:2*4",
+      slow 4 $ sound "bass1:1" # speed (10/9)
+    ]
+  d2 $ sometimes (stut 8 0.125 0.5) $ sometimes (within (0, 0.5) (linger 0.5))
+    $ slow 4 $ n "3 ~ 7 3 ~ 7 ~ 2 ~ 9 2 ~ 9 2 14? 2" |+| n "1" # s "superfm"
+    # amp1 1 # pF "ratio1" 0.8 # pF "[mod14 | mod11 | mod12]*2" 0.2
+    # amp2 0 # pF "ratio2" 0.3
+    # amp3 0 # pF "ratio3" (slow 2 $ range 0.75 1.5 square)
+    # amp4 0 # pF "ratio4" 0.5 # pF "mod44" 1
+    # amp5 (slow 4 $ range 0 0.8 tri) # pF "ratio5" 8.08 # pF "mod51" 0.8
+    # amp6 0.4 # pF "ratio6" 0.4
+    # dry 0.5 # room 0.8
+  -- d2 $ sometimes (# triode 2) $ degradeBy 0.2 $ fast 2 $ randslice 128 $ sound "suoni" # legato 1 # gain 1.1
+
+
+
+
+do
+  setcps(105/60/4)
+  d1 $ fast 4 $ stack[
+      sound "[ssk:1 ssk?] [~ ssk?]" # gain 1.2,
+      sound ""
+      sound "[jhh:1|jhh:3|jhh:5] [jhh:2|jhh:4] jhh:9 ~" # gain (0.9 + (0.1*rand))
+    ]
+
+
+
+
+d1 $ stack[
+  sound "bd sn:2",
+  sound "hh*8",
+  -- sound "808bd _" # speed (0.5) # distort 0.5
+  slow 4 $ n "e2" # s "supersaw"
+]
+
+
+
+do
+  -- resetCycles
+  setcps(93/60/4)
+  d1 $ ((1/8)<~) $ stack [
+    n "f8*8",
+    n "<cs7*8 c7*8>",
+    n "<as6*8 [as6*4 gs6*4]>"
+   ] # s "superpiano" # legato 0.5
+  d2 $ sound "bd*4"
+  d3 $ slow 2 $ n "as2" # s "superpiano" # voice 0 # cut 1 # legato 0.2
+
+
+
+-- Winter Fingers remix
+
+do
+  setcps(120/60/4)
+  d1 $ stack [
+    -- sound "<brlsamp brl:5> brlsamp? brl ~ brlsamp [~ brl] [~ brlsamp:3? brlsamp:9] [brl:4 ~ brl:6]" # gain 1.3,
+    sound "[~ brl:2]*4" # nudge 0.02,
+    -- slow 2 $ sound "jk:1" # 1.5,
+    -- sound "[~  808:1]*2" # pan 0,
+    degrade $ sound "brlsamp:9*4"
+    -- jux(# smear 0.5) $
+    -- ((1/4)<~) $ slow 4 $ slice 16 (run 16) $ sound "<wf120 wf120:1>" # legato 1 # gain 1.1
+    -- degradeBy 0.3 $ slow 4 $ struct "t(12,8,2)" $ n "<3 -2>" |+ n "e4" # s "supervibe" # room 0.3 # orbit 2,
+    -- degrade $ sometimes (chop 2) $ n "[~ [7|10|12]]*4" |+ n "e5" # s "supersaw" # voice 0 # lpf 500 # legato 1 # pan 0.7
+    ]
+  d2 $ slow 8 $ every 4 ((|*| gain 0)) $ slice 8 (run 8) $ n "0 3 -2 1" |+ n "e4" |+| n "-24"
+    # s "supersaw" # lpf 300 # distort 0.2 # gain 1.1
+
+  once $ (stut 4 0.5 0.5 $ sound "cstm" # n "[0|1|2]") # cut 1
+  -- # gain 1 # room 0.6 # size 0.7 # orbit 1) # pan (rand)
+
+
+  hush
+
+
+
+
+-- MULTI CHANNEL TEST
+d1 $ stack [
+  n (scale "dorian" "0 1 2 3 4 5 6 7") # s "supervibe" # pan (saw)
+  -- # pan "0 0.125 0.25 0.375 0.5 0.625 0.75 0.875"
+  ]
+
+
+
+d1 $ n (scale "dorian" "0 1 2 3 4 5 6 7") # s "supervibe" # pan (saw)
+
+setcps(100/60/4)
+d1 $ slow 4 $ sometimes (density 2) $ ply 4 $ n (scale "dorian" "0 1 2 3 4 5 6 7")|+ n "24" # s "donk" # room 0.8 # size 0.8
+
+d2 $ stack [
+  struct "<t*2><t(3,8)>" $ sound "ssk"
+  ] # gain 1.4
+-- # distort 0.5 # legato (range 0.5 0.8 saw)
+
+
+
+
+d1 $ fast 2 $ iter 4 $ every 2 (linger 0.5) $ slice 8 "<3 4 8 0>(5,8)" $ splice 16 (run 16) $ sound "bv"
+    # gain 1.3
+
+d2 $ stack [
+  sound "ssk*4",
+  fast 4 $ sound "jhh:6 jhh:2 jhh:8 ~" # gain 0.6 # pan 0,
+  sound "[~ sn:2]*2",
+  silence
+  ]
+
+d3 $ struct "t(10,16)" $ n "e3 g3 b3 d4" |-| n "12" # s "industrial" # voice 0 # lpf (fast 8 $ range 1000 8000 perlin)
+
+hush
+
+
+
+-- ALLYTALK
+
+setcps(155/60/7)
+
+d2 $ fast 7 $ sound "jhh:6 jhh:6 jhh:9 ~" # pan 0.24 # speed 1.05 # hpf 100 # gain 0.7
+
+
+d1 $ stack [
+sound "tbd [[jsn:3,sn:1] tbd] [~ tbd] [[jsn:3,sn:1] tbd] [~ tbd] [[jsn:3,sn:1] tbd] [~ <[jsn [jsn:3,sn:1]] ~>]" # speed 1,
+sound "kr:6*7" # pan 0.7 # gain 1.2,
+silence
+]
+
+
+
+d3 $ n "<[f4,a4,c5] [g4, b4, d5]>" # s "superhammond"
+
+d4 $ n "[d2 a3] [c4 d4] [~ c4] [~ a 3] [a3 ~] [f3 ~] d2" # s "supersaw" # voice 0 # lpf 300 # distort 0.2
+
+
+
+rec :: Time -> [Note] -> IO ()
+rec len ns = p 99 $ qtrigger 99
+                  $ playFor 0 (len * (toRational $ length ns))
+                  $ slowcat $ map (\i -> slow (pure len) $ s "looper" # n (pure i)) ns
+rec1 = rec 1
+rec2 = rec 2
+rec4 = rec 4
+free = once $ s "freeLoops"
+
+free
+
+
+rec4 [0 .. 3]
+
+d5 $ slow 4 $ ((1/7)<~) $ n "<3 2 1 0>" # s "loop" # legato 1 # gain 1.2 # speed (-1)
+
+
+
+
+d1 $ sound "bd sn:2"
+
+hush
+
+
+
+setcps(120/60/4)
+
+d1 $ stack [
+  every 4 (const $ fast 2 $ sound "ssk:1(3,8)") $ sound "ssk*4" # gain 1.2,
+  jux rev $ sound "[~ [hh hh?]]*4"
+  ]
+
+d2 $
+
+d3  $ soun "[~ ~ sn:2 sn:1]*2"
+
+d4 $ off (1/8) (|+| n "19") $ off (1/16) (|+| n "24") $ n "0 3 -2 1" |+| n "-24" # s "supersaw" # legato 0.5 # voice 0 # lpf 200
+
+
+d5 $ degrade $ every 2 (# squiz 2) $ sound "808:2*16" # speed (rand)
+
+
+
+hush
+
+
+d1 $ sometimes (# squiz 3)  $ sometimes (# speed 2) $ every 2 (linger (1/4)) $ slow 2 $ n "[3 <12 4 0 7>]*8 [<8 2> 12]*8" # sound "amencutup"
+
+d2 $ degrade $ every 4 (|+| n "3") $ fast 4 $ n "0 3 5 7" # s "supervibe"
+
+
+
+
+
+setcps(100/60/2)
+
+d1 $ sound "bassdm*2" # lpf 500 # gain 1.3

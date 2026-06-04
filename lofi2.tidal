@@ -1,0 +1,58 @@
+setcps(0.45)
+
+let chords = "<a'min7 f'maj7 c'maj7 g'dom7>"
+    bass = "<a2 f2 c2 g2>"
+  in do
+  d1 $ slow 2 $ up (arpg chords)
+    # sound "superpiano"
+    # gain 0.6
+    # room 0.8
+    # size 0.9
+    # legato 8
+    # lpf 2000
+    # delay 0.3
+    # delaytime (1/8)
+    # delayfb 0.4
+  d2 $ stack [
+      sound "bd:8(3,8)" # gain 1.1,
+      sound "~ sn:2 ~ sn:2*<1 2>" # gain 0.9,
+      sound "hh27*8" # gain (range 0.3 0.5 $ slow 4 sine)
+    ]
+    # room 0.3
+    # pan (slow 8 $ sine)
+  d3 $ slow 2 $ n (arpg chords)
+    # sound "superchip"
+    # gain 0.4
+    # lpf (range 800 2400 $ slow 8 sine)
+    # room 0.6
+  d4 $ n bass
+    # sound "bass3"
+    # gain 0.75
+    # lpf 400
+    # room 0.2
+  d5 $ degradeBy 0.3 $ sound "~ cp:3"
+    # gain 0.7
+    # room 0.9
+    # delay 0.5
+    # delaytime (1/6)
+  d6 $ sound "vinyl"
+    # gain 0.7
+  d7 $ rarely (# crush 4)
+    $ every 16 (rev)
+    $ sound "amencutup*8"
+    # n (irand 32)
+    # gain 0.4
+    # room 0.5
+    # speed (range 0.8 1.2 $ slow 16 sine)
+    # cut 1
+  d8 $ every 8 (# vowel "a o")
+    $ slow 4
+    $ sound "pad:3"
+    # gain 0.5
+    # lpf (range 300 1800 $ slow 12 sine)
+    # room 0.9
+  d9 $ degradeBy 0.6
+    $ sound "rain*4"
+    # gain 0.3
+    # pan rand
+
