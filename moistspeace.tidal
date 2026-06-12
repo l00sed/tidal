@@ -1,16 +1,16 @@
 setcps(0.5)
 
-d1
+d8
   $ sound "ab:5*[1] ab:5*[0|1] - -"
   # lpf (range 200 100 $ slow 4 sine)
   # gain 1.5
 
-d2
+d7
   $ sound "- - ab:12*[1|2] -"
   # lpf (range 400 2000 $ slow 4 sine)
   # gain 1.75
 
-d3
+d6
   $ slow 2
   $ sound "ab:9*[1|2] ab:2*[0|1] [ab:7*[0|3]] [ab:8 ab:9]"
   # legato 5
@@ -27,7 +27,7 @@ d4
   # lpf (range 400 1000 $ slow 4 sine)
   # freq (range 400 1000 $ slow 4 sine)
 
-d5
+d9
   $ slow 2
   $ s "bass2:1*[1|2] - - -"
   # distort 0.125
@@ -37,11 +37,11 @@ d5
   # freq (range 400 200 $ fast 4 sine)
   # gain 0.75
 
-d4 silence
+d9 silence
 d5 silence
 d6 silence
 
-d6
+d9
   $ slow 2
   $ s "can:1 - - can:4"
 
@@ -74,17 +74,76 @@ d7
   -- # speed (range 0.5 1.5 $ fast 3.5 sine)
   # gain 0.75
 
-d7 silence
+d2 silence
+
+d5
+  $ slow 2
+  $ sound "bd:1*[1|2] - - sn:4*[1|6]"
+  # gain 1
+
+d8
+  $ slow 2
+  $ sound "hh [hh:5*[0|2] hh:5*[0|1]] - -"
+
+d1
+  $ sound "sax"
+  # legato 1
+  # squizbus 1 "1 2 5 1.5"
+  # lpfbus 2 "400 2000 3000"
+  # lpq 0.2
+
+d1
+  $ note "f3'maj"
+  # s "trump:5"
+  # distort 0.1
+  # legato 10
+  # speed 0.25
+  # room 10
+  # gain 1
+
+d3 $ silence
+
+d3
+  $ slow 4
+  $ note "[f6*2 f5*2] [f4 f4] [f4*2 -] - - [a6*3 -] [a6*3 -] - [b6 b6]"
+  # s "bd:6"
+  # hpf 500
+  # speed 1
+  # gain 1.25
+
+d1
+  $ slow 4
+  $ note "d8*8 ds8*8"
+  # s "superpiano"
+  # lpf 400
+  # gain 1
+
+d2
+  $ slow 4
+  $ note "d4'maj c4'min"
+  # s "superhammond"
+  # room 20
+  # attack 0.5
+  # hold 2
+  # release 0.5
+  # legato 10
+  # speed (range 14 0.125 $ fast 1 sine)
+  # lpf (range 0 800 $ fast 1 sine)
+  # gain (range 1 5 $ fast 1 sine)
 
 d12
   $ slow 6
   $ note "[af4@32 - - c4@32 - - ef3@32 - -]*2 [af4@32 - - c4@32 - - d3@32 - -]*2 [af4@32 - - c4@32 - - af2@32 - -]*2"
   # s "trump:6"
-  # attack 0.9
+  # octave 3
+  # attack 0.2
+  # sustain 4
+  # decay 4
+  # distort 5
   # room 10
-  # lpf (range 150 500 $ slow 8 sine)
-  # legato 1
-  # gain 0.9
+  # lpf (range 150 500 $ fast 8 sine)
+  # legato 2
+  # gain 0.25
 
 d13
   $ slow 2
@@ -130,7 +189,7 @@ d12
   # lpf (range 100 300 $ slow 1 sine)
   # gain 0.75
 
-d8 silence
+d12 silence
 d9 silence
 
 d9
