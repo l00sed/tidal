@@ -1,13 +1,110 @@
-setcps(0.2)
-hush
-d1 $ sound "bd:3 ~ ~ ~ bd:3 bd:3 ~ ~"
-  # room 0.9
-  # gain 1.2
-d2 $ sound "hh*32"
-d3 $ sound "~ ~ ~ cp:4"
-  # room 0.9
-  # distort 0.3
-  # gain 1
-d4 $ sound "arpy*8"
-d5 $ sound "bd sn"
-  # crush 0.3
+-- ~~~ neo-soul groove · golden hour ~~~
+-- brighter, bouncier, ~92 bpm with a half-time swing feel
+setcps (92/60/4)
+
+-- ::: drums :::
+
+-- punchy kick with a syncopated push on the "and" of 3
+d1 $ s "bd ~ ~ [~ bd] bd ~ ~ ~"
+   # gain 1.05
+   # lpf 1200
+   # shape 0.25
+
+-- crispy snare with ghost notes for that D'Angelo wonky pocket
+d2 $ stack
+  [ s "~ sn ~ sn"             # gain 0.85
+  , s "~ ~ ~ [~ sn:2*2]"      # gain 0.45 # speed 1.1   -- ghost rolls
+  ]
+   # room 0.35 # sz 0.6 # hpf 180
+
+-- bright shimmery hats, opening up on the 4
+d3 $ s "hh*8"
+   # gain (range 0.45 0.75 "1 0.6 0.8 0.6 1 0.6 1.1 0.7")
+   # speed (choose [1, 1, 1.05, 0.97])
+   # pan (range 0.35 0.65 $ slow 5 sine)
+   # hpf 1200
+   # lpf 9000
+   # room 0.15
+
+-- open hat / ride accent on the upbeats
+d4 $ s "~ ho ~ ~ ~ ho ~ ho?"
+   # gain 0.5
+   # lpf 7000
+   # pan 0.55
+
+-- finger-snap layer for human feel
+d5 $ degradeBy 0.2 $ s "~ sd:3 ~ sd:3"
+   # gain 0.8
+   # room 0.4
+   # pan 0.45
+
+-- ::: harmony :::
+-- bright neo-soul progression in F: Fmaj9 -> Em7 -> Dm9 -> G13
+-- (I -> vii -> vi -> II — that lifts instead of drags)
+d6 $ slow 4
+   $ chunk 4 (# lpf 4500)                     -- filter sweep moves around
+   $ note "<f'maj7'9 e'min7 d'min7'9 g'dom7'9>"
+   |+ 12
+   # s "superpiano"
+   # gain 0.7
+   # legato 0.95
+   # room 0.5
+   # sz 0.7
+   # pan 0.48
+
+-- ::: bass :::
+-- bouncy bass with a chromatic walk-up into each chord
+d7 $ slow 4
+   $ note "<[f2 c3 f2 e2] [e2 b2 e2 d2] [d2 a2 d2 c#2] [g1 d2 g2 a2]>"
+   # s "superhex"
+   # gain 0.95
+   # lpf 900
+   # legato 0.85
+   # shape 0.3
+   # attack 0.005
+   # release 0.25
+
+-- ::: TRUMP lead — playful, call-and-response :::
+-- jaunty mixolydian/blues lines, sample pitched in semitones from root
+-- short answer phrases on every other bar so it converses with itself
+d8 $ slow 4
+   $ off 0.25 (|- note 7 . (# gain 0.45))     -- fifth-down harmony shadow
+   $ sometimes (fast 2)                       -- occasional double-time flurry
+   $ s "trump:4"
+   # note (cat
+       [ "12 ~ 14 17 19 ~ 17 14"              -- bright F major answer
+       , "~ 16 14 12 ~ 11 9 ~"                -- descending over Em7
+       , "9 12 14 ~ 16 14 12 9"               -- D dorian climb
+       , "~ 11 12 14 17 ~ 19 21"              -- G mixo lift into the loop
+       ])
+   # gain 0.9
+   # speed (range 0.998 1.002 $ slow 1.3 sine)  -- light vibrato
+   # lpf (range 3500 7000 $ slow 5 sine)
+   # hpf 250
+   # room 0.55
+   # sz 0.7
+   # pan (range 0.4 0.6 $ slow 9 sine)
+   # legato 1.0
+
+-- ::: trump stabs — fat-back accents on the turnaround :::
+d9 $ slow 4
+   $ "~ ~ ~ ~ ~ ~ ~ [trump:2 trump:3]"
+   # note "<0 5 7 12>"
+   # gain 0.8
+   # speed 1.0
+   # lpf 5000
+   # room 0.4
+   # pan 0.55
+
+-- ::: extras :::
+
+-- vinyl warmth bed (quieter than before, just a kiss of dust)
+d10 $ s "noise*64"
+    # gain (range 0.03 0.07 $ slow 10 rand)
+    # hpf 6000
+    # pan rand
+
+-- ::: helpers :::
+-- hush                       -- stop everything
+-- d8 silence                 -- mute trumpet
+-- d6 $ slow 4 $ note "<bb'maj7'9 a'min7 g'min9 c'dom7'9>" |+ 12 # s "superpiano"   -- modulate up to Bb
