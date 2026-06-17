@@ -11,7 +11,7 @@ use ratatui::{
 use crate::state::{MixerState, SelectionFocus, GlobalControl, SamplePadGrid};
 use crate::ui::channel::{ChannelStrip, MasterStrip};
 use crate::ui::widgets::{Crossfader, HorizontalBar};
-use crate::app::{Deck, SelectedPane, SourcePickerState, SourcePickerTab};
+use crate::app::{Deck, SelectedPane, SourcePickerState, SourcePickerTab, PickerInputMode};
 
 /// The main mixer view
 pub struct MixerView<'a> {
@@ -546,11 +546,25 @@ impl<'a> MixerView<'a> {
         } else {
             Span::styled("  Audio Files  ", Style::default().fg(Color::Rgb(100, 100, 100)))
         };
-        buf.set_line(chunks[0].x, chunks[0].y, &Line::from(vec![tab_sockets, tab_files]), chunks[0].width);
+        let tab_sc = if picker.tab == SourcePickerTab::SuperCollider {
+            Span::styled(" [SuperCollider] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled("  SuperCollider  ", Style::default().fg(Color::Rgb(100, 100, 100)))
+        };
+        buf.set_line(chunks[0].x, chunks[0].y, &Line::from(vec![tab_sockets, tab_files, tab_sc]), chunks[0].width);
 
-        // Search input
+        // Search input with mode indicator
+        let mode_label = match picker.input_mode {
+            PickerInputMode::Normal => Span::styled(" NOR ", Style::default().fg(Color::Black).bg(Color::Rgb(100, 100, 100))),
+            PickerInputMode::Insert => Span::styled(" INS ", Style::default().fg(Color::Black).bg(Color::Green)),
+        };
         let search_text = format!(" > {}_", picker.query);
-        buf.set_string(chunks[1].x, chunks[1].y, &search_text, Style::default().fg(Color::White));
+        let search_line = Line::from(vec![
+            mode_label,
+            Span::raw(" "),
+            Span::styled(&search_text, Style::default().fg(Color::White)),
+        ]);
+        buf.set_line(chunks[1].x, chunks[1].y, &search_line, chunks[1].width);
 
         // File list
         let list_area = chunks[2];
@@ -570,7 +584,7 @@ impl<'a> MixerView<'a> {
                     Style::default().fg(Color::White)
                 };
                 
-                let icon = if item.is_socket { "⚡" } else { "♪ " };
+                let icon = if item.is_socket { "⚡" } else if item.is_udp { "◉ " } else { "♪ " };
                 let line = format!("{} {}", icon, item.name);
                 let display = if line.len() > list_area.width as usize {
                     format!("{}…", &line[..list_area.width as usize - 1])
@@ -583,7 +597,10 @@ impl<'a> MixerView<'a> {
         }
 
         // Hint line
-        let hint = "Tab:switch  j/k:nav  Enter:select  Esc:cancel  Type to filter";
+        let hint = match picker.input_mode {
+            PickerInputMode::Normal => "i:insert  j/k:nav  g/G:top/bottom  Tab:switch  Enter:select  Esc:quit",
+            PickerInputMode::Insert => "Esc:normal  Tab:switch  Enter:select  Type to filter",
+        };
         buf.set_string(chunks[3].x, chunks[3].y, hint, Style::default().fg(Color::Rgb(80, 80, 80)));
     }
     
@@ -639,9 +656,18 @@ impl<'a> MixerView<'a> {
         };
         buf.set_string(chunks[0].x, chunks[0].y, &path_truncated, Style::default().fg(Color::Rgb(100, 100, 100)));
 
-        // Search input
+        // Search input with mode indicator
+        let mode_label = match picker.input_mode {
+            PickerInputMode::Normal => Span::styled(" NOR ", Style::default().fg(Color::Black).bg(Color::Rgb(100, 100, 100))),
+            PickerInputMode::Insert => Span::styled(" INS ", Style::default().fg(Color::Black).bg(Color::Green)),
+        };
         let search_text = format!(" > {}_", picker.query);
-        buf.set_string(chunks[1].x, chunks[1].y, &search_text, Style::default().fg(Color::White));
+        let search_line = Line::from(vec![
+            mode_label,
+            Span::raw(" "),
+            Span::styled(&search_text, Style::default().fg(Color::White)),
+        ]);
+        buf.set_line(chunks[1].x, chunks[1].y, &search_line, chunks[1].width);
 
         // File list
         let list_area = chunks[2];
@@ -678,7 +704,10 @@ impl<'a> MixerView<'a> {
         }
 
         // Hint line
-        let hint = "j/k:nav  Space:preview  Enter:select  h:back  Esc:cancel";
+        let hint = match picker.input_mode {
+            PickerInputMode::Normal => "i:insert  j/k:nav  h/l:dirs  Space:preview  Enter:select",
+            PickerInputMode::Insert => "Esc:normal  Enter:select  Backspace:up dir  Type to filter",
+        };
         buf.set_string(chunks[3].x, chunks[3].y, hint, Style::default().fg(Color::Rgb(80, 80, 80)));
     }
 }

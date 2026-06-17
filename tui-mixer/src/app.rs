@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::audio::{AudioSource, AudioSourceManager, MpvClient, SampleEngine};
+use crate::audio::{AudioCapture, AudioSource, AudioSourceManager, DspParams, MpvClient, SampleEngine, SuperColliderClient};
 use crate::state::{ChannelControl, CrossfaderCurve, GlobalControl, MixerState, SamplePadGrid, SelectionFocus};
 
 /// Which deck is being configured
@@ -37,15 +37,23 @@ pub enum AppMode {
 
 /// Source picker tab
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerInputMode {
+    Normal,
+    Insert,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcePickerTab {
     MpvSockets,
     AudioFiles,
+    SuperCollider,
 }
 
 /// Source picker state
 #[derive(Debug, Clone)]
 pub struct SourcePickerState {
     pub tab: SourcePickerTab,
+    pub input_mode: PickerInputMode,
     pub query: String,
     pub items: Vec<SourcePickerItem>,
     pub filtered: Vec<usize>,  // Indices into items
@@ -61,6 +69,7 @@ pub struct SourcePickerItem {
     pub name: String,
     pub path: PathBuf,
     pub is_socket: bool,
+    pub is_udp: bool,
     pub is_dir: bool,
 }
 
@@ -68,6 +77,7 @@ impl SourcePickerState {
     pub fn new() -> Self {
         Self {
             tab: SourcePickerTab::AudioFiles,
+            input_mode: PickerInputMode::Insert,
             query: String::new(),
             items: Vec::new(),
             filtered: Vec::new(),
@@ -75,7 +85,7 @@ impl SourcePickerState {
             scroll_offset: 0,
             current_dir: PathBuf::new(),
             root_dir: PathBuf::new(),
-            visible_height: 12, // Default, will be updated by UI
+            visible_height: 12,
         }
     }
     
@@ -211,6 +221,11 @@ pub struct App {
     // MPV clients for each deck
     mpv_deck_a: Option<MpvClient>,
     mpv_deck_b: Option<MpvClient>,
+    // SuperCollider clients for each deck
+    sc_deck_a: Option<SuperColliderClient>,
+    sc_deck_b: Option<SuperColliderClient>,
+    // BlackHole audio capture pipeline
+    audio_capture: Option<AudioCapture>,
     // Sample playback engine (cached samples for instant playback)
     sample_engine: Option<SampleEngine>,
 }
@@ -256,6 +271,9 @@ impl App {
             selected_pad_idx: None,
             mpv_deck_a: None,
             mpv_deck_b: None,
+            sc_deck_a: None,
+            sc_deck_b: None,
+            audio_capture: None,
             sample_engine,
         }
     }
@@ -1155,6 +1173,9 @@ impl App {
             SourcePickerTab::AudioFiles => {
                 self.scan_audio_files();
             }
+            SourcePickerTab::SuperCollider => {
+                self.scan_supercollider_sources();
+            }
         }
         
         self.source_picker.filter();
@@ -1178,6 +1199,7 @@ impl App {
                             name,
                             path: entry,
                             is_socket: true,
+                            is_udp: false,
                             is_dir: false,
                         });
                     }
@@ -1203,6 +1225,7 @@ impl App {
                             name,
                             path: entry,
                             is_socket: true,
+                            is_udp: false,
                             is_dir: false,
                         });
                     }
@@ -1228,6 +1251,7 @@ impl App {
                                 name,
                                 path,
                                 is_socket: false,
+                                is_udp: false,
                                 is_dir: false,
                             });
                         }
@@ -1238,6 +1262,16 @@ impl App {
         
         // Sort alphabetically
         self.source_picker.items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    }
+    
+    fn scan_supercollider_sources(&mut self) {
+        self.source_picker.items.push(SourcePickerItem {
+            name: "SuperCollider UDP (127.0.0.1:57110)".to_string(),
+            path: PathBuf::from("udp://127.0.0.1:57110"),
+            is_socket: false,
+            is_udp: true,
+            is_dir: false,
+        });
     }
     
     /// Open sample picker for a pad
@@ -1262,6 +1296,7 @@ impl App {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| self.source_picker.root_dir.clone()),
                 is_socket: false,
+                is_udp: false,
                 is_dir: true,
             });
         }
@@ -1286,6 +1321,7 @@ impl App {
                         name: format!("{}/", name),
                         path,
                         is_socket: false,
+                        is_udp: false,
                         is_dir: true,
                     });
                 } else if path.is_file() {
@@ -1296,6 +1332,7 @@ impl App {
                                 name,
                                 path,
                                 is_socket: false,
+                                is_udp: false,
                                 is_dir: false,
                             });
                         }
@@ -1348,69 +1385,89 @@ impl App {
         // Popup is 20 rows, minus 2 for border, 1 for path, 1 for search, 1 for hint = 15
         self.source_picker.visible_height = 15;
         
-        match key.code {
-            // Close picker, return to control select
-            KeyCode::Esc => {
-                self.mode = AppMode::ControlSelect;
-            }
-            
-            // Preview sample with Space
-            KeyCode::Char(' ') => {
-                self.preview_sample();
-            }
-            
-            // Navigation
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.source_picker.move_up();
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.source_picker.move_down();
-            }
-            
-            // Select sample or enter directory
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                if let Some(item) = self.source_picker.selected_item().cloned() {
-                    if item.is_dir {
-                        // Enter directory
-                        self.enter_sample_directory(item.path);
-                    } else if let AppMode::SamplePicker(pad_idx) = self.mode {
-                        // Assign sample to pad
-                        self.assign_sample_to_pad(pad_idx);
-                        self.mode = AppMode::ControlSelect;
-                    }
+        match self.source_picker.input_mode {
+            PickerInputMode::Normal => match key.code {
+                KeyCode::Esc => {
+                    self.mode = AppMode::ControlSelect;
                 }
-            }
-            
-            // Go up a directory (h or Left or Backspace when query empty)
-            KeyCode::Char('h') | KeyCode::Left => {
-                if self.source_picker.can_go_up() {
-                    if let Some(parent) = self.source_picker.current_dir.parent() {
-                        self.enter_sample_directory(parent.to_path_buf());
-                    }
+                KeyCode::Char('i') => {
+                    self.source_picker.input_mode = PickerInputMode::Insert;
                 }
-            }
-            
-            // Backspace: delete from query, or go up if query empty
-            KeyCode::Backspace => {
-                if self.source_picker.query.is_empty() {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.source_picker.move_down();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.source_picker.move_up();
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
                     if self.source_picker.can_go_up() {
                         if let Some(parent) = self.source_picker.current_dir.parent() {
                             self.enter_sample_directory(parent.to_path_buf());
                         }
                     }
-                } else {
-                    self.source_picker.query.pop();
+                }
+                KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
+                    if let Some(item) = self.source_picker.selected_item().cloned() {
+                        if item.is_dir {
+                            self.enter_sample_directory(item.path);
+                        } else if let AppMode::SamplePicker(pad_idx) = self.mode {
+                            self.assign_sample_to_pad(pad_idx);
+                            self.mode = AppMode::ControlSelect;
+                        }
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    self.preview_sample();
+                }
+                KeyCode::Char('g') => {
+                    self.source_picker.selected = 0;
+                    self.source_picker.scroll_offset = 0;
+                }
+                KeyCode::Char('G') => {
+                    let last = self.source_picker.filtered.len().saturating_sub(1);
+                    self.source_picker.selected = last;
+                    self.source_picker.clamp_scroll();
+                }
+                _ => {}
+            },
+            PickerInputMode::Insert => match key.code {
+                KeyCode::Esc => {
+                    self.source_picker.input_mode = PickerInputMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if let Some(item) = self.source_picker.selected_item().cloned() {
+                        if item.is_dir {
+                            self.enter_sample_directory(item.path);
+                        } else if let AppMode::SamplePicker(pad_idx) = self.mode {
+                            self.assign_sample_to_pad(pad_idx);
+                            self.mode = AppMode::ControlSelect;
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if self.source_picker.query.is_empty() {
+                        if self.source_picker.can_go_up() {
+                            if let Some(parent) = self.source_picker.current_dir.parent() {
+                                self.enter_sample_directory(parent.to_path_buf());
+                            }
+                        }
+                    } else {
+                        self.source_picker.query.pop();
+                        self.source_picker.filter();
+                    }
+                }
+                KeyCode::Up => {
+                    self.source_picker.move_up();
+                }
+                KeyCode::Down => {
+                    self.source_picker.move_down();
+                }
+                KeyCode::Char(c) => {
+                    self.source_picker.query.push(c);
                     self.source_picker.filter();
                 }
-            }
-            
-            // Type to filter
-            KeyCode::Char(c) => {
-                self.source_picker.query.push(c);
-                self.source_picker.filter();
-            }
-            
-            _ => {}
+                _ => {}
+            },
         }
     }
     
@@ -1431,50 +1488,95 @@ impl App {
         // Popup is 18 rows, minus 2 for border, 1 for tabs, 1 for search, 1 for hint = 13
         self.source_picker.visible_height = 13;
         
-        match key.code {
-            // Close picker
-            KeyCode::Esc => {
-                self.mode = AppMode::PaneSelect;
-            }
-            
-            // Switch tabs (Tab and Shift+Tab both toggle between 2 tabs)
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.source_picker.tab = match self.source_picker.tab {
-                    SourcePickerTab::MpvSockets => SourcePickerTab::AudioFiles,
-                    SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
-                };
-                self.scan_sources();
-            }
-            
-            // Navigation
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.source_picker.move_up();
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.source_picker.move_down();
-            }
-            
-            // Select
-            KeyCode::Enter => {
-                if let AppMode::SourcePicker(deck) = self.mode {
-                    self.select_source_for_deck(deck);
+        match self.source_picker.input_mode {
+            PickerInputMode::Normal => match key.code {
+                KeyCode::Esc => {
+                    self.mode = AppMode::PaneSelect;
                 }
-                self.mode = AppMode::PaneSelect;
-            }
-            
-            // Backspace deletes from query
-            KeyCode::Backspace => {
-                self.source_picker.query.pop();
-                self.source_picker.filter();
-            }
-            
-            // Type to filter
-            KeyCode::Char(c) => {
-                self.source_picker.query.push(c);
-                self.source_picker.filter();
-            }
-            
-            _ => {}
+                KeyCode::Char('i') => {
+                    self.source_picker.input_mode = PickerInputMode::Insert;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.source_picker.move_down();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.source_picker.move_up();
+                }
+                KeyCode::Char('g') => {
+                    self.source_picker.selected = 0;
+                    self.source_picker.scroll_offset = 0;
+                }
+                KeyCode::Char('G') => {
+                    let last = self.source_picker.filtered.len().saturating_sub(1);
+                    self.source_picker.selected = last;
+                    self.source_picker.clamp_scroll();
+                }
+                KeyCode::Tab => {
+                    self.source_picker.tab = match self.source_picker.tab {
+                        SourcePickerTab::MpvSockets => SourcePickerTab::AudioFiles,
+                        SourcePickerTab::AudioFiles => SourcePickerTab::SuperCollider,
+                        SourcePickerTab::SuperCollider => SourcePickerTab::MpvSockets,
+                    };
+                    self.scan_sources();
+                }
+                KeyCode::BackTab => {
+                    self.source_picker.tab = match self.source_picker.tab {
+                        SourcePickerTab::MpvSockets => SourcePickerTab::SuperCollider,
+                        SourcePickerTab::SuperCollider => SourcePickerTab::AudioFiles,
+                        SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
+                    };
+                    self.scan_sources();
+                }
+                KeyCode::Enter => {
+                    if let AppMode::SourcePicker(deck) = self.mode {
+                        self.select_source_for_deck(deck);
+                    }
+                    self.mode = AppMode::PaneSelect;
+                }
+                _ => {}
+            },
+            PickerInputMode::Insert => match key.code {
+                KeyCode::Esc => {
+                    self.source_picker.input_mode = PickerInputMode::Normal;
+                }
+                KeyCode::Enter => {
+                    if let AppMode::SourcePicker(deck) = self.mode {
+                        self.select_source_for_deck(deck);
+                    }
+                    self.mode = AppMode::PaneSelect;
+                }
+                KeyCode::Backspace => {
+                    self.source_picker.query.pop();
+                    self.source_picker.filter();
+                }
+                KeyCode::Tab => {
+                    self.source_picker.tab = match self.source_picker.tab {
+                        SourcePickerTab::MpvSockets => SourcePickerTab::AudioFiles,
+                        SourcePickerTab::AudioFiles => SourcePickerTab::SuperCollider,
+                        SourcePickerTab::SuperCollider => SourcePickerTab::MpvSockets,
+                    };
+                    self.scan_sources();
+                }
+                KeyCode::BackTab => {
+                    self.source_picker.tab = match self.source_picker.tab {
+                        SourcePickerTab::MpvSockets => SourcePickerTab::SuperCollider,
+                        SourcePickerTab::SuperCollider => SourcePickerTab::AudioFiles,
+                        SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
+                    };
+                    self.scan_sources();
+                }
+                KeyCode::Up => {
+                    self.source_picker.move_up();
+                }
+                KeyCode::Down => {
+                    self.source_picker.move_down();
+                }
+                KeyCode::Char(c) => {
+                    self.source_picker.query.push(c);
+                    self.source_picker.filter();
+                }
+                _ => {}
+            },
         }
     }
     
@@ -1485,6 +1587,22 @@ impl App {
                 Deck::A => self.mixer.dj.deck_a_channel,
                 Deck::B => self.mixer.dj.deck_b_channel,
             };
+            
+            // Free old SC synths if switching away from SC source
+            match deck {
+                Deck::A => {
+                    if let Some(ref old) = self.sc_deck_a {
+                        let _ = old.free_all();
+                    }
+                    self.sc_deck_a = None;
+                }
+                Deck::B => {
+                    if let Some(ref old) = self.sc_deck_b {
+                        let _ = old.free_all();
+                    }
+                    self.sc_deck_b = None;
+                }
+            }
             
             if item.is_socket {
                 // MPV socket - create and connect client
@@ -1518,6 +1636,51 @@ impl App {
                 // Also add to legacy manager
                 let source = AudioSource::new(item.name, socket_path);
                 self.audio_manager.add_source(source);
+            } else if item.is_udp {
+                // UDP source (e.g., SuperCollider) - create client and connect
+                let addr = item.path.to_string_lossy().to_string();
+                // Strip "udp://" prefix if present
+                let addr = addr.strip_prefix("udp://").unwrap_or(&addr);
+                let base_node_id = match deck {
+                    Deck::A => 1000,
+                    Deck::B => 2000,
+                };
+                let mut client = SuperColliderClient::new(addr, base_node_id);
+                let connected = client.connect().is_ok();
+                
+                if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
+                    channel.name = item.name.clone();
+                    channel.connected = connected;
+                    channel.source_id = Some(addr.to_string());
+                }
+                
+                // Send SynthDef, create monitor (bus 0→2), create group, create mixer synth
+                if connected {
+                    let _ = client.send_synth_def();
+                    let _ = client.create_monitor_synth();
+                    let _ = client.create_group();
+                    let _ = client.create_synth();
+                    
+                    // Sync current mixer settings to the new synth
+                    if let Some(channel) = self.mixer.channels.get(channel_idx) {
+                        let vol = (channel.fader * if deck == Deck::A {
+                            self.calculate_crossfader_gains().0
+                        } else {
+                            self.calculate_crossfader_gains().1
+                        }).clamp(0.0, 1.0);
+                        let _ = client.set_volume(vol);
+                        let _ = client.set_lpf(channel.lpf_freq);
+                        let _ = client.set_hpf(channel.hpf_freq);
+                        let _ = client.set_eq(channel.eq_low, channel.eq_mid, channel.eq_high);
+                        let _ = client.set_pan(channel.pan);
+                    }
+                }
+                
+                // Store client for this deck
+                match deck {
+                    Deck::A => self.sc_deck_a = Some(client),
+                    Deck::B => self.sc_deck_b = Some(client),
+                }
             } else {
                 // Audio file - would launch MPV with socket
                 // TODO: Spawn mpv --input-ipc-server=/tmp/mpv-deck-{a|b}.sock <file>
@@ -1598,7 +1761,7 @@ impl App {
         }
     }
     
-    /// Sync volume to MPV for a specific deck, combining fader and crossfader
+    /// Sync volume to MPV/SC for a specific deck, combining fader and crossfader
     fn sync_deck_volume(&mut self, deck_a: bool) {
         let (gain_a, gain_b) = self.calculate_crossfader_gains();
         
@@ -1610,6 +1773,11 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_volume(vol);
             }
+            // SuperCollider: send master volume (0.0-1.0)
+            let sc_vol = (fader * gain_a).clamp(0.0, 1.0);
+            if let Some(ref client) = self.sc_deck_a {
+                let _ = client.set_volume(sc_vol);
+            }
         } else {
             let fader = self.mixer.channels.get(self.mixer.dj.deck_b_channel)
                 .map(|c| c.fader)
@@ -1617,6 +1785,11 @@ impl App {
             let vol = (fader * gain_b * 100.0).clamp(0.0, 100.0);
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_volume(vol);
+            }
+            // SuperCollider: send master volume (0.0-1.0)
+            let sc_vol = (fader * gain_b).clamp(0.0, 1.0);
+            if let Some(ref client) = self.sc_deck_b {
+                let _ = client.set_volume(sc_vol);
             }
         }
     }
@@ -1628,9 +1801,10 @@ impl App {
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             self.sync_deck_volume(false);
         }
+        self.sync_capture_dsp_params();
     }
     
-    /// Sync mute state to MPV for a channel
+    /// Sync mute state to MPV/SC for a channel
     pub fn sync_mute_to_mpv(&mut self, channel_idx: usize) {
         let muted = self.mixer.channels.get(channel_idx)
             .map(|c| c.muted)
@@ -1640,29 +1814,79 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_mute(muted);
             }
+            // SuperCollider: mute by setting volume to 0, unmute restores fader level
+            if let Some(ref client) = self.sc_deck_a {
+                let vol = if muted {
+                    0.0
+                } else {
+                    self.mixer.channels.get(channel_idx)
+                        .map(|c| c.fader)
+                        .unwrap_or(0.75)
+                };
+                let _ = client.set_volume(vol);
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_mute(muted);
             }
+            if let Some(ref client) = self.sc_deck_b {
+                let vol = if muted {
+                    0.0
+                } else {
+                    self.mixer.channels.get(channel_idx)
+                        .map(|c| c.fader)
+                        .unwrap_or(0.75)
+                };
+                let _ = client.set_volume(vol);
+            }
         }
+        self.sync_capture_dsp_params();
     }
     
-    /// Sync play/pause state to MPV for a channel
+    /// Sync play/pause state to MPV/SC for a channel
     pub fn sync_playpause_to_mpv(&mut self, channel_idx: usize) {
         let playing = self.mixer.channels.get(channel_idx)
             .map(|c| c.playing)
             .unwrap_or(false);
         
-        // MPV uses "pause" property (true = paused, false = playing)
         let paused = !playing;
+        
+        // When audio capture is active, don't touch SC synths — capture handles audio routing
+        let capture_active = self.audio_capture.is_some();
         
         if channel_idx == self.mixer.dj.deck_a_channel {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_pause(paused);
             }
+            if !capture_active {
+                if let Some(ref mut client) = self.sc_deck_a {
+                    let _ = client.set_pause(paused);
+                }
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_pause(paused);
+            }
+            if !capture_active {
+                if let Some(ref mut client) = self.sc_deck_b {
+                    let _ = client.set_pause(paused);
+                }
+            }
+        }
+
+        // Audio capture: play if any deck is playing
+        if let Some(ref capture) = self.audio_capture {
+            let deck_a_playing = self.mixer.channels.get(self.mixer.dj.deck_a_channel)
+                .map(|c| c.playing)
+                .unwrap_or(false);
+            let deck_b_playing = self.mixer.channels.get(self.mixer.dj.deck_b_channel)
+                .map(|c| c.playing)
+                .unwrap_or(false);
+            
+            if deck_a_playing || deck_b_playing {
+                capture.resume();
+            } else {
+                capture.pause();
             }
         }
     }
@@ -1677,8 +1901,14 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_speed(speed);
             }
+            if let Some(ref client) = self.sc_deck_a {
+                let _ = client.set_speed(speed);
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
+                let _ = client.set_speed(speed);
+            }
+            if let Some(ref client) = self.sc_deck_b {
                 let _ = client.set_speed(speed);
             }
         }
@@ -1734,11 +1964,18 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_eq(effective_low, effective_mid, effective_high);
             }
+            if let Some(ref client) = self.sc_deck_a {
+                let _ = client.set_eq(effective_low, effective_mid, effective_high);
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_eq(effective_low, effective_mid, effective_high);
             }
+            if let Some(ref client) = self.sc_deck_b {
+                let _ = client.set_eq(effective_low, effective_mid, effective_high);
+            }
         }
+        self.sync_capture_dsp_params();
     }
     
     /// Sync LPF to MPV for a channel
@@ -1751,14 +1988,21 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_lpf(freq);
             }
+            if let Some(ref client) = self.sc_deck_a {
+                let _ = client.set_lpf(freq);
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_lpf(freq);
             }
+            if let Some(ref client) = self.sc_deck_b {
+                let _ = client.set_lpf(freq);
+            }
         }
+        self.sync_capture_dsp_params();
     }
     
-    /// Sync HPF to MPV for a channel
+    /// Sync HPF to MPV/SC for a channel
     fn sync_hpf_to_mpv(&mut self, channel_idx: usize) {
         let freq = self.mixer.channels.get(channel_idx)
             .map(|c| c.hpf_freq)
@@ -1768,14 +2012,21 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_hpf(freq);
             }
+            if let Some(ref client) = self.sc_deck_a {
+                let _ = client.set_hpf(freq);
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_hpf(freq);
             }
+            if let Some(ref client) = self.sc_deck_b {
+                let _ = client.set_hpf(freq);
+            }
         }
+        self.sync_capture_dsp_params();
     }
     
-    /// Sync pan to MPV for a channel
+    /// Sync pan to MPV/SC for a channel
     fn sync_pan_to_mpv(&mut self, channel_idx: usize) {
         let pan = self.mixer.channels.get(channel_idx)
             .map(|c| c.pan)
@@ -1785,11 +2036,18 @@ impl App {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_pan(pan);
             }
+            if let Some(ref client) = self.sc_deck_a {
+                let _ = client.set_pan(pan);
+            }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_pan(pan);
             }
+            if let Some(ref client) = self.sc_deck_b {
+                let _ = client.set_pan(pan);
+            }
         }
+        self.sync_capture_dsp_params();
     }
     
     /// Sync crossfader position to both deck volumes
@@ -1797,5 +2055,57 @@ impl App {
         // Update both decks - they each apply crossfader gain internally
         self.sync_deck_volume(true);
         self.sync_deck_volume(false);
+        // Also update audio capture DSP params
+        self.sync_capture_dsp_params();
+    }
+
+    /// Initialize BlackHole audio capture (call when SC source is selected)
+    pub fn init_audio_capture(&mut self) {
+        if self.audio_capture.is_none() {
+            match AudioCapture::new() {
+                Ok(capture) => {
+                    self.audio_capture = Some(capture);
+                }
+                Err(e) => {
+                    // Silently ignore - BlackHole may not be installed
+                }
+            }
+        }
+    }
+
+    /// Sync current mixer state to audio capture DSP parameters
+    fn sync_capture_dsp_params(&mut self) {
+        if let Some(ref capture) = self.audio_capture {
+            let (gain_a, gain_b) = self.calculate_crossfader_gains();
+
+            let fader_a = self.mixer.channels.get(self.mixer.dj.deck_a_channel)
+                .map(|c| (c.fader, c.eq_low, c.eq_mid, c.eq_high, c.lpf_freq, c.hpf_freq, c.pan))
+                .unwrap_or((0.8, 0.0, 0.0, 0.0, 20000.0, 20.0, 0.0));
+
+            let fader_b = self.mixer.channels.get(self.mixer.dj.deck_b_channel)
+                .map(|c| (c.fader, c.eq_low, c.eq_mid, c.eq_high, c.lpf_freq, c.hpf_freq, c.pan))
+                .unwrap_or((0.8, 0.0, 0.0, 0.0, 20000.0, 20.0, 0.0));
+
+            let params = DspParams {
+                volume_a: (fader_a.0 * gain_a).clamp(0.0, 1.0),
+                volume_b: (fader_b.0 * gain_b).clamp(0.0, 1.0),
+                crossfader: ((self.mixer.dj.crossfader + 1.0) / 2.0).clamp(0.0, 1.0),
+                // Pass dB values directly — biquad filter handles conversion internally
+                eq_low_a: fader_a.1,
+                eq_mid_a: fader_a.2,
+                eq_high_a: fader_a.3,
+                eq_low_b: fader_b.1,
+                eq_mid_b: fader_b.2,
+                eq_high_b: fader_b.3,
+                lpf_freq_a: fader_a.4,
+                hpf_freq_a: fader_a.5,
+                lpf_freq_b: fader_b.4,
+                hpf_freq_b: fader_b.5,
+                pan_a: fader_a.6,
+                pan_b: fader_b.6,
+                master_volume: self.mixer.master.fader,
+            };
+            capture.set_params(params);
+        }
     }
 }
