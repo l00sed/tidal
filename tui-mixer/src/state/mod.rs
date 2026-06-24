@@ -4,8 +4,11 @@ mod mixer;
 mod sampler;
 
 pub use mixer::{
-    ChannelControl, CrossfaderCurve, DjSection, GlobalControl, 
+    ChannelControl, GlobalControl, SendTarget,
     MasterChannel, MixerChannel, MixerState, SelectionFocus,
 };
 
-pub use sampler::{PlayMode, SamplePad, SamplePadGrid, PAD_KEYS};
+pub use sampler::{
+    PadConfig, PadControl, Rack, RackMode, RackState, RackTrigger,
+    SamplePad, SamplePadGrid,
+};

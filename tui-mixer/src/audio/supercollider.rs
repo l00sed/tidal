@@ -257,15 +257,6 @@ impl SuperColliderClient {
         self.set_synth_param("pan", pan.clamp(-1.0, 1.0))
     }
 
-    /// Set mute (0.0 = muted, restore volume on unmute)
-    pub fn set_mute(&self, muted: bool) -> Result<(), String> {
-        if muted {
-            self.set_synth_param("vol", 0.0)
-        } else {
-            self.set_synth_param("vol", 0.8)
-        }
-    }
-
     /// Pause (free synth = muted, create new = unmuted)
     pub fn set_pause(&mut self, paused: bool) -> Result<(), String> {
         if paused {
@@ -319,13 +310,6 @@ impl SuperColliderClient {
         }
     }
 
-    fn write_pstring(buf: &mut Vec<u8>, s: &str) {
-        buf.push(s.len() as u8);
-        buf.extend_from_slice(s.as_bytes());
-        while buf.len() % 4 != 0 {
-            buf.push(0);
-        }
-    }
 }
 
 enum OscType {

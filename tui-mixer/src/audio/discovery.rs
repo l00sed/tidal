@@ -18,34 +18,6 @@ pub enum SourceType {
     Jack,
     /// System microphone/input device
     Microphone,
-    /// Generic audio file
-    AudioFile,
-}
-
-impl SourceType {
-    pub fn label(&self) -> &'static str {
-        match self {
-            SourceType::Mpv => "MPV",
-            SourceType::SuperCollider => "SuperCollider",
-            SourceType::PulseAudio => "PulseAudio",
-            SourceType::PipeWire => "PipeWire",
-            SourceType::Jack => "JACK",
-            SourceType::Microphone => "Microphone",
-            SourceType::AudioFile => "Audio File",
-        }
-    }
-
-    pub fn icon(&self) -> &'static str {
-        match self {
-            SourceType::Mpv => "▶",
-            SourceType::SuperCollider => "~",
-            SourceType::PulseAudio => "♪",
-            SourceType::PipeWire => "⟲",
-            SourceType::Jack => "⎇",
-            SourceType::Microphone => "🎤",
-            SourceType::AudioFile => "♫",
-        }
-    }
 }
 
 /// A discovered audio source
@@ -57,16 +29,6 @@ pub struct DiscoveredSource {
     pub source_type: SourceType,
     /// Connection identifier (socket path, sink name, etc.)
     pub identifier: String,
-    /// Whether it's currently active/playing
-    pub active: bool,
-    /// Additional metadata
-    pub metadata: Option<String>,
-}
-
-impl DiscoveredSource {
-    pub fn display_name(&self) -> String {
-        format!("{} {}", self.source_type.icon(), self.name)
-    }
 }
 
 /// Audio source discovery manager
@@ -99,11 +61,6 @@ impl SourceDiscovery {
         }
     }
 
-    /// Add a custom socket path to check
-    pub fn add_mpv_socket_path(&mut self, path: impl Into<PathBuf>) {
-        self.mpv_socket_paths.push(path.into());
-    }
-
     /// Discover all available audio sources
     pub fn discover_all(&mut self) -> &[DiscoveredSource] {
         self.sources.clear();
@@ -116,11 +73,6 @@ impl SourceDiscovery {
         self.discover_jack();
         self.discover_microphones();
 
-        &self.sources
-    }
-
-    /// Get cached sources without re-scanning
-    pub fn sources(&self) -> &[DiscoveredSource] {
         &self.sources
     }
 
@@ -139,8 +91,6 @@ impl SourceDiscovery {
                     name,
                     source_type: SourceType::Mpv,
                     identifier: path.to_string_lossy().to_string(),
-                    active: true, // Socket exists, likely active
-                    metadata: None,
                 });
             }
         }
@@ -160,8 +110,6 @@ impl SourceDiscovery {
                                 name: name.to_string(),
                                 source_type: SourceType::Mpv,
                                 identifier: path_str,
-                                active: true,
-                                metadata: None,
                             });
                         }
                     }
@@ -180,8 +128,6 @@ impl SourceDiscovery {
                     name: "SuperCollider (scsynth)".to_string(),
                     source_type: SourceType::SuperCollider,
                     identifier: "udp://127.0.0.1:57110".to_string(),
-                    active: true,
-                    metadata: Some("Default SC server".to_string()),
                 });
             }
         }
@@ -193,8 +139,6 @@ impl SourceDiscovery {
                     name: "SuperCollider (sclang)".to_string(),
                     source_type: SourceType::SuperCollider,
                     identifier: "sclang".to_string(),
-                    active: true,
-                    metadata: Some("SC language running".to_string()),
                 });
             }
         }
@@ -214,7 +158,6 @@ impl SourceDiscovery {
     fn parse_pulseaudio_output(&mut self, output: &str) {
         let mut current_name = None;
         let mut current_index = None;
-        let mut current_app = None;
 
         for line in output.lines() {
             let line = line.trim();
@@ -226,18 +169,12 @@ impl SourceDiscovery {
                         name,
                         source_type: SourceType::PulseAudio,
                         identifier: format!("sink-input:{}", idx),
-                        active: true,
-                        metadata: current_app.take(),
                     });
                 }
 
                 current_index = line
                     .strip_prefix("Sink Input #")
                     .and_then(|s| s.parse::<u32>().ok());
-            } else if line.starts_with("application.name = ") {
-                current_app = line
-                    .strip_prefix("application.name = ")
-                    .map(|s| s.trim_matches('"').to_string());
             } else if line.starts_with("media.name = ") {
                 current_name = line
                     .strip_prefix("media.name = ")
@@ -251,8 +188,6 @@ impl SourceDiscovery {
                 name,
                 source_type: SourceType::PulseAudio,
                 identifier: format!("sink-input:{}", idx),
-                active: true,
-                metadata: current_app,
             });
         }
     }
@@ -271,7 +206,7 @@ impl SourceDiscovery {
     fn parse_pipewire_output(&mut self, output: &str) {
         // PipeWire output is complex, look for audio streams
         for line in output.lines() {
-            if line.contains("type: PipeWire:Interface:Node") 
+            if line.contains("type: PipeWire:Interface:Node")
                 || line.contains("media.class = \"Audio/Sink\"")
                 || line.contains("media.class = \"Stream/Output/Audio\"")
             {
@@ -290,8 +225,6 @@ impl SourceDiscovery {
                             name: name.to_string(),
                             source_type: SourceType::PipeWire,
                             identifier: name.to_string(),
-                            active: true,
-                            metadata: None,
                         });
                     }
                 }
@@ -329,8 +262,6 @@ impl SourceDiscovery {
                     name: client.to_string(),
                     source_type: SourceType::Jack,
                     identifier: client.to_string(),
-                    active: true,
-                    metadata: Some("JACK client".to_string()),
                 });
             }
         }
@@ -347,14 +278,13 @@ impl SourceDiscovery {
                     if parts.len() >= 2 {
                         let name = parts[1];
                         // Filter to actual microphones (not monitors)
-                        if !name.contains(".monitor") && 
-                           (name.contains("input") || name.contains("mic") || name.contains("Mic")) {
+                        if !name.contains(".monitor")
+                            && (name.contains("input") || name.contains("mic") || name.contains("Mic"))
+                        {
                             self.sources.push(DiscoveredSource {
                                 name: name.to_string(),
                                 source_type: SourceType::Microphone,
                                 identifier: name.to_string(),
-                                active: true,
-                                metadata: None,
                             });
                         }
                     }
@@ -376,8 +306,6 @@ impl SourceDiscovery {
                                 name: card_name.to_string(),
                                 source_type: SourceType::Microphone,
                                 identifier: format!("alsa:{}", name_str),
-                                active: true,
-                                metadata: Some("ALSA device".to_string()),
                             });
                         }
                     }
@@ -404,8 +332,6 @@ impl SourceDiscovery {
                                             name: name.to_string(),
                                             source_type: SourceType::Microphone,
                                             identifier: format!("coreaudio:{}", name),
-                                            active: true,
-                                            metadata: Some("CoreAudio input".to_string()),
                                         });
                                     }
                                 }
@@ -415,33 +341,6 @@ impl SourceDiscovery {
                 }
             }
         }
-    }
-
-    /// Filter sources by type
-    pub fn sources_by_type(&self, source_type: SourceType) -> Vec<&DiscoveredSource> {
-        self.sources
-            .iter()
-            .filter(|s| s.source_type == source_type)
-            .collect()
-    }
-
-    /// Get sources suitable for mixer input (playback sources)
-    pub fn playback_sources(&self) -> Vec<&DiscoveredSource> {
-        self.sources
-            .iter()
-            .filter(|s| matches!(
-                s.source_type,
-                SourceType::Mpv | SourceType::SuperCollider | SourceType::PulseAudio | SourceType::PipeWire | SourceType::Jack
-            ))
-            .collect()
-    }
-
-    /// Get input sources (microphones)
-    pub fn input_sources(&self) -> Vec<&DiscoveredSource> {
-        self.sources
-            .iter()
-            .filter(|s| s.source_type == SourceType::Microphone)
-            .collect()
     }
 }
 
@@ -459,11 +358,5 @@ mod tests {
     fn test_discovery_creation() {
         let discovery = SourceDiscovery::new();
         assert!(discovery.sources.is_empty());
-    }
-
-    #[test]
-    fn test_source_type_labels() {
-        assert_eq!(SourceType::Mpv.label(), "MPV");
-        assert_eq!(SourceType::SuperCollider.label(), "SuperCollider");
     }
 }

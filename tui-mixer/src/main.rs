@@ -60,6 +60,30 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // When DEBUG is not set, redirect stderr to /dev/null to prevent
+    // library warnings from corrupting the TUI
+    let _stderr_guard = if std::env::var("DEBUG").is_err() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let devnull = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/null")
+                .ok();
+            devnull.map(|f| {
+                let fd = f.as_raw_fd();
+                unsafe { libc::dup2(fd, 2); }
+                f  // Return file to keep it alive
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    } else {
+        None
+    };
+
     // Run the application
     let result = run_app(&mut terminal, &mut app);
 
@@ -169,7 +193,7 @@ USAGE:
 OPTIONS:
     -s, --source NAME SOCKET    Add an audio source (MPV IPC socket)
     -m, --music-dir PATH        Directory for audio file browser (default: cwd)
-    -S, --samples-dir PATH      Directory for sample pad files (default: cwd)
+    -S, --samples-dir PATH      Directory for sample pad files (default: ~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples)
     -d, --discover              Auto-discover audio sources (default if no -s)
     -h, --help                  Show this help message
 
@@ -194,7 +218,7 @@ KEYBOARD CONTROLS:
     q            Quit
     J/K          Coarse adjustment
     +/-          Fine adjustment
-    SPACE/ENTER  Toggle mute/solo/pfl
+    SPACE/ENTER  Toggle mute/solo
     0            Reset control to default
     c            Center pan
     m            Toggle mute
@@ -214,16 +238,39 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
     let mut frame_counter: u8 = 0;
     
     loop {
+        // Update terminal height for scroll calculations
+        app.terminal_height = terminal.size()?.height;
+        app.mixer.terminal_height = app.terminal_height;
+
         // Draw
         terminal.draw(|frame| {
             let control_select = matches!(app.mode, app::AppMode::ControlSelect | app::AppMode::Edit);
+            let pad_config = app.mode == app::AppMode::SamplePadConfig;
+            
+            // Bind device lists to extend lifetime
+            let master_devices = app.master_output.devices();
+            let cue_devices = app.cue_output.devices();
+            
             let mut view = MixerView::new(&app.mixer, &app.sample_pads)
                 .show_help(app.show_help())
                 .editing(app.is_editing())
                 .control_select(control_select)
                 .frame(frame_counter)
                 .selected_pane(app.selected_pane)
-                .selected_pad_idx(app.selected_pad_idx);
+                .selected_pad_idx(app.selected_pad_idx)
+                .pad_config_mode(pad_config)
+                .pad_config_editing(app.sample_pads.editing_control)
+                .racks(&app.rack_state)
+                .scroll_offset(app.rack_scroll_offset)
+                .master_output_device(app.master_output.selected_device())
+                .cue_output_device(app.cue_output.selected_device())
+                .output_picker_active(app.output_picker_active)
+                .output_picker_target(app.output_picker_target)
+                .master_output_devices(&master_devices)
+                .cue_output_devices(&cue_devices)
+                .selected_master_output_idx(app.selected_master_output_idx)
+                .selected_cue_output_idx(app.selected_cue_output_idx)
+                .debug_log(&app.debug_log);
             
             // Add source picker if active
             if let app::AppMode::SourcePicker(deck) = app.mode {
@@ -271,6 +318,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 
         // Tick for animations/meters
         if app.last_tick.elapsed() >= app.tick_rate {
+            app.elapsed_ms += 50; // 50ms per tick at 20fps
+            app.update_racks();
             app.tick();
             app.last_tick = std::time::Instant::now();
             frame_counter = frame_counter.wrapping_add(1);
@@ -333,7 +382,6 @@ fn calculate_channel_areas(area: Rect, num_channels: usize) -> Vec<app::ChannelA
             ChannelControl::Fader,
             ChannelControl::Mute,
             ChannelControl::Solo,
-            ChannelControl::Pfl,
         ];
 
         for (j, &control) in controls.iter().enumerate() {

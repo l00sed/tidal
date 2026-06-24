@@ -2,242 +2,81 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Widget},
 };
 
-use crate::state::{SamplePadGrid, SamplePad, PAD_KEYS};
+use crate::state::{PadControl, Rack, SamplePadGrid, SamplePad};
+use crate::ui::colors::*;
 
-/// A single pad cell in the grid
-pub struct PadCell<'a> {
-    pad: &'a SamplePad,
-    selected: bool,
-    config_mode: bool,
-}
-
-impl<'a> PadCell<'a> {
-    pub fn new(pad: &'a SamplePad) -> Self {
-        Self {
-            pad,
-            selected: false,
-            config_mode: false,
-        }
-    }
-
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
-        self
-    }
-
-    pub fn config_mode(mut self, config: bool) -> Self {
-        self.config_mode = config;
-        self
-    }
-}
-
-impl<'a> Widget for PadCell<'a> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.width < 3 || area.height < 2 {
-            return;
-        }
-
-        let (r, g, b) = self.pad.color;
-        let pad_color = Color::Rgb(r, g, b);
-        let dim_color = Color::Rgb(r / 3, g / 3, b / 3);
-
-        // Determine colors based on state
-        let (bg_color, fg_color, border_color) = if self.pad.playing {
-            // Bright when playing
-            (pad_color, Color::Black, Color::White)
-        } else if self.selected {
-            // Selected but not playing
-            (dim_color, Color::White, pad_color)
-        } else if self.pad.has_sample() {
-            // Has sample, dim
-            (Color::Rgb(r / 4, g / 4, b / 4), Color::Rgb(r, g, b), Color::DarkGray)
-        } else {
-            // Empty pad
-            (Color::Rgb(30, 30, 30), Color::DarkGray, Color::Rgb(50, 50, 50))
-        };
-
-        // Draw border
-        let border_style = if self.selected && self.config_mode {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else if self.selected {
-            Style::default().fg(border_color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(border_color)
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style);
-
-        let inner = block.inner(area);
-        block.render(area, buf);
-
-        // Fill background
-        for y in inner.y..inner.y + inner.height {
-            for x in inner.x..inner.x + inner.width {
-                buf.get_mut(x, y).set_bg(bg_color);
-            }
-        }
-
-        // Draw key hint in top-left
-        let key_char = self.pad.key_char().to_ascii_uppercase();
-        let key_style = Style::default()
-            .fg(if self.pad.playing { Color::Black } else { fg_color })
-            .add_modifier(Modifier::BOLD);
-        buf.set_string(inner.x, inner.y, &key_char.to_string(), key_style);
-
-        // Draw play mode indicator in top-right
-        if self.pad.has_sample() && inner.width > 4 {
-            let mode_label = self.pad.play_mode.label();
-            let mode_x = inner.x + inner.width.saturating_sub(mode_label.len() as u16);
-            let mode_style = Style::default()
-                .fg(if self.pad.playing { Color::Black } else { Color::DarkGray })
-                .add_modifier(Modifier::DIM);
-            buf.set_string(mode_x, inner.y, mode_label, mode_style);
-        }
-
-        // Draw sample name or empty indicator
-        if inner.height > 1 {
-            let name_y = inner.y + 1;
-            let max_len = inner.width as usize;
-            
-            let display = if self.pad.has_sample() {
-                self.pad.display_name(max_len)
-            } else if self.config_mode && self.selected {
-                "ASSIGN".to_string()
-            } else {
-                "─────".to_string()
-            };
-            
-            let name_style = Style::default()
-                .fg(if self.pad.playing { Color::Black } else { fg_color });
-            
-            // Center the name
-            let name_x = inner.x + (inner.width.saturating_sub(display.len() as u16)) / 2;
-            buf.set_string(name_x, name_y, &display, name_style);
-        }
-
-        // Draw playing indicator (pulsing dot)
-        if self.pad.playing && inner.height > 2 {
-            let indicator = "▶";
-            let ind_x = inner.x + (inner.width.saturating_sub(1)) / 2;
-            let ind_y = inner.y + inner.height.saturating_sub(1);
-            buf.set_string(ind_x, ind_y, indicator, Style::default().fg(Color::Black));
-        }
-    }
-}
-
-/// The full 4x4 sample pad grid widget
-pub struct SamplePadWidget<'a> {
+/// Configuration pane for a single pad — replaces the pad grid when [c] is pressed
+pub struct PadConfigPane<'a> {
     grid: &'a SamplePadGrid,
+    editing: bool,
 }
 
-impl<'a> SamplePadWidget<'a> {
+impl<'a> PadConfigPane<'a> {
     pub fn new(grid: &'a SamplePadGrid) -> Self {
-        Self { grid }
+        Self { grid, editing: false }
+    }
+
+    pub fn editing(mut self, editing: bool) -> Self {
+        self.editing = editing;
+        self
     }
 }
 
-impl<'a> Widget for SamplePadWidget<'a> {
+impl<'a> Widget for PadConfigPane<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Outer block
-        let title = if self.grid.config_mode {
-            " SAMPLE PADS [CONFIG] "
-        } else if self.grid.active {
-            " SAMPLE PADS [ACTIVE] "
-        } else {
-            " SAMPLE PADS "
-        };
+        let pad_idx = self.grid.selected_pad;
+        let pad = &self.grid.pads[pad_idx];
+        let key_char = pad.key_char().to_ascii_uppercase();
+        let selected_ctrl = self.grid.selected_control;
+        let is_editing = self.editing;
 
-        let title_style = if self.grid.config_mode {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else if self.grid.active {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
-        let border_color = if self.grid.config_mode {
-            Color::Yellow
-        } else if self.grid.active {
-            Color::Green
-        } else {
-            Color::DarkGray
-        };
+        // Title with pad name
+        let title = format!(" Pad Config: [{}] {} ", key_char, pad.name);
+        let title_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color))
+            .border_style(Style::default().fg(Color::Yellow))
             .title(ratatui::text::Span::styled(title, title_style));
 
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if inner.width < 12 || inner.height < 8 {
-            // Too small to render pads
-            buf.set_string(
-                inner.x,
-                inner.y,
-                "Too small",
-                Style::default().fg(Color::Red),
-            );
+        if inner.width < 20 || inner.height < 4 {
+            buf.set_string(inner.x, inner.y, "Too small", Style::default().fg(Color::Red));
             return;
         }
 
-        // Create 4x4 grid layout
-        let row_constraints = [
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-        ];
+        let controls = PadControl::all();
+        let row_height = 1u16;
+        let mut y = inner.y;
 
-        let col_constraints = [
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-            Constraint::Ratio(1, 4),
-        ];
-
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(row_constraints)
-            .split(inner);
-
-        for (row_idx, row_area) in rows.iter().enumerate() {
-            let cols = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(col_constraints)
-                .split(*row_area);
-
-            for (col_idx, col_area) in cols.iter().enumerate() {
-                let pad_idx = row_idx * 4 + col_idx;
-                let pad = &self.grid.pads[pad_idx];
-                let selected = pad_idx == self.grid.selected_pad;
-
-                PadCell::new(pad)
-                    .selected(selected)
-                    .config_mode(self.grid.config_mode)
-                    .render(*col_area, buf);
+        for &control in controls {
+            if y + row_height > inner.y + inner.height {
+                break;
             }
+
+            let is_selected = control == selected_ctrl;
+            let row_area = Rect::new(inner.x, y, inner.width, row_height);
+
+            render_config_row(row_area, buf, control, pad, is_selected, is_editing);
+
+            y += row_height;
         }
 
-        // Draw help hint at bottom if space allows
-        if area.height > inner.height + 3 {
-            let hint = if self.grid.config_mode {
-                "hjkl:move │ ENTER:assign │ DEL:clear │ P:mode │ ESC:exit config"
-            } else if self.grid.active {
-                "Keys trigger pads │ P:toggle active │ C:config"
+        // Help hint at bottom
+        if area.height > inner.height + 2 {
+            let hint = if is_editing {
+                "hjkl:adjust │ 0:reset │ Esc:back"
             } else {
-                "P:activate pads"
+                "j/k:move │ Enter:edit/open │ SPACE:play │ c:close"
             };
-            
-            let hint_y = area.y + area.height.saturating_sub(1);
+            let hint_y = area.y + area.height - 1;
             buf.set_string(
                 area.x + 1,
                 hint_y,
@@ -248,49 +87,335 @@ impl<'a> Widget for SamplePadWidget<'a> {
     }
 }
 
-/// Compact horizontal pad strip (for embedding in mixer view)
-pub struct PadStrip<'a> {
-    grid: &'a SamplePadGrid,
-    show_row: Option<usize>, // Show specific row, or all if None
+/// Render a single config control row
+fn render_config_row(
+    area: Rect,
+    buf: &mut Buffer,
+    control: PadControl,
+    pad: &SamplePad,
+    selected: bool,
+    editing: bool,
+) {
+    if area.width < 10 {
+        return;
+    }
+
+    let label_width = 10usize.min(area.width as usize / 3);
+    let value_area_width = area.width as usize - label_width - 1;
+    let bar_width = (value_area_width as f32 * 0.6) as usize;
+    let value_width = value_area_width - bar_width - 1;
+
+    // Label
+    let label_style = if selected {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+    let label = control.label();
+    buf.set_string(area.x, area.y, label, label_style);
+
+    let control_x = area.x + label_width as u16;
+
+    match control {
+        PadControl::Sample => {
+            let sample_name = pad.sample_path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .and_then(|s| s.to_str())
+                .unwrap_or("(none)");
+            let name = if sample_name.len() > bar_width + value_width {
+                format!("{}…", &sample_name[..bar_width + value_width - 1])
+            } else {
+                sample_name.to_string()
+            };
+            let style = if selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            buf.set_string(control_x, area.y, &name, style);
+        }
+        PadControl::PlayMode => {
+            let mode_label = pad.play_mode.label();
+            let style = if selected {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            buf.set_string(control_x, area.y, mode_label, style);
+        }
+        PadControl::Mute => {
+            let (label, color) = if pad.config.mute {
+                ("ON", Color::Red)
+            } else {
+                ("OFF", Color::DarkGray)
+            };
+            let style = if selected {
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(color)
+            };
+            buf.set_string(control_x, area.y, label, style);
+        }
+        PadControl::FiltersHeader => {
+            // Just a heading, not interactive
+            let style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+            buf.set_string(control_x, area.y, "Filters", style);
+        }
+        _ => {
+            // Continuous controls: draw a bar + value
+            let (value, display) = match control {
+                PadControl::Volume => (pad.config.volume, format!("{:.2}", pad.config.volume)),
+                PadControl::HighPass => {
+                    let norm = (pad.config.high_pass - 20.0) / 19980.0;
+                    (norm, format!("{} Hz", format_hz(pad.config.high_pass)))
+                }
+                PadControl::LowPass => {
+                    let norm = (pad.config.low_pass - 20.0) / 19980.0;
+                    (norm, format!("{} Hz", format_hz(pad.config.low_pass)))
+                }
+                PadControl::EqLow => (pad.config.eq_low / 2.0, format!("{:.1}", pad.config.eq_low)),
+                PadControl::EqMid => (pad.config.eq_mid / 2.0, format!("{:.1}", pad.config.eq_mid)),
+                PadControl::EqHigh => (pad.config.eq_high / 2.0, format!("{:.1}", pad.config.eq_high)),
+                PadControl::Reverb => (pad.config.reverb, format!("{:.2}", pad.config.reverb)),
+                PadControl::Chorus => (pad.config.chorus, format!("{:.2}", pad.config.chorus)),
+                PadControl::Distortion => (pad.config.distortion, format!("{:.2}", pad.config.distortion)),
+                _ => return,
+            };
+
+            // Bar
+            let bar_x = control_x;
+            let bar_chars = bar_width.max(2);
+            let fill = (value * (bar_chars - 2) as f32) as usize;
+
+            let bar_style = if selected && editing {
+                Style::default().fg(Color::Yellow)
+            } else if selected {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            buf.set_string(bar_x, area.y, "├", bar_style);
+            for i in 0..bar_chars - 2 {
+                let ch = if i < fill { "━" } else { "─" };
+                buf.set_string(bar_x + 1 + i as u16, area.y, ch, bar_style);
+            }
+            buf.set_string(bar_x + bar_chars as u16 - 1, area.y, "┤", bar_style);
+
+            // Value text
+            let val_x = bar_x + bar_chars as u16 + 1;
+            let val_style = if selected && editing {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            if val_x + display.len() as u16 <= area.x + area.width {
+                buf.set_string(val_x, area.y, &display, val_style);
+            }
+        }
+    }
 }
 
-impl<'a> PadStrip<'a> {
-    pub fn new(grid: &'a SamplePadGrid) -> Self {
+/// Format frequency in Hz to a human-readable string
+fn format_hz(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{:.1}k", hz / 1000.0)
+    } else {
+        format!("{:.0}", hz)
+    }
+}
+
+/// A single rack row: name, volume slider, mute, record, blinking indicator
+pub struct RackRow<'a> {
+    rack: &'a Rack,
+    selected: bool,
+    frame: u8,
+    recording: bool,
+    count_in: Option<(u8, u8)>,
+}
+
+impl<'a> RackRow<'a> {
+    pub fn new(rack: &'a Rack) -> Self {
         Self {
-            grid,
-            show_row: None,
+            rack,
+            selected: false,
+            frame: 0,
+            recording: false,
+            count_in: None,
         }
     }
 
-    pub fn row(mut self, row: usize) -> Self {
-        self.show_row = Some(row);
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn frame(mut self, frame: u8) -> Self {
+        self.frame = frame;
+        self
+    }
+
+    pub fn recording(mut self, recording: bool) -> Self {
+        self.recording = recording;
+        self
+    }
+
+    pub fn count_in_opt(mut self, count_in: Option<(u8, u8)>) -> Self {
+        self.count_in = count_in;
         self
     }
 }
 
-impl<'a> Widget for PadStrip<'a> {
+impl<'a> Widget for RackRow<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let pads_to_show: Vec<&SamplePad> = match self.show_row {
-            Some(row) => self.grid.pads[row * 4..(row + 1) * 4].iter().collect(),
-            None => self.grid.pads.iter().collect(),
-        };
-
-        let num_pads = pads_to_show.len();
-        if num_pads == 0 {
+        if area.height < 1 || area.width < 10 {
             return;
         }
 
-        let pad_width = area.width / num_pads as u16;
-        
-        for (i, pad) in pads_to_show.iter().enumerate() {
-            let x = area.x + (i as u16 * pad_width);
-            let pad_area = Rect::new(x, area.y, pad_width, area.height);
-            
-            let selected = pad.index == self.grid.selected_pad;
-            PadCell::new(pad)
-                .selected(selected)
-                .config_mode(self.grid.config_mode)
-                .render(pad_area, buf);
+        let y = area.y;
+
+        // Border style
+        let border_style = if self.selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(80, 80, 80))
+        };
+
+        // Rack name/number (left-aligned)
+        let name = format!(" {} ", self.rack.name);
+        let name_style = if self.selected {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        buf.set_string(area.x, y, &name, name_style);
+
+        // Right-aligned controls (from right edge, leaving room for right border)
+        let right_edge = area.x + area.width - 1; // -1 for right border
+
+        // Tempo display (rightmost, 4 chars)
+        let tempo_str = format!("{:.0}", self.rack.tempo);
+        let tempo_style = if self.selected {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let tempo_w = tempo_str.len() as u16;
+        let tempo_x = right_edge.saturating_sub(tempo_w);
+        buf.set_string(tempo_x, y, &tempo_str, tempo_style);
+
+        // Indicator (1 char + 1 space gap before tempo)
+        let indicator_x = tempo_x.saturating_sub(2);
+        if self.recording {
+            buf.set_string(indicator_x, y, "●", 
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        } else if let Some((step, _total)) = self.count_in {
+            let show = self.frame % 4 < 2;
+            if show {
+                let num = format!("{}", step + 1);
+                buf.set_string(indicator_x, y, &num,
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+            }
+        } else if self.rack.playing && !self.rack.mute {
+            let on = self.frame % 6 < 4;
+            if on {
+                buf.set_string(indicator_x, y, "●",
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+            } else {
+                buf.set_string(indicator_x, y, "●",
+                    Style::default().fg(PAD_ACTIVE_HIGH));
+            }
+        } else if self.rack.playing && self.rack.mute {
+            buf.set_string(indicator_x, y, "●",
+                Style::default().fg(PAD_ACTIVE_LOW));
+        } else {
+            buf.set_string(indicator_x, y, "○",
+                Style::default().fg(Color::DarkGray));
+        }
+
+        // Mute button (3 chars + 1 space gap before indicator)
+        let mute_x = indicator_x.saturating_sub(4);
+        let (label, color) = if self.rack.mute {
+            ("[M]", Color::Red)
+        } else {
+            ("[M]", Color::DarkGray)
+        };
+        let mute_style = if self.selected {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
+        buf.set_string(mute_x, y, label, mute_style);
+
+        // Volume slider (right-aligned before mute, 20 chars: ├ + 18 bars + ┤)
+        let slider_w = 20u16;
+        let slider_x = mute_x.saturating_sub(slider_w + 1);
+        if slider_x > area.x + name.len() as u16 {
+            let filled = (self.rack.volume * (slider_w as f32 - 2.0)) as usize;
+            let bar_style = if self.selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            buf.set_string(slider_x, y, "├", bar_style);
+            for i in 0..(slider_w as usize).saturating_sub(2) {
+                let ch = if i < filled { "━" } else { "─" };
+                buf.set_string(slider_x + 1 + i as u16, y, ch, bar_style);
+            }
+            buf.set_string(slider_x + slider_w - 1, y, "┤", bar_style);
+        }
+
+        // Right border
+        if area.width > 1 {
+            buf.set_string(area.x + area.width - 1, y, "│", border_style);
+        }
+    }
+}
+
+/// Count-in overlay that shows 1, 2... slow, then 1, 2, 3, 4 fast, then steady
+pub struct CountInOverlay {
+    step: u8,
+    frame: u8,
+}
+
+impl CountInOverlay {
+    pub fn new(step: u8, frame: u8) -> Self {
+        Self { step, frame }
+    }
+}
+
+impl Widget for CountInOverlay {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width < 10 || area.height < 3 {
+            return;
+        }
+
+        // Centered overlay box
+        let box_w = 12u16.min(area.width.saturating_sub(2));
+        let box_h = 3u16.min(area.height);
+        let x = area.x + (area.width.saturating_sub(box_w)) / 2;
+        let y = area.y + (area.height.saturating_sub(box_h)) / 2;
+
+        let box_area = Rect::new(x, y, box_w, box_h);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        let inner = block.inner(box_area);
+        block.render(box_area, buf);
+
+        // Blink: show number on even frames
+        let show = self.frame % 4 < 2;
+        if show && inner.height > 0 {
+            // Display countdown in reverse: 3, 2, 1
+            let num = format!("{}", 3 - self.step);
+            let num_style = Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD);
+            let nx = inner.x + (inner.width.saturating_sub(num.len() as u16)) / 2;
+            buf.set_string(nx, inner.y, &num, num_style);
         }
     }
 }
