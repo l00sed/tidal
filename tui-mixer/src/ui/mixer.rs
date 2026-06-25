@@ -646,7 +646,7 @@ impl<'a> MixerView<'a> {
             .constraints([
                 Constraint::Min(8),      // Channel strip
                 Constraint::Length(1),   // Separator line
-                Constraint::Length(5),   // Controls (-> A, sep, -> B, sep, OUTPUT)
+                Constraint::Length(3),   // Controls (-> A | -> B, sep, OUTPUT)
             ])
             .split(inner);
 
@@ -662,8 +662,8 @@ impl<'a> MixerView<'a> {
             .show_border(false)
             .render(chunks[0], buf);
 
-        // Render separator between channel strip and controls (plain horizontal line)
-        // Skip the center position where the channel strip's ┴ junction sits
+        // Render separator between channel strip and controls
+        // Replace center ┴ with ┬ to connect downward into the -> A | -> B split
         let sep_area = chunks[1];
         let sep_style = Style::default().fg(SEPARATOR);
         let sep_center = sep_area.x + sep_area.width / 2;
@@ -672,53 +672,51 @@ impl<'a> MixerView<'a> {
                 buf.set_string(x, sep_area.y, "─", sep_style);
             }
         }
+        buf.set_string(sep_center, sep_area.y, "┬", sep_style);
 
-        // Render CUE controls (-> A, -> B, OUTPUT) - no nested border
+        // Render CUE controls (-> A | -> B, sep, OUTPUT) - two-column layout like M/S
         let controls_area = chunks[2];
-        
-        // -> A button (centered)
+
+        // Two equal columns: -> A │ -> B
+        let sep_x = controls_area.x + controls_area.width / 2;
+        let left_w = sep_x - controls_area.x;
+        let right_w = controls_area.x + controls_area.width - sep_x - 1;
+
+        // Center each label within its half
+        let send_a_label = "-> A";
+        let send_b_label = "-> B";
+        let send_a_x = controls_area.x + 1 + (left_w.saturating_sub(send_a_label.len() as u16 + 2)) / 2;
+        let send_b_x = sep_x + 2 + (right_w.saturating_sub(send_b_label.len() as u16 + 2)) / 2;
+
+        // │ separator between -> A and -> B on the button row
+        buf.set_string(sep_x, controls_area.y, "│", sep_style);
+
+        // Separator line below with ┴ junction where │ meets it
+        if controls_area.height > 1 {
+            let sep_y = controls_area.y + 1;
+            for x in controls_area.x..controls_area.x + controls_area.width {
+                buf.set_string(x, sep_y, "─", sep_style);
+            }
+            buf.set_string(sep_x, sep_y, "┴", sep_style);
+        }
+
+        // -> A button
         let send_a_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::CueSendToA;
         let send_a_style = if send_a_selected {
             Style::default().fg(BORDER_ACTIVE)
         } else {
             Style::default().fg(METER_TRACK)
         };
-        let send_a_label = "-> A";
-        let send_a_x = controls_area.x + (controls_area.width.saturating_sub(send_a_label.len() as u16)) / 2;
         buf.set_string(send_a_x, controls_area.y, send_a_label, send_a_style);
 
-        // Separator after -> A (plain horizontal line)
-        if controls_area.height > 1 {
-            let sep_y = controls_area.y + 1;
-            if sep_y < controls_area.y + controls_area.height {
-                for x in controls_area.x..controls_area.x + controls_area.width {
-                    buf.set_string(x, sep_y, "─", Style::default().fg(SEPARATOR));
-                }
-            }
-        }
-
-        // -> B button (centered)
+        // -> B button
         let send_b_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::CueSendToB;
         let send_b_style = if send_b_selected {
             Style::default().fg(BORDER_ACTIVE)
         } else {
             Style::default().fg(METER_TRACK)
         };
-        if controls_area.height > 2 {
-            let send_b_label = "-> B";
-            let send_b_x = controls_area.x + (controls_area.width.saturating_sub(send_b_label.len() as u16)) / 2;
-            buf.set_string(send_b_x, controls_area.y + 2, send_b_label, send_b_style);
-        }
-
-        // Separator after -> B (plain horizontal line)
-        if controls_area.height > 3 {
-            let sep_y = controls_area.y + 3;
-            if sep_y < controls_area.y + controls_area.height {
-                for x in controls_area.x..controls_area.x + controls_area.width {
-                    buf.set_string(x, sep_y, "─", Style::default().fg(SEPARATOR));
-                }
-            }
-        }
+        buf.set_string(send_b_x, controls_area.y, send_b_label, send_b_style);
 
         // OUTPUT button (centered)
         let output_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::CueOutputSelect;
@@ -727,10 +725,10 @@ impl<'a> MixerView<'a> {
         } else {
             Style::default().fg(METER_TRACK)
         };
-        if controls_area.height > 4 {
+        if controls_area.height > 2 {
             let output_label = "OUTPUT";
             let output_x = controls_area.x + (controls_area.width.saturating_sub(output_label.len() as u16)) / 2;
-            buf.set_string(output_x, controls_area.y + 4, output_label, output_style);
+            buf.set_string(output_x, controls_area.y + 2, output_label, output_style);
         }
     }
 

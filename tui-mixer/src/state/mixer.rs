@@ -631,11 +631,12 @@ impl MixerState {
 
     /// Update metering levels — reactive to fader, EQ, filters, pan, crossfader, and master gain.
     /// When `real_master` is provided (peak_l, peak_r, rms_l, rms_r), master meters use
-    /// the actual audio levels. Per-channel meters are always gain-aware simulation since
-    /// we can't separate individual channels from a stereo mix.
+    /// the actual audio levels. When `real_channels` provides per-channel levels, those
+    /// channels use real metering instead of simulation.
     pub fn update_meters(
         &mut self,
         real_master: Option<(f32, f32, f32, f32)>,
+        real_channels: &[(usize, f32, f32, f32, f32)], // (channel_idx, peak_l, peak_r, rms_l, rms_r)
     ) {
         // Precompute crossfader gains (same formula as App::calculate_crossfader_gains)
         let xf = self.dj.crossfader;
@@ -652,6 +653,30 @@ impl MixerState {
             channel.rms_right *= 0.85;
             channel.peak_level *= 0.92;
             channel.rms_level *= 0.85;
+
+            // Check if we have real audio levels for this channel
+            if let Some(&(_, peak_l, peak_r, rms_l, rms_r)) = real_channels.iter().find(|(idx, _, _, _, _)| *idx == i) {
+                // Use real levels from MPV astats filter.
+                // Peaks: keep highest (decay already applied above, max with new).
+                channel.peak_left = channel.peak_left.max(peak_l);
+                channel.peak_right = channel.peak_right.max(peak_r);
+                channel.peak_level = channel.peak_left.max(channel.peak_right);
+                // RMS tracks smoothly: fast attack, slow release
+                let rms_attack = 0.35;
+                let rms_release = 0.06;
+                channel.rms_left += if rms_l > channel.rms_left {
+                    (rms_l - channel.rms_left) * rms_attack
+                } else {
+                    (rms_l - channel.rms_left) * rms_release
+                };
+                channel.rms_right += if rms_r > channel.rms_right {
+                    (rms_r - channel.rms_right) * rms_attack
+                } else {
+                    (rms_r - channel.rms_right) * rms_release
+                };
+                channel.rms_level = (channel.rms_left + channel.rms_right) / 2.0;
+                continue;
+            }
 
             // Effective mute: muted OR (solo active and not soloed) OR not playing
             let effective_muted =

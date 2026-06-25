@@ -27,9 +27,11 @@ glob = "0.3"
 # Audio playback for samples
 rodio = "0.22"
 
-# Audio I/O for BlackHole capture pipeline
+# System audio capture via Apple ScreenCaptureKit (macOS 13.0+)
+screencapturekit = { version = "8" }
+
+# Audio device enumeration (used by output.rs)
 cpal = "0.17"
-crossbeam = "0.8"
 
 # BPM detection
 stratum-dsp = "1.0"

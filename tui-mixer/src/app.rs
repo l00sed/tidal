@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::audio::{AudioCapture, AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, DspParams, MpvClient, RackPlayer, SampleEngine, SuperColliderClient};
+use crate::audio::{AudioCapture, AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, MpvClient, RackPlayer, SampleEngine, SuperColliderClient};
 use crate::state::{ChannelControl, GlobalControl, MixerState, PadControl, RackState, SamplePadGrid, SendTarget, SelectionFocus};
 
 /// Which deck is being configured
@@ -237,7 +237,7 @@ pub struct App {
     sc_deck_a: Option<SuperColliderClient>,
     sc_deck_b: Option<SuperColliderClient>,
     sc_deck_c: Option<SuperColliderClient>,
-    // BlackHole audio capture pipeline
+    // System audio capture for master metering (via flexaudio)
     audio_capture: Option<AudioCapture>,
     // Sample playback engine (cached samples for instant playback)
     sample_engine: Option<SampleEngine>,
@@ -376,7 +376,26 @@ impl App {
                 let m = cap.read_meters();
                 (m.peak_left, m.peak_right, m.rms_left, m.rms_right)
             });
-        self.mixer.update_meters(real_master);
+
+        // Poll per-deck audio levels from MPV astats filters
+        let mut real_channels = Vec::new();
+        for (i, client_opt) in [
+            self.mpv_deck_a.as_mut(),
+            self.mpv_deck_b.as_mut(),
+            self.mpv_deck_c.as_mut(),
+        ]
+        .iter_mut()
+        .enumerate()
+        {
+            if let Some(client) = client_opt {
+                let (peak_l, peak_r, rms_l, rms_r) = client.get_audio_levels();
+                if peak_l > 0.0 || peak_r > 0.0 {
+                    real_channels.push((i, peak_l, peak_r, rms_l, rms_r));
+                }
+            }
+        }
+
+        self.mixer.update_meters(real_master, &real_channels);
         self.sample_pads.update();
     }
 
@@ -873,6 +892,7 @@ impl App {
                         }
                     }
                 }
+                self.sync_current_control_to_mpv();
             }
 
             _ => {}
@@ -2282,6 +2302,9 @@ impl App {
                         if let Ok(paused) = client.get_pause() {
                             channel.playing = !paused;
                         }
+                        // Add astats filter for real-time metering
+                        let _ = client.ensure_astats();
+                        client.start_metering();
                     }
                 }
 
@@ -2392,6 +2415,9 @@ impl App {
                 if let Ok(paused) = client.get_pause() {
                     self.mixer.cue_channel.playing = !paused;
                 }
+                // Add astats filter for real-time metering
+                let _ = client.ensure_astats();
+                client.start_metering();
             }
 
             // Get file path for BPM analysis before storing client
@@ -2650,39 +2676,26 @@ impl App {
 
         let paused = !playing;
 
-        // When audio capture is active, don't touch SC synths — capture handles audio routing
-        let capture_active = self.audio_capture.is_some();
-
         if channel_idx == self.mixer.dj.deck_a_channel {
             if let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_pause(paused);
             }
-            if !capture_active {
-                if let Some(ref mut client) = self.sc_deck_a {
-                    let _ = client.set_pause(paused);
-                }
+            if let Some(ref mut client) = self.sc_deck_a {
+                let _ = client.set_pause(paused);
             }
         } else if channel_idx == self.mixer.dj.deck_b_channel {
             if let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_pause(paused);
             }
-            if !capture_active {
-                if let Some(ref mut client) = self.sc_deck_b {
-                    let _ = client.set_pause(paused);
-                }
+            if let Some(ref mut client) = self.sc_deck_b {
+                let _ = client.set_pause(paused);
             }
         }
 
-        // Audio capture: play if any deck is playing
+        // Pause/resume capture when all decks stop/any deck plays
         if let Some(ref capture) = self.audio_capture {
-            let deck_a_playing = self.mixer.channels.get(self.mixer.dj.deck_a_channel)
-                .map(|c| c.playing)
-                .unwrap_or(false);
-            let deck_b_playing = self.mixer.channels.get(self.mixer.dj.deck_b_channel)
-                .map(|c| c.playing)
-                .unwrap_or(false);
-
-            if deck_a_playing || deck_b_playing {
+            let any_playing = self.mixer.channels.iter().any(|c| c.playing);
+            if any_playing {
                 capture.resume();
             } else {
                 capture.pause();
@@ -2863,41 +2876,8 @@ impl App {
         self.sync_capture_dsp_params();
     }
 
-    /// Sync current mixer state to audio capture DSP parameters
-    fn sync_capture_dsp_params(&mut self) {
-        if let Some(ref capture) = self.audio_capture {
-            let (gain_a, gain_b) = self.calculate_crossfader_gains();
-
-            let fader_a = self.mixer.channels.get(self.mixer.dj.deck_a_channel)
-                .map(|c| (c.fader, c.eq_low, c.eq_mid, c.eq_high, c.lpf_freq, c.hpf_freq, c.pan))
-                .unwrap_or((0.8, 0.0, 0.0, 0.0, 20000.0, 20.0, 0.0));
-
-            let fader_b = self.mixer.channels.get(self.mixer.dj.deck_b_channel)
-                .map(|c| (c.fader, c.eq_low, c.eq_mid, c.eq_high, c.lpf_freq, c.hpf_freq, c.pan))
-                .unwrap_or((0.8, 0.0, 0.0, 0.0, 20000.0, 20.0, 0.0));
-
-            let params = DspParams {
-                volume_a: (fader_a.0 * gain_a).clamp(0.0, 1.0),
-                volume_b: (fader_b.0 * gain_b).clamp(0.0, 1.0),
-                crossfader: ((self.mixer.dj.crossfader + 1.0) / 2.0).clamp(0.0, 1.0),
-                // Pass dB values directly — biquad filter handles conversion internally
-                eq_low_a: fader_a.1,
-                eq_mid_a: fader_a.2,
-                eq_high_a: fader_a.3,
-                eq_low_b: fader_b.1,
-                eq_mid_b: fader_b.2,
-                eq_high_b: fader_b.3,
-                lpf_freq_a: fader_a.4,
-                hpf_freq_a: fader_a.5,
-                lpf_freq_b: fader_b.4,
-                hpf_freq_b: fader_b.5,
-                pan_a: fader_a.6,
-                pan_b: fader_b.6,
-                master_volume: self.mixer.master.fader,
-            };
-            capture.set_params(params);
-        }
-    }
+    /// Sync current mixer state to audio capture DSP parameters (no-op without BlackHole)
+    fn sync_capture_dsp_params(&mut self) {}
     
     /// Cleanup resources before exit (clear all recording buffers)
     #[allow(dead_code)]

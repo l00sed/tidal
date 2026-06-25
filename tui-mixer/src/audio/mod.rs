@@ -11,7 +11,7 @@ mod source;
 pub mod supercollider;
 
 pub use bpm::{BpmAnalyzer, BpmResult};
-pub use capture::{AudioCapture, DspParams};
+pub use capture::AudioCapture;
 pub use discovery::{SourceDiscovery, SourceType};
 pub use mpv::MpvClient;
 pub use output::AudioOutput;

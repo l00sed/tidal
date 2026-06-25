@@ -501,36 +501,82 @@ impl Widget for LevelMeter {
             return;
         }
 
+        let has_labels = self.stereo && area.height >= 4;
+
         let draw_single_meter = |buf: &mut Buffer, x: u16, level: f32, peak: f32| {
-            let meter_top = area.y;
-            let meter_bottom = area.y + area.height - 1;
-            let meter_height = meter_bottom - meter_top;
+            // Layout: [padding] [labels if stereo] [meter bars] [padding]
+            let label_offset = if has_labels { 1 } else { 0 };
+            let meter_top = area.y + 1 + label_offset; // +1 for top padding
+            let meter_bottom = area.y + area.height - 2; // -2 for bottom padding + 0-indexed
+            let meter_height = (meter_bottom - meter_top + 1) as f32;
 
-            // Draw background
-            for y in meter_top..=meter_bottom {
-                buf.set_string(x, y, "░", Style::default().fg(Color::DarkGray));
+            if meter_height < 1.0 {
+                return;
             }
 
-            // Draw level
-            let level_height = (level * meter_height as f32) as u16;
-            for i in 0..level_height {
-                let y = meter_bottom - i;
-                let color = if i > (meter_height * 85 / 100) {
-                    Color::Red
-                } else if i > (meter_height * 70 / 100) {
-                    Color::Yellow
-                } else {
-                    Color::Green
+            // Half-block rendering: each character cell = 2 vertical levels.
+            // total_steps = meter_height * 2 (upper + lower half per cell).
+            let total_steps = (meter_height * 2.0) as u16;
+            let level_steps = (level * total_steps as f32) as u16;
+            let peak_step = if peak > 0.0 {
+                let s = (peak * total_steps as f32) as u16;
+                Some(s.clamp(0, total_steps - 1))
+            } else {
+                None
+            };
+
+            for row in 0..(meter_height as u16) {
+                let y = meter_bottom - row;
+                let lower_step = row * 2;
+                let upper_step = row * 2 + 1;
+
+                let lower_filled = level_steps > lower_step;
+                let upper_filled = level_steps > upper_step;
+
+                // Determine colors for upper and lower halves
+                let color_for_step = |step: u16| -> Color {
+                    let pct = step as f32 / total_steps as f32;
+                    if pct > 0.85 {
+                        Color::Red
+                    } else if pct > 0.70 {
+                        Color::Yellow
+                    } else {
+                        Color::Green
+                    }
                 };
-                buf.set_string(x, y, "█", Style::default().fg(color));
+
+                let bg_color = Color::Rgb(30, 30, 30);
+
+                if upper_filled && lower_filled {
+                    // Both halves filled → full block
+                    let c = color_for_step(upper_step);
+                    buf.set_string(x, y, "█", Style::default().fg(c).bg(bg_color));
+                } else if upper_filled && !lower_filled {
+                    // Upper filled, lower empty → upper half block on empty bg
+                    let c = color_for_step(upper_step);
+                    buf.set_string(x, y, "▀", Style::default().fg(c).bg(bg_color));
+                } else if !upper_filled && lower_filled {
+                    // Lower filled, upper empty → lower half block on empty bg
+                    let c = color_for_step(lower_step);
+                    buf.set_string(x, y, "▄", Style::default().fg(c).bg(bg_color));
+                } else {
+                    // Neither filled → background tick
+                    buf.set_string(x, y, " ", Style::default().bg(bg_color));
+                }
             }
 
-            // Draw peak hold
-            if peak > 0.0 {
-                let peak_y = meter_bottom - (peak * meter_height as f32) as u16;
-                let peak_y = peak_y.clamp(meter_top, meter_bottom);
+            // Draw peak hold as a thin line
+            if let Some(peak_step) = peak_step {
+                let peak_row = peak_step / 2;
+                let is_upper = peak_step % 2 == 1;
+                let peak_y = meter_bottom - peak_row;
                 let peak_color = if peak > 0.9 { Color::Red } else { Color::White };
-                buf.set_string(x, peak_y, "▬", Style::default().fg(peak_color));
+
+                if is_upper {
+                    buf.set_string(x, peak_y, "▀", Style::default().fg(peak_color));
+                } else {
+                    buf.set_string(x, peak_y, "▄", Style::default().fg(peak_color));
+                }
             }
         };
 
@@ -540,10 +586,10 @@ impl Widget for LevelMeter {
             draw_single_meter(buf, left_x, self.level, self.peak);
             draw_single_meter(buf, right_x, self.level_r, self.peak_r);
 
-            // Draw L/R labels on top of meter background
+            // Draw L/R labels below top padding
             if area.height >= 4 {
-                buf.set_string(left_x, area.y, "L", Style::default().fg(Color::DarkGray));
-                buf.set_string(right_x, area.y, "R", Style::default().fg(Color::DarkGray));
+                buf.set_string(left_x, area.y + 1, "L", Style::default().fg(Color::DarkGray));
+                buf.set_string(right_x, area.y + 1, "R", Style::default().fg(Color::DarkGray));
             }
         } else {
             let x = area.x + area.width / 2;
