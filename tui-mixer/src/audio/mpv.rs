@@ -13,6 +13,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::thread;
 
+/// Audio device entry from MPV's `audio-device-list` property.
+#[derive(Debug, Clone)]
+pub struct AudioDeviceEntry {
+    /// CoreAudio UID (e.g. "coreaudio/AppleHDAEngineOutput:1.0.0")
+    pub name: String,
+    /// Human-readable name (e.g. "MacBook Pro Speakers")
+    pub description: String,
+}
+
 /// Lock-free meter storage — written by the polling thread, read by the UI.
 /// Peaks use CAS to keep the highest value between UI ticks (same as master).
 struct AtomicMeter {
@@ -45,6 +54,15 @@ impl AtomicMeter {
                 Err(actual) => current = actual,
             }
         }
+    }
+
+    fn decay_peaks(&self, factor: f32) {
+        let decay = |atom: &AtomicU32| {
+            let current = f32::from_bits(atom.load(Ordering::Relaxed));
+            atom.store((current * factor).to_bits(), Ordering::Relaxed);
+        };
+        decay(&self.peak_l);
+        decay(&self.peak_r);
     }
 
     fn store(&self, peak_l: f32, peak_r: f32, rms_l: f32, rms_r: f32) {
@@ -195,7 +213,7 @@ impl MpvClient {
 
             if !got_response {
                 let (pl, pr, rl, rr) = meters.load();
-                meters.store(pl * 0.8, pr * 0.8, rl * 0.85, rr * 0.85);
+                meters.store(pl, pr, rl * 0.85, rr * 0.85);
             }
 
             thread::sleep(Duration::from_millis(8));
@@ -264,7 +282,7 @@ impl MpvClient {
     }
 
     pub fn set_volume(&mut self, volume: f32) -> Result<(), String> {
-        self.set_property("volume", serde_json::json!(volume.clamp(0.0, 100.0)))
+        self.set_property("volume", serde_json::json!(volume.clamp(0.0, 200.0)))
     }
 
     pub fn set_mute(&mut self, muted: bool) -> Result<(), String> {
@@ -377,6 +395,36 @@ impl MpvClient {
         val.as_str().map(|s| s.to_string()).ok_or("Invalid path value".to_string())
     }
 
+    /// An audio device known to MPV (CoreAudio UID + human description).
+    pub fn get_audio_device_list(&mut self) -> Result<Vec<AudioDeviceEntry>, String> {
+        let data = self.get_property("audio-device-list")?;
+        let arr = data.as_array().ok_or("audio-device-list is not an array")?;
+        let mut devices = Vec::new();
+        for item in arr {
+            if let (Some(name), Some(desc)) = (
+                item.get("name").and_then(|v| v.as_str()),
+                item.get("description").and_then(|v| v.as_str()),
+            ) {
+                devices.push(AudioDeviceEntry {
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                });
+            }
+        }
+        Ok(devices)
+    }
+
+    /// Switch MPV's audio output to the given device (CoreAudio UID string).
+    pub fn set_audio_device(&mut self, device_name: &str) -> Result<(), String> {
+        self.set_property("audio-device", serde_json::json!(device_name))
+    }
+
+    /// Get MPV's current audio output device (CoreAudio UID string).
+    pub fn get_audio_device(&mut self) -> Result<String, String> {
+        let val = self.get_property("audio-device")?;
+        val.as_str().map(|s| s.to_string()).ok_or("Invalid audio-device value".to_string())
+    }
+
     pub fn ensure_astats(&mut self) -> Result<(), String> {
         if let Ok(af) = self.get_property("af") {
             if let Some(arr) = af.as_array() {
@@ -399,6 +447,7 @@ impl MpvClient {
     /// Read audio levels from the background metering thread atomics.
     /// Returns `(peak_l, peak_r, rms_l, rms_r)` in linear 0.0–1.0 scale.
     pub fn get_audio_levels(&self) -> (f32, f32, f32, f32) {
+        self.meters.decay_peaks(0.92);
         self.meters.load()
     }
 }

@@ -23,8 +23,8 @@ use crate::audio::{SourceDiscovery, SourceType};
 use ui::MixerView;
 
 fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    // Logging disabled — TUI renders to stdout so tracing output would corrupt it.
+    // Use the DEBUG=1 env var for the built-in debug pane instead.
 
     // Parse command line arguments for MPV socket paths
     let args: Vec<String> = std::env::args().collect();

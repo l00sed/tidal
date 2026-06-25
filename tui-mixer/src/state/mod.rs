@@ -10,5 +10,5 @@ pub use mixer::{
 
 pub use sampler::{
     PadConfig, PadControl, Rack, RackMode, RackState, RackTrigger,
-    SamplePad, SamplePadGrid,
+    SamplePad, SamplePadGrid, PAD_KEYS,
 };

@@ -22,7 +22,6 @@ pub const TEXT_EDITING: Color = Color::Yellow;
 pub const DECK_A: Color = Color::Cyan;
 pub const DECK_A_BRIGHT: Color = Color::LightCyan;
 pub const DECK_B: Color = Color::Blue;
-pub const DECK_B_BRIGHT: Color = Color::LightBlue;
 pub const DECK_C: Color = Color::Yellow;
 
 // ── Backgrounds ──────────────────────────────────────────────────

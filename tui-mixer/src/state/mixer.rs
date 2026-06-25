@@ -13,6 +13,8 @@ pub struct DjSection {
     pub deck_a_channel: usize,
     /// Which channel is assigned to deck B (usually 1)
     pub deck_b_channel: usize,
+    /// Which channel is assigned to deck C / CUE (usually 2)
+    pub deck_c_channel: usize,
 }
 
 impl DjSection {
@@ -22,6 +24,7 @@ impl DjSection {
             headphone_volume: 0.75,
             deck_a_channel: 0,
             deck_b_channel: 1,
+            deck_c_channel: 2,
         }
     }
 
@@ -433,24 +436,34 @@ impl MixerState {
     }
 
     pub fn selected_channel(&self) -> Option<&MixerChannel> {
-        if self.selected_channel == 2 {
-            Some(&self.cue_channel)
-        } else {
-            self.channels.get(self.selected_channel)
-        }
+        self.get_channel(self.selected_channel)
     }
 
     pub fn selected_channel_mut(&mut self) -> Option<&mut MixerChannel> {
-        if self.selected_channel == 2 {
+        self.get_channel_mut(self.selected_channel)
+    }
+
+    /// Get a channel reference by index, handling Deck C's separate storage.
+    pub fn get_channel(&self, idx: usize) -> Option<&MixerChannel> {
+        if idx == self.dj.deck_c_channel {
+            Some(&self.cue_channel)
+        } else {
+            self.channels.get(idx)
+        }
+    }
+
+    /// Get a mutable channel reference by index, handling Deck C's separate storage.
+    pub fn get_channel_mut(&mut self, idx: usize) -> Option<&mut MixerChannel> {
+        if idx == self.dj.deck_c_channel {
             Some(&mut self.cue_channel)
         } else {
-            self.channels.get_mut(self.selected_channel)
+            self.channels.get_mut(idx)
         }
     }
     
     /// Check if a channel index is a deck channel (has PlayPause/BPM controls)
     pub fn is_deck_channel(&self, ch_idx: usize) -> bool {
-        ch_idx == self.dj.deck_a_channel || ch_idx == self.dj.deck_b_channel || ch_idx == 2 // Deck C
+        ch_idx == self.dj.deck_a_channel || ch_idx == self.dj.deck_b_channel || ch_idx == self.dj.deck_c_channel
     }
 
     /// Send CUE channel to Deck A or B (transfers all settings, clears CUE)
@@ -462,6 +475,7 @@ impl MixerState {
 
         if let Some(target_channel) = self.channels.get_mut(target_idx) {
             // Transfer all settings from CUE to target
+            target_channel.name = self.cue_channel.name.clone();
             target_channel.fader = self.cue_channel.fader;
             target_channel.muted = self.cue_channel.muted;
             target_channel.solo = self.cue_channel.solo;
@@ -630,12 +644,9 @@ impl MixerState {
     }
 
     /// Update metering levels — reactive to fader, EQ, filters, pan, crossfader, and master gain.
-    /// When `real_master` is provided (peak_l, peak_r, rms_l, rms_r), master meters use
-    /// the actual audio levels. When `real_channels` provides per-channel levels, those
-    /// channels use real metering instead of simulation.
+    /// Master meters are computed by summing per-channel levels with gains applied.
     pub fn update_meters(
         &mut self,
-        real_master: Option<(f32, f32, f32, f32)>,
         real_channels: &[(usize, f32, f32, f32, f32)], // (channel_idx, peak_l, peak_r, rms_l, rms_r)
     ) {
         // Precompute crossfader gains (same formula as App::calculate_crossfader_gains)
@@ -656,12 +667,16 @@ impl MixerState {
 
             // Check if we have real audio levels for this channel
             if let Some(&(_, peak_l, peak_r, rms_l, rms_r)) = real_channels.iter().find(|(idx, _, _, _, _)| *idx == i) {
-                // Use real levels from MPV astats filter.
-                // Peaks: keep highest (decay already applied above, max with new).
+                let effective_muted =
+                    channel.muted || (self.solo_active && !channel.solo) || !channel.playing;
+
+                if effective_muted {
+                    continue;
+                }
+
                 channel.peak_left = channel.peak_left.max(peak_l);
                 channel.peak_right = channel.peak_right.max(peak_r);
                 channel.peak_level = channel.peak_left.max(channel.peak_right);
-                // RMS tracks smoothly: fast attack, slow release
                 let rms_attack = 0.35;
                 let rms_release = 0.06;
                 channel.rms_left += if rms_l > channel.rms_left {
@@ -759,75 +774,88 @@ impl MixerState {
             }
         }
 
-        // --- Master meters ---
-        if let Some((real_peak_l, real_peak_r, real_rms_l, real_rms_r)) = real_master {
-            // Use real audio levels from capture callback.
-            // Peaks are accumulated via atomic compare-exchange in the audio callback
-            // and decayed in read_meters(), so we just read them directly.
-            self.master.peak_left = real_peak_l;
-            self.master.peak_right = real_peak_r;
-            // RMS tracks smoothly: fast attack, slow release
-            let rms_attack = 0.4;
-            let rms_release = 0.08;
-            self.master.rms_left += if real_rms_l > self.master.rms_left {
-                (real_rms_l - self.master.rms_left) * rms_attack
-            } else {
-                (real_rms_l - self.master.rms_left) * rms_release
-            };
-            self.master.rms_right += if real_rms_r > self.master.rms_right {
-                (real_rms_r - self.master.rms_right) * rms_attack
-            } else {
-                (real_rms_r - self.master.rms_right) * rms_release
-            };
-        } else {
-            // Simulated master from channel sum
-            self.master.peak_left *= 0.92;
-            self.master.peak_right *= 0.92;
-            self.master.rms_left *= 0.85;
-            self.master.rms_right *= 0.85;
+        // --- Deck C (cue channel) meters ---
+        {
+            let cue = &mut self.cue_channel;
+            cue.peak_left *= 0.92;
+            cue.peak_right *= 0.92;
+            cue.rms_left *= 0.85;
+            cue.rms_right *= 0.85;
+            cue.peak_level *= 0.92;
+            cue.rms_level *= 0.85;
 
-            if !self.master.muted {
-                let sum_l: f32 = self
-                    .channels
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| !c.muted && (!self.solo_active || c.solo))
-                    .map(|(i, c)| {
-                        let xf_g = if i == self.dj.deck_a_channel {
-                            xf_gain_a
-                        } else if i == self.dj.deck_b_channel {
-                            xf_gain_b
-                        } else {
-                            1.0
-                        };
-                        c.rms_left * ((1.0 - c.pan) * 0.5 + 0.25) * xf_g
-                    })
-                    .sum();
-                let sum_r: f32 = self
-                    .channels
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| !c.muted && (!self.solo_active || c.solo))
-                    .map(|(i, c)| {
-                        let xf_g = if i == self.dj.deck_a_channel {
-                            xf_gain_a
-                        } else if i == self.dj.deck_b_channel {
-                            xf_gain_b
-                        } else {
-                            1.0
-                        };
-                        c.rms_right * ((1.0 + c.pan) * 0.5 + 0.25) * xf_g
-                    })
-                    .sum();
+            if let Some(&(_, peak_l, peak_r, rms_l, rms_r)) = real_channels.iter().find(|(idx, _, _, _, _)| *idx == self.dj.deck_c_channel) {
+                let effective_muted = cue.muted || (self.solo_active && !cue.solo) || !cue.playing;
 
-                let master_l = (sum_l * self.master.fader).min(1.0);
-                let master_r = (sum_r * self.master.fader).min(1.0);
-
-                self.master.rms_left = self.master.rms_left.max(master_l);
-                self.master.rms_right = self.master.rms_right.max(master_r);
-                self.master.peak_left = self.master.peak_left.max((master_l * 1.15).min(1.0));
-                self.master.peak_right = self.master.peak_right.max((master_r * 1.15).min(1.0));
+                if !effective_muted {
+                    cue.peak_left = cue.peak_left.max(peak_l);
+                    cue.peak_right = cue.peak_right.max(peak_r);
+                    cue.peak_level = cue.peak_left.max(cue.peak_right);
+                    let rms_attack = 0.35;
+                    let rms_release = 0.06;
+                    cue.rms_left += if rms_l > cue.rms_left {
+                        (rms_l - cue.rms_left) * rms_attack
+                    } else {
+                        (rms_l - cue.rms_left) * rms_release
+                    };
+                    cue.rms_right += if rms_r > cue.rms_right {
+                        (rms_r - cue.rms_right) * rms_attack
+                    } else {
+                        (rms_r - cue.rms_right) * rms_release
+                    };
+                    cue.rms_level = (cue.rms_left + cue.rms_right) / 2.0;
+                }
             }
+        }
+
+        // --- Master meters ---
+        // Compute master from channel sum
+        self.master.peak_left *= 0.92;
+        self.master.peak_right *= 0.92;
+        self.master.rms_left *= 0.85;
+        self.master.rms_right *= 0.85;
+
+        if !self.master.muted {
+            let sum_l: f32 = self
+                .channels
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !c.muted && (!self.solo_active || c.solo))
+                .map(|(i, c)| {
+                    let xf_g = if i == self.dj.deck_a_channel {
+                        xf_gain_a
+                    } else if i == self.dj.deck_b_channel {
+                        xf_gain_b
+                    } else {
+                        1.0
+                    };
+                    c.rms_left * ((1.0 - c.pan) * 0.5 + 0.25) * xf_g
+                })
+                .sum();
+            let sum_r: f32 = self
+                .channels
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !c.muted && (!self.solo_active || c.solo))
+                .map(|(i, c)| {
+                    let xf_g = if i == self.dj.deck_a_channel {
+                        xf_gain_a
+                    } else if i == self.dj.deck_b_channel {
+                        xf_gain_b
+                    } else {
+                        1.0
+                    };
+                    c.rms_right * ((1.0 + c.pan) * 0.5 + 0.25) * xf_g
+                })
+                .sum();
+
+            let master_l = (sum_l * self.master.fader).min(1.0);
+            let master_r = (sum_r * self.master.fader).min(1.0);
+
+            self.master.rms_left = self.master.rms_left.max(master_l);
+            self.master.rms_right = self.master.rms_right.max(master_r);
+            self.master.peak_left = self.master.peak_left.max((master_l * 1.15).min(1.0));
+            self.master.peak_right = self.master.peak_right.max((master_r * 1.15).min(1.0));
         }
     }
 }

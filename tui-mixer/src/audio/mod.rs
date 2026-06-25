@@ -1,7 +1,6 @@
 //! Audio module
 
 pub mod bpm;
-pub mod capture;
 mod discovery;
 pub mod effects;
 mod mpv;
@@ -11,7 +10,6 @@ mod source;
 pub mod supercollider;
 
 pub use bpm::{BpmAnalyzer, BpmResult};
-pub use capture::AudioCapture;
 pub use discovery::{SourceDiscovery, SourceType};
 pub use mpv::MpvClient;
 pub use output::AudioOutput;

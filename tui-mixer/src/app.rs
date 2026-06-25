@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::audio::{AudioCapture, AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, MpvClient, RackPlayer, SampleEngine, SuperColliderClient};
+use crate::audio::{AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, MpvClient, RackPlayer, SampleEngine, SuperColliderClient};
 use crate::state::{ChannelControl, GlobalControl, MixerState, PadControl, RackState, SamplePadGrid, SendTarget, SelectionFocus};
 
 /// Which deck is being configured
@@ -237,8 +237,6 @@ pub struct App {
     sc_deck_a: Option<SuperColliderClient>,
     sc_deck_b: Option<SuperColliderClient>,
     sc_deck_c: Option<SuperColliderClient>,
-    // System audio capture for master metering (via flexaudio)
-    audio_capture: Option<AudioCapture>,
     // Sample playback engine (cached samples for instant playback)
     sample_engine: Option<SampleEngine>,
     // Rack state and audio player
@@ -326,7 +324,6 @@ impl App {
             sc_deck_a: None,
             sc_deck_b: None,
             sc_deck_c: None,
-            audio_capture: AudioCapture::new().ok(),
             sample_engine,
             rack_state: RackState::new(),
             rack_player,
@@ -369,14 +366,6 @@ impl App {
 
     /// Main tick - update meters, etc.
     pub fn tick(&mut self) {
-        let real_master = self
-            .audio_capture
-            .as_ref()
-            .map(|cap| {
-                let m = cap.read_meters();
-                (m.peak_left, m.peak_right, m.rms_left, m.rms_right)
-            });
-
         // Poll per-deck audio levels from MPV astats filters
         let mut real_channels = Vec::new();
         for (i, client_opt) in [
@@ -395,7 +384,7 @@ impl App {
             }
         }
 
-        self.mixer.update_meters(real_master, &real_channels);
+        self.mixer.update_meters(&real_channels);
         self.sample_pads.update();
     }
 
@@ -772,10 +761,30 @@ impl App {
                     match self.mixer.selected_control {
                         ChannelControl::CueSendToA => {
                             self.mixer.send_cue_to_deck(SendTarget::A);
+                            // Swap MPV clients: Deck C's source moves to Deck A
+                            let old_a = self.mpv_deck_a.take();
+                            self.mpv_deck_a = self.mpv_deck_c.take();
+                            self.mpv_deck_c = old_a;
+                            // Swap SC clients too
+                            let old_sc_a = self.sc_deck_a.take();
+                            self.sc_deck_a = self.sc_deck_c.take();
+                            self.sc_deck_c = old_sc_a;
+                            // Re-route audio devices
+                            self.reroute_audio_devices_after_cue_send(true);
                             return;
                         }
                         ChannelControl::CueSendToB => {
                             self.mixer.send_cue_to_deck(SendTarget::B);
+                            // Swap MPV clients: Deck C's source moves to Deck B
+                            let old_b = self.mpv_deck_b.take();
+                            self.mpv_deck_b = self.mpv_deck_c.take();
+                            self.mpv_deck_c = old_b;
+                            // Swap SC clients too
+                            let old_sc_b = self.sc_deck_b.take();
+                            self.sc_deck_b = self.sc_deck_c.take();
+                            self.sc_deck_c = old_sc_b;
+                            // Re-route audio devices
+                            self.reroute_audio_devices_after_cue_send(false);
                             return;
                         }
                         ChannelControl::CueOutputSelect => {
@@ -1023,11 +1032,21 @@ impl App {
             }
         } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB || self.selected_pane == SelectedPane::DeckC {
             match self.mixer.selected_control {
-                ChannelControl::Mute => {
-                    self.mixer.selected_control = ChannelControl::Solo;
+                ChannelControl::Mute | ChannelControl::Solo => {
+                    // Toggle between Mute and Solo
+                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
+                        ChannelControl::Solo
+                    } else {
+                        ChannelControl::Mute
+                    };
                 }
-                ChannelControl::Solo => {
-                    self.mixer.selected_control = ChannelControl::Mute;
+                ChannelControl::CueSendToA | ChannelControl::CueSendToB => {
+                    // Toggle between -> A and -> B
+                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::CueSendToA {
+                        ChannelControl::CueSendToB
+                    } else {
+                        ChannelControl::CueSendToA
+                    };
                 }
                 _ => {
                     if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
@@ -1064,11 +1083,19 @@ impl App {
             }
         } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB || self.selected_pane == SelectedPane::DeckC {
             match self.mixer.selected_control {
-                ChannelControl::Mute => {
-                    self.mixer.selected_control = ChannelControl::Solo;
+                ChannelControl::Mute | ChannelControl::Solo => {
+                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
+                        ChannelControl::Solo
+                    } else {
+                        ChannelControl::Mute
+                    };
                 }
-                ChannelControl::Solo => {
-                    self.mixer.selected_control = ChannelControl::Mute;
+                ChannelControl::CueSendToA | ChannelControl::CueSendToB => {
+                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::CueSendToA {
+                        ChannelControl::CueSendToB
+                    } else {
+                        ChannelControl::CueSendToA
+                    };
                 }
                 _ => {
                     if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
@@ -1783,14 +1810,34 @@ impl App {
     fn open_output_picker(&mut self, target: OutputPickerTarget) {
         self.output_picker_active = true;
         self.output_picker_target = target;
-        // Refresh device list
+
+        // Try to get device list from a connected MPV client first.
+        // Falls back to cpal enumeration if no clients are available.
+        let mpv_devices = self.mpv_deck_a.as_mut()
+            .or(self.mpv_deck_b.as_mut())
+            .and_then(|c| c.get_audio_device_list().ok());
+
         match target {
             OutputPickerTarget::Master => {
-                self.master_output.refresh_devices();
+                if let Some(devices) = &mpv_devices {
+                    let pairs: Vec<_> = devices.iter()
+                        .map(|d| (d.name.clone(), d.description.clone()))
+                        .collect();
+                    self.master_output.set_devices_from_mpv(&pairs);
+                } else {
+                    self.master_output.refresh_devices();
+                }
                 self.selected_master_output_idx = 0;
             }
             OutputPickerTarget::Cue => {
-                self.cue_output.refresh_devices();
+                if let Some(devices) = &mpv_devices {
+                    let pairs: Vec<_> = devices.iter()
+                        .map(|d| (d.name.clone(), d.description.clone()))
+                        .collect();
+                    self.cue_output.set_devices_from_mpv(&pairs);
+                } else {
+                    self.cue_output.refresh_devices();
+                }
                 self.selected_cue_output_idx = 0;
             }
         }
@@ -1809,17 +1856,34 @@ impl App {
             ),
         };
 
-        if let Some(device_name) = devices.get(selected_idx) {
-            // Record the selection for display purposes
-            // Note: MPV uses its own CoreAudio device names, so we don't
-            // route audio directly. Users should configure system audio
-            // output (e.g., System Preferences > Sound) for routing.
-            match self.output_picker_target {
+        if let Some(display_name) = devices.get(selected_idx) {
+            let mpv_name = match self.output_picker_target {
                 OutputPickerTarget::Master => {
-                    self.master_output.select_main_device(device_name).ok();
+                    self.master_output.select_device(display_name).ok().flatten()
                 }
                 OutputPickerTarget::Cue => {
-                    self.cue_output.select_cue_device(device_name).ok();
+                    self.cue_output.select_device(display_name).ok().flatten()
+                }
+            };
+
+            // Route audio to the selected device.
+            // Master → Deck A + Deck B (main speakers)
+            // CUE → Deck C only (headphone preview)
+            if let Some(ref mpv_dev) = mpv_name {
+                match self.output_picker_target {
+                    OutputPickerTarget::Master => {
+                        if let Some(client) = self.mpv_deck_a.as_mut() {
+                            client.set_audio_device(mpv_dev).ok();
+                        }
+                        if let Some(client) = self.mpv_deck_b.as_mut() {
+                            client.set_audio_device(mpv_dev).ok();
+                        }
+                    }
+                    OutputPickerTarget::Cue => {
+                        if let Some(client) = self.mpv_deck_c.as_mut() {
+                            client.set_audio_device(mpv_dev).ok();
+                        }
+                    }
                 }
             }
         }
@@ -2053,7 +2117,7 @@ impl App {
         match self.source_picker.input_mode {
             PickerInputMode::Normal => match key.code {
                 KeyCode::Esc => {
-                    self.mode = AppMode::ControlSelect;
+                    self.mode = AppMode::SamplePadConfig;
                 }
                 KeyCode::Char('i') => {
                     self.source_picker.input_mode = PickerInputMode::Insert;
@@ -2077,7 +2141,7 @@ impl App {
                             self.enter_sample_directory(item.path);
                         } else if let AppMode::SamplePicker(pad_idx) = self.mode {
                             self.assign_sample_to_pad(pad_idx);
-                            self.mode = AppMode::ControlSelect;
+                            self.mode = AppMode::SamplePadConfig;
                         }
                     }
                 }
@@ -2105,7 +2169,7 @@ impl App {
                             self.enter_sample_directory(item.path);
                         } else if let AppMode::SamplePicker(pad_idx) = self.mode {
                             self.assign_sample_to_pad(pad_idx);
-                            self.mode = AppMode::ControlSelect;
+                            self.mode = AppMode::SamplePadConfig;
                         }
                     }
                 }
@@ -2297,7 +2361,7 @@ impl App {
                     // Sync initial volume from MPV
                     if connected {
                         if let Ok(vol) = client.get_volume() {
-                            channel.fader = vol / 100.0;
+                            channel.fader = vol / 200.0;
                         }
                         if let Ok(paused) = client.get_pause() {
                             channel.playing = !paused;
@@ -2347,7 +2411,7 @@ impl App {
                 let mut client = SuperColliderClient::new(addr, base_node_id);
                 let connected = client.connect().is_ok();
 
-                if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
+                if let Some(channel) = self.mixer.get_channel_mut(channel_idx) {
                     channel.name = item.name.clone();
                     channel.connected = connected;
                     channel.source_id = Some(addr.to_string());
@@ -2361,7 +2425,7 @@ impl App {
                     let _ = client.create_synth();
 
                     // Sync current mixer settings to the new synth
-                    if let Some(channel) = self.mixer.channels.get(channel_idx) {
+                    if let Some(channel) = self.mixer.get_channel(channel_idx) {
                         let xf_gain = if deck == Deck::A {
                             self.calculate_crossfader_gains().0
                         } else {
@@ -2410,7 +2474,7 @@ impl App {
 
             if connected {
                 if let Ok(vol) = client.get_volume() {
-                    self.mixer.cue_channel.fader = vol / 100.0;
+                    self.mixer.cue_channel.fader = vol / 200.0;
                 }
                 if let Ok(paused) = client.get_pause() {
                     self.mixer.cue_channel.playing = !paused;
@@ -2479,60 +2543,113 @@ impl App {
         (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
     }
 
-    /// Sync volume to MPV/SC for a specific deck, combining fader, crossfader, and master
-    fn sync_deck_volume(&mut self, deck_a: bool) {
-        let (gain_a, gain_b) = self.calculate_crossfader_gains();
-        let master_muted = self.mixer.master.muted;
-        let master = self.mixer.master.fader;
-        let solo_active = self.mixer.solo_active;
-
-        if deck_a {
-            let ch = self.mixer.channels.get(self.mixer.dj.deck_a_channel);
-            let fader = ch.map(|c| c.fader).unwrap_or(1.0);
-            let muted = ch.map(|c| c.muted).unwrap_or(false);
-            let solo = ch.map(|c| c.solo).unwrap_or(false);
-            let effective_muted = master_muted || muted || (solo_active && !solo);
-            // Fader: 0.0 = 0%, 0.5 = 50% (-6dB), 1.0 = 100% (0dB)
-            // Master: 0.5 = 1.0x (unity), 1.0 = 2.0x (+6dB boost)
-            let vol = if effective_muted { 0.0 } else {
-                (fader * gain_a * master * 2.0 * 100.0).clamp(0.0, 200.0)
-            };
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_volume(vol);
-            }
-            let sc_vol = if effective_muted { 0.0 } else {
-                (fader * gain_a * master * 2.0).clamp(0.0, 2.0)
-            };
-            if let Some(ref client) = self.sc_deck_a {
-                let _ = client.set_volume(sc_vol);
-            }
+    /// Get the MPV client for a channel index.
+    fn mpv_for_channel(&mut self, ch_idx: usize) -> Option<&mut MpvClient> {
+        if ch_idx == self.mixer.dj.deck_a_channel {
+            self.mpv_deck_a.as_mut()
+        } else if ch_idx == self.mixer.dj.deck_b_channel {
+            self.mpv_deck_b.as_mut()
+        } else if ch_idx == self.mixer.dj.deck_c_channel {
+            self.mpv_deck_c.as_mut()
         } else {
-            let ch = self.mixer.channels.get(self.mixer.dj.deck_b_channel);
-            let fader = ch.map(|c| c.fader).unwrap_or(1.0);
-            let muted = ch.map(|c| c.muted).unwrap_or(false);
-            let solo = ch.map(|c| c.solo).unwrap_or(false);
-            let effective_muted = master_muted || muted || (solo_active && !solo);
-            let vol = if effective_muted { 0.0 } else {
-                (fader * gain_b * master * 2.0 * 100.0).clamp(0.0, 200.0)
-            };
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_volume(vol);
+            None
+        }
+    }
+
+    /// Get the SuperCollider client for a channel index.
+    fn sc_for_channel(&mut self, ch_idx: usize) -> Option<&mut SuperColliderClient> {
+        if ch_idx == self.mixer.dj.deck_a_channel {
+            self.sc_deck_a.as_mut()
+        } else if ch_idx == self.mixer.dj.deck_b_channel {
+            self.sc_deck_b.as_mut()
+        } else if ch_idx == self.mixer.dj.deck_c_channel {
+            self.sc_deck_c.as_mut()
+        } else {
+            None
+        }
+    }
+
+    /// Re-route audio devices after a CUE-to-deck send.
+    ///
+    /// After swapping MPV clients, the new Deck A/B (old CUE) process is still
+    /// outputting to the CUE device, and the new CUE (old Deck A/B) is on Master.
+    /// This swaps the audio outputs so each process outputs to the correct bus.
+    ///
+    /// Falls back to querying the opposite MPV process's current device when the
+    /// user hasn't explicitly picked one from the output picker.
+    fn reroute_audio_devices_after_cue_send(&mut self, to_deck_a: bool) {
+        // Prefer explicit picker selection; fall back to querying the OPPOSITE process.
+        // After the swap: mpv_deck_a/c = old CUE (was on CUE device), mpv_deck_c = old Deck A/B (was on Master).
+        // So query the old Deck A/B process (now mpv_deck_c) to discover the Master device,
+        // and query the old CUE process (now mpv_deck_a/b) to discover the CUE device.
+        let master_dev = self.master_output.selected_mpv_name().map(|s| s.to_string())
+            .or_else(|| {
+                // mpv_deck_c is the old Deck A/B process — it was on Master
+                self.mpv_deck_c.as_mut().and_then(|c| c.get_audio_device().ok())
+            });
+        let cue_dev = self.cue_output.selected_mpv_name().map(|s| s.to_string())
+            .or_else(|| {
+                // mpv_deck_a/b is the old CUE process — it was on CUE
+                let client = if to_deck_a { self.mpv_deck_a.as_mut() } else { self.mpv_deck_b.as_mut() };
+                client.and_then(|c| c.get_audio_device().ok())
+            });
+
+        tracing::debug!(
+            "reroute_audio_devices: master_dev={:?}, cue_dev={:?}, to_deck_a={}",
+            master_dev, cue_dev, to_deck_a
+        );
+
+        // Set the new Deck A/B to Master output
+        if let Some(dev) = &master_dev {
+            let client = if to_deck_a { self.mpv_deck_a.as_mut() } else { self.mpv_deck_b.as_mut() };
+            if let Some(c) = client {
+                tracing::debug!("Setting deck {} audio device to master: {}", if to_deck_a { "A" } else { "B" }, dev);
+                c.set_audio_device(dev).ok();
             }
-            let sc_vol = if effective_muted { 0.0 } else {
-                (fader * gain_b * master * 2.0).clamp(0.0, 2.0)
-            };
-            if let Some(ref client) = self.sc_deck_b {
-                let _ = client.set_volume(sc_vol);
+        }
+        // Set the new CUE to CUE output
+        if let Some(dev) = &cue_dev {
+            if let Some(c) = self.mpv_deck_c.as_mut() {
+                tracing::debug!("Setting deck C audio device to cue: {}", dev);
+                c.set_audio_device(dev).ok();
             }
         }
     }
 
+    /// Sync volume to MPV/SC for a specific deck, combining fader, crossfader, and master
+    fn sync_deck_volume(&mut self, deck_a: bool) {
+        let ch_idx = if deck_a {
+            self.mixer.dj.deck_a_channel
+        } else {
+            self.mixer.dj.deck_b_channel
+        };
+        self.sync_volume_to_mpv(ch_idx);
+    }
+
     /// Sync volume change to MPV for a channel (applies crossfader gain)
     pub fn sync_volume_to_mpv(&mut self, channel_idx: usize) {
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            self.sync_deck_volume(true);
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            self.sync_deck_volume(false);
+        let (gain_a, gain_b) = self.calculate_crossfader_gains();
+        let gain = if channel_idx == self.mixer.dj.deck_b_channel { gain_b } else { gain_a };
+        let master = self.mixer.master.fader;
+        let solo_active = self.mixer.solo_active;
+
+        let ch = self.mixer.get_channel(channel_idx);
+        let fader = ch.map(|c| c.fader).unwrap_or(0.5);
+        let muted = ch.map(|c| c.muted).unwrap_or(false);
+        let solo = ch.map(|c| c.solo).unwrap_or(false);
+        let effective_muted = self.mixer.master.muted || muted || (solo_active && !solo);
+
+        let vol = if effective_muted { 0.0 } else {
+            (fader * gain * master * 2.0 * 200.0).clamp(0.0, 200.0)
+        };
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_volume(vol);
+        }
+        let sc_vol = if effective_muted { 0.0 } else {
+            (fader * gain * master * 2.0).clamp(0.0, 2.0)
+        };
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_volume(sc_vol);
         }
         self.sync_capture_dsp_params();
     }
@@ -2549,29 +2666,29 @@ impl App {
         let deck_b_ch = self.mixer.dj.deck_b_channel;
 
         // Compute all values before mutable borrows
-        let a_solo = self.mixer.channels.get(deck_a_ch).map(|c| c.solo).unwrap_or(false);
+        let a_solo = self.mixer.get_channel(deck_a_ch).map(|c| c.solo).unwrap_or(false);
         let a_muted = if solo_active { !a_solo } else {
-            self.mixer.channels.get(deck_a_ch).map(|c| c.muted).unwrap_or(false)
+            self.mixer.get_channel(deck_a_ch).map(|c| c.muted).unwrap_or(false)
         };
-        let a_fader = self.mixer.channels.get(deck_a_ch).map(|c| c.fader).unwrap_or(0.5);
+        let a_fader = self.mixer.get_channel(deck_a_ch).map(|c| c.fader).unwrap_or(0.5);
         let a_vol = if a_muted { 0.0 } else {
-            (a_fader * gain_a * master * 2.0 * 100.0).clamp(0.0, 200.0)
+            (a_fader * gain_a * master * 2.0 * 200.0).clamp(0.0, 200.0)
         };
 
-        let b_solo = self.mixer.channels.get(deck_b_ch).map(|c| c.solo).unwrap_or(false);
+        let b_solo = self.mixer.get_channel(deck_b_ch).map(|c| c.solo).unwrap_or(false);
         let b_muted = if solo_active { !b_solo } else {
-            self.mixer.channels.get(deck_b_ch).map(|c| c.muted).unwrap_or(false)
+            self.mixer.get_channel(deck_b_ch).map(|c| c.muted).unwrap_or(false)
         };
-        let b_fader = self.mixer.channels.get(deck_b_ch).map(|c| c.fader).unwrap_or(0.5);
+        let b_fader = self.mixer.get_channel(deck_b_ch).map(|c| c.fader).unwrap_or(0.5);
         let b_vol = if b_muted { 0.0 } else {
-            (b_fader * gain_b * master * 2.0 * 100.0).clamp(0.0, 200.0)
+            (b_fader * gain_b * master * 2.0 * 200.0).clamp(0.0, 200.0)
         };
 
         let c_solo = self.mixer.cue_channel.solo;
         let c_muted = if solo_active { !c_solo } else { self.mixer.cue_channel.muted };
         let c_fader = self.mixer.cue_channel.fader;
         let c_vol = if c_muted { 0.0 } else {
-            (c_fader * gain_a * master * 2.0 * 100.0).clamp(0.0, 200.0)
+            (c_fader * gain_a * master * 2.0 * 200.0).clamp(0.0, 200.0)
         };
 
         let mut msgs = Vec::new();
@@ -2627,102 +2744,56 @@ impl App {
 
     /// Sync mute state to MPV/SC for a channel
     pub fn sync_mute_to_mpv(&mut self, channel_idx: usize) {
-        let muted = self.mixer.channels.get(channel_idx)
+        let muted = self.mixer.get_channel(channel_idx)
             .map(|c| c.muted)
             .unwrap_or(false);
+        let fader = self.mixer.get_channel(channel_idx)
+            .map(|c| c.fader)
+            .unwrap_or(0.5);
         let (gain_a, gain_b) = self.calculate_crossfader_gains();
+        let gain = if channel_idx == self.mixer.dj.deck_b_channel { gain_b } else { gain_a };
         let master = self.mixer.master.fader;
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_mute(muted);
-            }
-            // SuperCollider: mute by setting volume to 0, unmute restores fader level with gains
-            if let Some(ref client) = self.sc_deck_a {
-                let vol = if muted {
-                    0.0
-                } else {
-                    let fader = self.mixer.channels.get(channel_idx)
-                        .map(|c| c.fader)
-                        .unwrap_or(0.5);
-                    (fader * gain_a * master * 2.0).clamp(0.0, 2.0)
-                };
-                let _ = client.set_volume(vol);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_mute(muted);
-            }
-            if let Some(ref client) = self.sc_deck_b {
-                let vol = if muted {
-                    0.0
-                } else {
-                    let fader = self.mixer.channels.get(channel_idx)
-                        .map(|c| c.fader)
-                        .unwrap_or(0.5);
-                    (fader * gain_b * master * 2.0).clamp(0.0, 2.0)
-                };
-                let _ = client.set_volume(vol);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_mute(muted);
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let vol = if muted {
+                0.0
+            } else {
+                (fader * gain * master * 2.0).clamp(0.0, 2.0)
+            };
+            let _ = client.set_volume(vol);
         }
         self.sync_capture_dsp_params();
     }
 
     /// Sync play/pause state to MPV/SC for a channel
     pub fn sync_playpause_to_mpv(&mut self, channel_idx: usize) {
-        let playing = self.mixer.channels.get(channel_idx)
+        let playing = self.mixer.get_channel(channel_idx)
             .map(|c| c.playing)
             .unwrap_or(false);
-
         let paused = !playing;
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_pause(paused);
-            }
-            if let Some(ref mut client) = self.sc_deck_a {
-                let _ = client.set_pause(paused);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_pause(paused);
-            }
-            if let Some(ref mut client) = self.sc_deck_b {
-                let _ = client.set_pause(paused);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_pause(paused);
         }
-
-        // Pause/resume capture when all decks stop/any deck plays
-        if let Some(ref capture) = self.audio_capture {
-            let any_playing = self.mixer.channels.iter().any(|c| c.playing);
-            if any_playing {
-                capture.resume();
-            } else {
-                capture.pause();
-            }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_pause(paused);
         }
     }
 
     /// Sync playback speed (BPM) to MPV for a channel
     pub fn sync_speed_to_mpv(&mut self, channel_idx: usize) {
-        let speed = self.mixer.channels.get(channel_idx)
+        let speed = self.mixer.get_channel(channel_idx)
             .map(|c| c.playback_speed)
             .unwrap_or(1.0);
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_speed(speed);
-            }
-            if let Some(ref client) = self.sc_deck_a {
-                let _ = client.set_speed(speed);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_speed(speed);
-            }
-            if let Some(ref client) = self.sc_deck_b {
-                let _ = client.set_speed(speed);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_speed(speed);
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_speed(speed);
         }
     }
 
@@ -2768,101 +2839,64 @@ impl App {
 
     /// Sync EQ to MPV for a channel
     fn sync_eq_to_mpv(&mut self, channel_idx: usize) {
-        let (low, mid, high, low_kill, mid_kill, high_kill) = self.mixer.channels.get(channel_idx)
+        let (low, mid, high, low_kill, mid_kill, high_kill) = self.mixer.get_channel(channel_idx)
             .map(|c| (c.eq_low, c.eq_mid, c.eq_high, c.eq_low_kill, c.eq_mid_kill, c.eq_high_kill))
             .unwrap_or((0.0, 0.0, 0.0, false, false, false));
 
-        // If kill is active, use -96dB (effectively silent)
         let effective_low = if low_kill { -96.0 } else { low };
         let effective_mid = if mid_kill { -96.0 } else { mid };
         let effective_high = if high_kill { -96.0 } else { high };
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_eq(effective_low, effective_mid, effective_high);
-            }
-            if let Some(ref client) = self.sc_deck_a {
-                let _ = client.set_eq(effective_low, effective_mid, effective_high);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_eq(effective_low, effective_mid, effective_high);
-            }
-            if let Some(ref client) = self.sc_deck_b {
-                let _ = client.set_eq(effective_low, effective_mid, effective_high);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_eq(effective_low, effective_mid, effective_high);
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_eq(effective_low, effective_mid, effective_high);
         }
         self.sync_capture_dsp_params();
     }
 
     /// Sync LPF to MPV for a channel
     fn sync_lpf_to_mpv(&mut self, channel_idx: usize) {
-        let freq = self.mixer.channels.get(channel_idx)
+        let freq = self.mixer.get_channel(channel_idx)
             .map(|c| c.lpf_freq)
             .unwrap_or(20000.0);
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_lpf(freq);
-            }
-            if let Some(ref client) = self.sc_deck_a {
-                let _ = client.set_lpf(freq);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_lpf(freq);
-            }
-            if let Some(ref client) = self.sc_deck_b {
-                let _ = client.set_lpf(freq);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_lpf(freq);
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_lpf(freq);
         }
         self.sync_capture_dsp_params();
     }
 
     /// Sync HPF to MPV/SC for a channel
     fn sync_hpf_to_mpv(&mut self, channel_idx: usize) {
-        let freq = self.mixer.channels.get(channel_idx)
+        let freq = self.mixer.get_channel(channel_idx)
             .map(|c| c.hpf_freq)
             .unwrap_or(20.0);
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_hpf(freq);
-            }
-            if let Some(ref client) = self.sc_deck_a {
-                let _ = client.set_hpf(freq);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_hpf(freq);
-            }
-            if let Some(ref client) = self.sc_deck_b {
-                let _ = client.set_hpf(freq);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_hpf(freq);
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_hpf(freq);
         }
         self.sync_capture_dsp_params();
     }
 
     /// Sync pan to MPV/SC for a channel
     fn sync_pan_to_mpv(&mut self, channel_idx: usize) {
-        let pan = self.mixer.channels.get(channel_idx)
+        let pan = self.mixer.get_channel(channel_idx)
             .map(|c| c.pan)
             .unwrap_or(0.0);
 
-        if channel_idx == self.mixer.dj.deck_a_channel {
-            if let Some(ref mut client) = self.mpv_deck_a {
-                let _ = client.set_pan(pan);
-            }
-            if let Some(ref client) = self.sc_deck_a {
-                let _ = client.set_pan(pan);
-            }
-        } else if channel_idx == self.mixer.dj.deck_b_channel {
-            if let Some(ref mut client) = self.mpv_deck_b {
-                let _ = client.set_pan(pan);
-            }
-            if let Some(ref client) = self.sc_deck_b {
-                let _ = client.set_pan(pan);
-            }
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_pan(pan);
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_pan(pan);
         }
         self.sync_capture_dsp_params();
     }

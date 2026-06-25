@@ -536,9 +536,9 @@ impl Widget for LevelMeter {
                 // Determine colors for upper and lower halves
                 let color_for_step = |step: u16| -> Color {
                     let pct = step as f32 / total_steps as f32;
-                    if pct > 0.85 {
+                    if pct > 0.90 {
                         Color::Red
-                    } else if pct > 0.70 {
+                    } else if pct > 0.75 {
                         Color::Yellow
                     } else {
                         Color::Green
@@ -581,8 +581,8 @@ impl Widget for LevelMeter {
         };
 
         if self.stereo && area.width >= 3 {
-            let left_x = area.x + area.width / 2 - 1;
-            let right_x = area.x + area.width / 2 + 1;
+            let left_x = area.x + area.width / 2;
+            let right_x = area.x + area.width / 2 + 2;
             draw_single_meter(buf, left_x, self.level, self.peak);
             draw_single_meter(buf, right_x, self.level_r, self.peak_r);
 

@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
 
-use crate::state::{MixerState, RackMode, RackState, SelectionFocus, GlobalControl, ChannelControl, SamplePadGrid};
+use crate::state::{MixerState, RackMode, RackState, SelectionFocus, GlobalControl, ChannelControl, SamplePadGrid, PAD_KEYS};
 use crate::ui::channel::{ChannelStrip, MasterStrip};
 use crate::ui::colors::*;
 use crate::ui::sampler::{CountInOverlay, PadConfigPane, RackRow};
@@ -204,10 +204,7 @@ impl<'a> Widget for MixerView<'a> {
             self.render_source_picker(main_area, buf, deck, picker);
         }
         
-        // Render sample picker overlay if active
-        if let Some((pad_idx, picker)) = self.sample_picker {
-            self.render_sample_picker(main_area, buf, pad_idx, picker);
-        }
+        // Sample picker is rendered inline in render_dj_center
 
         // Render output device picker overlay if active
         if self.output_picker_active {
@@ -407,7 +404,10 @@ impl<'a> MixerView<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        if self.pad_config_mode {
+        if let Some((pad_idx, picker)) = self.sample_picker {
+            // Sample picker replaces config pane
+            self.render_sample_picker_inline(inner, buf, pad_idx, picker);
+        } else if self.pad_config_mode {
             // Config pane replaces pad grid
             PadConfigPane::new(self.pads)
                 .editing(self.pad_config_editing)
@@ -765,7 +765,7 @@ impl<'a> MixerView<'a> {
             let label = "PADS";
             right_x = right_x.saturating_sub(label.len() as u16 + 2);
             buf.set_string(right_x, area.y, label,
-                Style::default().fg(DECK_B_BRIGHT).add_modifier(Modifier::BOLD));
+                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
         }
 
         if self.state.solo_active {
@@ -934,32 +934,22 @@ impl<'a> MixerView<'a> {
         buf.set_string(chunks[3].x, chunks[3].y, hint, Style::default().fg(TEXT_GHOST));
     }
 
-    fn render_sample_picker(&self, area: Rect, buf: &mut Buffer, pad_idx: usize, picker: &SourcePickerState) {
-        // Centered popup
-        let popup_width = 60u16.min(area.width.saturating_sub(4));
-        let popup_height = 20u16.min(area.height.saturating_sub(4));
-        let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-        let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear background
-        Clear.render(popup_area, buf);
-        for y in popup_area.y..popup_area.y + popup_area.height {
-            for x in popup_area.x..popup_area.x + popup_area.width {
-                buf.set_string(x, y, " ", Style::default().bg(BG_DARK));
-            }
-        }
-
-        let pad_num = pad_idx + 1;
-        let title = format!(" Select Sample for Pad {} ", pad_num);
+    fn render_sample_picker_inline(&self, area: Rect, buf: &mut Buffer, pad_idx: usize, picker: &SourcePickerState) {
+        let key = PAD_KEYS[pad_idx / 4][pad_idx % 4].to_ascii_uppercase();
+        let title = format!(" SAMPLE [{}] ", key);
         
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_ACTIVE))
             .title(Span::styled(title, Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)));
 
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        self.render_sample_picker_content(inner, buf, pad_idx, picker);
+    }
+
+    fn render_sample_picker_content(&self, area: Rect, buf: &mut Buffer, _pad_idx: usize, picker: &SourcePickerState) {
 
         // Layout: path, search, list, hint
         let chunks = Layout::default()
@@ -970,7 +960,7 @@ impl<'a> MixerView<'a> {
                 Constraint::Min(5),     // File list
                 Constraint::Length(1),  // Hint
             ])
-            .split(inner);
+            .split(area);
 
         // Current path
         let rel_path = picker.relative_path();
@@ -1019,10 +1009,10 @@ impl<'a> MixerView<'a> {
                     Style::default().fg(TEXT_BRIGHT)
                 };
                 
-                // Icon: folder or audio file
-                let icon = if item.is_dir { "📁" } else { "♪ " };
+                // Nerd Font icons: folder or audio file
+                let icon = if item.is_dir { "\u{f07b}" } else { "\u{f001}" };
                 let line = format!("{} {}", icon, item.name);
-                let display = if line.chars().count() > list_area.width as usize {
+                let display = if line.len() > list_area.width as usize {
                     let truncated: String = line.chars().take(list_area.width as usize - 1).collect();
                     format!("{}…", truncated)
                 } else {

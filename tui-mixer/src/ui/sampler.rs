@@ -36,7 +36,7 @@ impl<'a> Widget for PadConfigPane<'a> {
         let is_editing = self.editing;
 
         // Title with pad name
-        let title = format!(" Pad Config: [{}] {} ", key_char, pad.name);
+        let title = format!(" CONFIG: [{}] {} ", key_char, pad.name);
         let title_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
         let block = Block::default()
@@ -57,6 +57,15 @@ impl<'a> Widget for PadConfigPane<'a> {
         let mut y = inner.y;
 
         for &control in controls {
+            // Add separator before Filters header
+            if control == PadControl::FiltersHeader {
+                let sep_style = Style::default().fg(SEPARATOR);
+                for x in inner.x..inner.x + inner.width {
+                    buf.set_string(x, y, "─", sep_style);
+                }
+                y += row_height;
+            }
+
             if y + row_height > inner.y + inner.height {
                 break;
             }
@@ -66,7 +75,19 @@ impl<'a> Widget for PadConfigPane<'a> {
 
             render_config_row(row_area, buf, control, pad, is_selected, is_editing);
 
-            y += row_height;
+            // Add separator after Sample row
+            if control == PadControl::Sample {
+                y += row_height;
+                if y + row_height <= inner.y + inner.height {
+                    let sep_style = Style::default().fg(SEPARATOR);
+                    for x in inner.x..inner.x + inner.width {
+                        buf.set_string(x, y, "─", sep_style);
+                    }
+                    y += row_height;
+                }
+            } else {
+                y += row_height;
+            }
         }
 
         // Help hint at bottom
@@ -108,8 +129,10 @@ fn render_config_row(
     // Label
     let label_style = if selected {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else if control == PadControl::FiltersHeader {
+        Style::default().fg(TEXT_GHOST)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(TEXT_DEFAULT)
     };
     let label = control.label();
     buf.set_string(area.x, area.y, label, label_style);
@@ -118,20 +141,28 @@ fn render_config_row(
 
     match control {
         PadControl::Sample => {
+            let has_sample = pad.sample_path.is_some();
             let sample_name = pad.sample_path
                 .as_ref()
                 .and_then(|p| p.file_stem())
-                .and_then(|s| s.to_str())
-                .unwrap_or("(none)");
-            let name = if sample_name.len() > bar_width + value_width {
-                format!("{}…", &sample_name[..bar_width + value_width - 1])
+                .and_then(|s| s.to_str());
+            let name = if let Some(name) = sample_name {
+                if name.len() > bar_width + value_width {
+                    format!("{}…", &name[..bar_width + value_width - 1])
+                } else {
+                    name.to_string()
+                }
             } else {
-                sample_name.to_string()
+                "(click to set)".to_string()
             };
-            let style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
+            let style = if selected && has_sample {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else if has_sample {
                 Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::DarkGray)
             };
             buf.set_string(control_x, area.y, &name, style);
         }
@@ -157,11 +188,7 @@ fn render_config_row(
             };
             buf.set_string(control_x, area.y, label, style);
         }
-        PadControl::FiltersHeader => {
-            // Just a heading, not interactive
-            let style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-            buf.set_string(control_x, area.y, "Filters", style);
-        }
+
         _ => {
             // Continuous controls: draw a bar + value
             let (value, display) = match control {

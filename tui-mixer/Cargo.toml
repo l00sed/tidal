@@ -27,9 +27,6 @@ glob = "0.3"
 # Audio playback for samples
 rodio = "0.22"
 
-# System audio capture via Apple ScreenCaptureKit (macOS 13.0+)
-screencapturekit = { version = "8" }
-
 # Audio device enumeration (used by output.rs)
 cpal = "0.17"
 
@@ -39,7 +36,7 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "
 
 # Logging (optional, for debugging)
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Unix process control (for stderr redirect)
 libc = "0.2"
