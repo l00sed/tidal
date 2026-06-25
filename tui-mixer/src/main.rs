@@ -270,7 +270,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .cue_output_devices(&cue_devices)
                 .selected_master_output_idx(app.selected_master_output_idx)
                 .selected_cue_output_idx(app.selected_cue_output_idx)
-                .debug_log(&app.debug_log);
+                .debug_log(&app.debug_log)
+                .samples_dir(Some(&app.samples_dir));
             
             // Add source picker if active
             if let app::AppMode::SourcePicker(deck) = app.mode {

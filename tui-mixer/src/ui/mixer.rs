@@ -40,6 +40,7 @@ pub struct MixerView<'a> {
     selected_master_output_idx: usize,
     selected_cue_output_idx: usize,
     debug_log: Option<&'a [String]>,
+    samples_dir: Option<&'a std::path::Path>,
 }
 
 impl<'a> MixerView<'a> {
@@ -68,6 +69,7 @@ impl<'a> MixerView<'a> {
             selected_master_output_idx: 0,
             selected_cue_output_idx: 0,
             debug_log: None,
+            samples_dir: None,
         }
     }
 
@@ -173,6 +175,11 @@ impl<'a> MixerView<'a> {
     
     pub fn debug_log(mut self, log: &'a [String]) -> Self {
         self.debug_log = Some(log);
+        self
+    }
+
+    pub fn samples_dir(mut self, dir: Option<&'a std::path::Path>) -> Self {
+        self.samples_dir = dir;
         self
     }
 }
@@ -411,6 +418,7 @@ impl<'a> MixerView<'a> {
             // Config pane replaces pad grid
             PadConfigPane::new(self.pads)
                 .editing(self.pad_config_editing)
+                .samples_dir(self.samples_dir)
                 .render(inner, buf);
         } else {
             // Pads (centered in the section)
@@ -1057,7 +1065,7 @@ impl<'a> MixerView<'a> {
         Clear.render(popup_area, buf);
         for y in popup_area.y..popup_area.y + popup_area.height {
             for x in popup_area.x..popup_area.x + popup_area.width {
-                buf.set_string(x, y, " ", Style::default().bg(BG_DARK));
+                buf.set_string(x, y, " ", Style::default().bg(BG_POPUP));
             }
         }
 

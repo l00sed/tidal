@@ -26,6 +26,7 @@ pub const DECK_C: Color = Color::Yellow;
 
 // ── Backgrounds ──────────────────────────────────────────────────
 pub const BG_DARK: Color = Color::Black;
+pub const BG_POPUP: Color = Color::Rgb(10, 10, 10);
 pub const BG_LIGHT: Color = Color::DarkGray;
 
 // ── Status / feedback ────────────────────────────────────────────

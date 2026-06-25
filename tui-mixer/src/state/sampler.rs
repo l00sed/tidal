@@ -401,7 +401,7 @@ impl SamplePadGrid {
         if let Some(pad) = self.pads.get_mut(self.selected_pad) {
             match self.selected_control {
                 PadControl::Volume => {
-                    pad.config.volume = (pad.config.volume + delta).clamp(0.0, 1.0);
+                    pad.config.volume = (pad.config.volume + delta).clamp(0.0, 2.0);
                 }
                 PadControl::HighPass => {
                     // Multiplicative: ~10% per fine step, ~40% per coarse step

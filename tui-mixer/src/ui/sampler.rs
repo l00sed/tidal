@@ -14,15 +14,21 @@ use crate::ui::colors::*;
 pub struct PadConfigPane<'a> {
     grid: &'a SamplePadGrid,
     editing: bool,
+    samples_dir: Option<&'a std::path::Path>,
 }
 
 impl<'a> PadConfigPane<'a> {
     pub fn new(grid: &'a SamplePadGrid) -> Self {
-        Self { grid, editing: false }
+        Self { grid, editing: false, samples_dir: None }
     }
 
     pub fn editing(mut self, editing: bool) -> Self {
         self.editing = editing;
+        self
+    }
+
+    pub fn samples_dir(mut self, dir: Option<&'a std::path::Path>) -> Self {
+        self.samples_dir = dir;
         self
     }
 }
@@ -73,7 +79,7 @@ impl<'a> Widget for PadConfigPane<'a> {
             let is_selected = control == selected_ctrl;
             let row_area = Rect::new(inner.x, y, inner.width, row_height);
 
-            render_config_row(row_area, buf, control, pad, is_selected, is_editing);
+            render_config_row(row_area, buf, control, pad, is_selected, is_editing, self.samples_dir);
 
             // Add separator after Sample row
             if control == PadControl::Sample {
@@ -116,6 +122,7 @@ fn render_config_row(
     pad: &SamplePad,
     selected: bool,
     editing: bool,
+    samples_dir: Option<&std::path::Path>,
 ) {
     if area.width < 10 {
         return;
@@ -142,10 +149,16 @@ fn render_config_row(
     match control {
         PadControl::Sample => {
             let has_sample = pad.sample_path.is_some();
-            let sample_name = pad.sample_path
-                .as_ref()
-                .and_then(|p| p.file_stem())
-                .and_then(|s| s.to_str());
+            let sample_name = pad.sample_path.as_ref().map(|p| {
+                if let Some(dir) = samples_dir {
+                    p.strip_prefix(dir)
+                        .unwrap_or(p)
+                        .display()
+                        .to_string()
+                } else {
+                    p.display().to_string()
+                }
+            });
             let name = if let Some(name) = sample_name {
                 if name.len() > bar_width + value_width {
                     format!("{}…", &name[..bar_width + value_width - 1])
@@ -192,7 +205,7 @@ fn render_config_row(
         _ => {
             // Continuous controls: draw a bar + value
             let (value, display) = match control {
-                PadControl::Volume => (pad.config.volume, format!("{:.2}", pad.config.volume)),
+                PadControl::Volume => (pad.config.volume / 2.0, format!("{:.2}", pad.config.volume)),
                 PadControl::HighPass => {
                     let norm = (pad.config.high_pass - 20.0) / 19980.0;
                     (norm, format!("{} Hz", format_hz(pad.config.high_pass)))

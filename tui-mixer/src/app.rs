@@ -421,10 +421,18 @@ impl App {
         }
 
         // Handle recording commit (global - works from any mode)
+        // SPACE commits and stays in current mode
         if self.is_rack_recording() && key.code == KeyCode::Char(' ') {
             self.log_debug("Space pressed during recording - committing");
             self.commit_rack_recording();
             return;
+        }
+        
+        // ESC during recording commits, then falls through to normal ESC handling
+        if self.is_rack_recording() && key.code == KeyCode::Esc {
+            self.log_debug("ESC pressed during recording - committing and exiting");
+            self.commit_rack_recording();
+            // Don't return - let ESC continue to be handled by mode handlers
         }
 
         // Handle output picker navigation if active
@@ -1309,11 +1317,8 @@ impl App {
     /// Handle keys when sample pad mode is active
     fn handle_pad_key(&mut self, key: KeyEvent) {
         match key.code {
-            // Exit pad mode / cancel recording
-            KeyCode::Esc => {
-                if self.is_rack_recording() {
-                    self.rack_state.mode = crate::state::RackMode::Idle;
-                }
+            // Exit pad mode (recording already committed by global handler if active)
+            KeyCode::Esc | KeyCode::Enter => {
                 self.mode = AppMode::PaneSelect;
                 self.sample_pads.active = false;
             }
@@ -1395,11 +1400,21 @@ impl App {
                 rack.playing = false;
                 if let Some(ref mut player) = self.rack_player {
                     player.stop_rack(rack_idx);
+                    self.log_debug(format!("Stopped loop playback for rack {}", rack_idx));
                 }
             } else {
-                rack.playing = true;
                 if let Some(ref mut player) = self.rack_player {
-                    let _ = player.play_loop(rack_idx);
+                    match player.play_loop(rack_idx) {
+                        Ok(_) => {
+                            rack.playing = true;
+                            self.log_debug(format!("Started loop playback for rack {}", rack_idx));
+                        }
+                        Err(e) => {
+                            self.log_debug(format!("Failed to play loop {}: {}", rack_idx, e));
+                        }
+                    }
+                } else {
+                    self.log_debug("No rack player available");
                 }
             }
         }
@@ -1425,26 +1440,53 @@ impl App {
         if let Some(rack_idx) = self.rack_state.selected_rack {
             self.rack_state.mode = crate::state::RackMode::Idle;
             
-            // Stop recording and get the audio buffer
+            // Stop all samples to release Arc references before extracting recording
             if let Some(ref mut engine) = self.sample_engine {
-                if let Some(recorded_audio) = engine.stop_recording() {
-                    self.log_debug(format!("Recorded {} samples", recorded_audio.len()));
-                    
-                    // Store the recorded audio in the rack player
-                    if let Some(ref mut player) = self.rack_player {
-                        player.set_loop_buffer(rack_idx, recorded_audio, 44100, 2);
-                        
-                        // Start playback
-                        if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
-                            rack.playing = true;
+                engine.stop_all();
+            }
+            
+            // Stop recording and get the audio buffer (captures exact timing)
+            if let Some(ref mut engine) = self.sample_engine {
+                if let Some(mut recorded_audio) = engine.stop_recording() {
+                    if recorded_audio.is_empty() {
+                        self.log_debug("Warning: Recorded audio buffer is empty (no samples triggered)");
+                        // Still set an empty buffer so the rack can be played later
+                        if let Some(ref mut player) = self.rack_player {
+                            player.set_loop_buffer(rack_idx, recorded_audio, 44100, 2);
                         }
-                        match player.play_loop(rack_idx) {
-                            Ok(_) => self.log_debug(format!("Started loop playback for rack {}", rack_idx)),
-                            Err(e) => self.log_debug(format!("Failed to play loop: {}", e)),
+                    } else {
+                        self.log_debug(format!("Recorded {} samples", recorded_audio.len()));
+                        
+                        // Normalize audio to prevent clipping
+                        let max_amplitude = recorded_audio.iter()
+                            .map(|&s| s.abs())
+                            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                            .unwrap_or(1.0);
+                        
+                        if max_amplitude > 1.0 {
+                            let scale = 0.95 / max_amplitude; // Scale to 95% to leave headroom
+                            for sample in recorded_audio.iter_mut() {
+                                *sample *= scale;
+                            }
+                            self.log_debug(format!("Normalized audio: peak was {:.2}, scaled by {:.2}", max_amplitude, scale));
+                        }
+                        
+                        // Store the recorded audio in the rack player
+                        if let Some(ref mut player) = self.rack_player {
+                            player.set_loop_buffer(rack_idx, recorded_audio, 44100, 2);
+                            
+                            // Start playback
+                            if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
+                                rack.playing = true;
+                            }
+                            match player.play_loop(rack_idx) {
+                                Ok(_) => self.log_debug(format!("Started loop playback for rack {}", rack_idx)),
+                                Err(e) => self.log_debug(format!("Failed to play loop: {}", e)),
+                            }
                         }
                     }
                 } else {
-                    self.log_debug("No recorded audio captured!");
+                    self.log_debug("ERROR: stop_recording() returned None - this should never happen!");
                 }
             }
         }

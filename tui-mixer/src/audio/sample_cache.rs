@@ -88,7 +88,7 @@ impl Source for CachedSampleSource {
 pub struct SampleEngine {
     _device: MixerDeviceSink,
     mixer: Mixer,
-    cache: HashMap<PathBuf, CachedSample>,
+    pub cache: HashMap<PathBuf, CachedSample>,
     players: Vec<Player>,
     max_voices: usize,
     recording_buffer: Option<Arc<std::sync::Mutex<Vec<f32>>>>,
@@ -120,10 +120,17 @@ impl SampleEngine {
     }
 
     pub fn stop_recording(&mut self) -> Option<Vec<f32>> {
-        self.recording_buffer.take().and_then(|buf| {
-            Arc::try_unwrap(buf)
-                .ok()
-                .and_then(|mutex| mutex.into_inner().ok())
+        self.recording_buffer.take().map(|buf| {
+            // Try to unwrap the Arc. If other RecordingSources still hold references,
+            // clone the buffer contents instead of failing
+            match Arc::try_unwrap(buf) {
+                Ok(mutex) => mutex.into_inner().unwrap_or_else(|_| Vec::new()),
+                Err(arc) => {
+                    // Arc still has other references (active RecordingSources)
+                    // Clone the buffer contents
+                    arc.lock().map(|b| b.clone()).unwrap_or_else(|_| Vec::new())
+                }
+            }
         })
     }
 
@@ -381,6 +388,14 @@ impl RackPlayer {
     pub fn set_loop_buffer(&mut self, rack_idx: usize, samples: Vec<f32>, sample_rate: u32, channels: u16) {
         self.buffers.insert(rack_idx, (samples, sample_rate, channels));
     }
+    
+    pub fn get_buffer(&self, rack_idx: usize) -> Option<(Vec<f32>, u32, u16)> {
+        self.buffers.get(&rack_idx).cloned()
+    }
+    
+    pub fn remove_buffer(&mut self, rack_idx: usize) -> Option<(Vec<f32>, u32, u16)> {
+        self.buffers.remove(&rack_idx)
+    }
 
     pub fn play_loop(&mut self, rack_idx: usize) -> Result<(), String> {
         let (samples, sample_rate, channels) = self.buffers.get(&rack_idx)
@@ -458,6 +473,10 @@ impl RackPlayer {
         bpm: f32,
         _pad_config: &[crate::state::PadConfig; 16],
     ) -> Result<(), String> {
+        if triggers.is_empty() {
+            return Err("No triggers to render".to_string());
+        }
+        
         let samples_per_beat = (44100.0 * 60.0 / bpm) as usize;
 
         let total_beats = triggers.iter()
