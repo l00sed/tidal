@@ -389,14 +389,6 @@ impl RackPlayer {
         self.buffers.insert(rack_idx, (samples, sample_rate, channels));
     }
     
-    pub fn get_buffer(&self, rack_idx: usize) -> Option<(Vec<f32>, u32, u16)> {
-        self.buffers.get(&rack_idx).cloned()
-    }
-    
-    pub fn remove_buffer(&mut self, rack_idx: usize) -> Option<(Vec<f32>, u32, u16)> {
-        self.buffers.remove(&rack_idx)
-    }
-
     pub fn play_loop(&mut self, rack_idx: usize) -> Result<(), String> {
         let (samples, sample_rate, channels) = self.buffers.get(&rack_idx)
             .ok_or_else(|| format!("No audio buffer for rack {}", rack_idx))?;

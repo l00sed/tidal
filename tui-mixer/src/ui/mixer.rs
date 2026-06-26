@@ -381,10 +381,14 @@ impl<'a> MixerView<'a> {
         let master_pane_selected = self.selected_pane == SelectedPane::Master;
         let master_control_selected = master_pane_selected && show_control;
         let master_control = if master_control_selected { Some(self.state.selected_global) } else { None };
+        let any_playing = self.state.channels.iter().any(|c| c.playing)
+            || self.state.cue_channel.playing;
         MasterStrip::new(&self.state.master)
             .pane_selected(master_pane_selected)
             .selected(master_control_selected, master_control)
             .editing(show_control && master_pane_selected)
+            .frame(self.frame)
+            .any_channel_playing(any_playing)
             .render(master_area, buf);
 
         // Loops pane (below DJ center, between Deck A and Deck B)
@@ -671,7 +675,7 @@ impl<'a> MixerView<'a> {
             .render(chunks[0], buf);
 
         // Render separator between channel strip and controls
-        // Replace center ┴ with ┬ to connect downward into the -> A | -> B split
+        // Use ┼ at center to connect upward to M|->A and downward to S|->B
         let sep_area = chunks[1];
         let sep_style = Style::default().fg(SEPARATOR);
         let sep_center = sep_area.x + sep_area.width / 2;
@@ -680,23 +684,23 @@ impl<'a> MixerView<'a> {
                 buf.set_string(x, sep_area.y, "─", sep_style);
             }
         }
-        buf.set_string(sep_center, sep_area.y, "┬", sep_style);
+        buf.set_string(sep_center, sep_area.y, "┼", sep_style);
 
-        // Render CUE controls (-> A | -> B, sep, OUTPUT) - two-column layout like M/S
+        // Render CUE controls (S | -> B, sep, OUTPUT) - two-column layout like M/S
         let controls_area = chunks[2];
 
-        // Two equal columns: -> A │ -> B
+        // Two equal columns: S │ -> B
         let sep_x = controls_area.x + controls_area.width / 2;
         let left_w = sep_x - controls_area.x;
         let right_w = controls_area.x + controls_area.width - sep_x - 1;
 
         // Center each label within its half
-        let send_a_label = "-> A";
+        let solo_label = "S";
         let send_b_label = "-> B";
-        let send_a_x = controls_area.x + 1 + (left_w.saturating_sub(send_a_label.len() as u16 + 2)) / 2;
+        let solo_x = controls_area.x + 1 + (left_w.saturating_sub(solo_label.len() as u16 + 2)) / 2;
         let send_b_x = sep_x + 2 + (right_w.saturating_sub(send_b_label.len() as u16 + 2)) / 2;
 
-        // │ separator between -> A and -> B on the button row
+        // │ separator between S and -> B on the button row
         buf.set_string(sep_x, controls_area.y, "│", sep_style);
 
         // Separator line below with ┴ junction where │ meets it
@@ -708,14 +712,25 @@ impl<'a> MixerView<'a> {
             buf.set_string(sep_x, sep_y, "┴", sep_style);
         }
 
-        // -> A button
-        let send_a_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::CueSendToA;
-        let send_a_style = if send_a_selected {
+        // S (Solo) button - with background highlight when active
+        let solo_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::Solo;
+        let solo_active = self.state.cue_channel.solo;
+        
+        // Fill left column background if solo is active
+        if solo_active {
+            for x in controls_area.x + 1..sep_x.saturating_sub(1) {
+                buf.set_string(x, controls_area.y, " ", Style::default().bg(BORDER_ACTIVE));
+            }
+        }
+        
+        let solo_style = if solo_active {
+            Style::default().fg(Color::Black).bg(BORDER_ACTIVE)
+        } else if solo_selected {
             Style::default().fg(BORDER_ACTIVE)
         } else {
             Style::default().fg(METER_TRACK)
         };
-        buf.set_string(send_a_x, controls_area.y, send_a_label, send_a_style);
+        buf.set_string(solo_x, controls_area.y, solo_label, solo_style);
 
         // -> B button
         let send_b_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::CueSendToB;
@@ -745,9 +760,29 @@ impl<'a> MixerView<'a> {
         // Single line footer with context hints
         let hint = if self.editing {
             if self.state.selected_global == GlobalControl::Crossfader {
-                "hjkl:adjust  c:center  Enter/Esc:done"
+                "hjkl:adjust  a:A  b:B  0/c:center  Enter/Esc:done"
             } else {
-                "hjkl:adjust  0:reset  c:center  Enter/Esc:done"
+                // Check if a filter, pan, or BPM is selected
+                match self.state.focus {
+                    SelectionFocus::Channel(_) => {
+                        match self.state.selected_control {
+                            ChannelControl::LowPassFilter | ChannelControl::HighPassFilter => {
+                                "hjkl:adjust  H:close  L:open  0:reset  Enter/Esc:done"
+                            }
+                            ChannelControl::Pan => {
+                                "hjkl:adjust  H:left  L:right  0/c:center  Enter/Esc:done"
+                            }
+                            ChannelControl::Scrub => {
+                                "hjkl:scrub  HJKL:coarse  Enter/Esc:done"
+                            }
+                            ChannelControl::Bpm => {
+                                "hjkl:adjust BPM  0/c:x1.00  Enter/Esc:done"
+                            }
+                            _ => "hjkl:adjust  0:reset  c:center  Enter/Esc:done"
+                        }
+                    }
+                    SelectionFocus::Global => "hjkl:adjust  0:reset  c:center  Enter/Esc:done"
+                }
             }
         } else if self.pads.active {
             "4567/RTYU/FGHJ/VBNM:trigger  Space:stop  P/Esc:exit"
@@ -760,7 +795,14 @@ impl<'a> MixerView<'a> {
                         "hjkl:nav  Enter:toggle  Tab:DJ  ?:help"
                     }
                 }
-                SelectionFocus::Global => "hjkl:nav  Enter:edit  Tab:CH  ?:help",
+                SelectionFocus::Global => {
+                    // Show crossfader slam shortcuts when Xfader pane is selected
+                    if self.selected_pane == SelectedPane::Xfader {
+                        "a:A  b:B  Enter:edit  Tab:CH  ?:help"
+                    } else {
+                        "hjkl:nav  Enter:edit  Tab:CH  ?:help"
+                    }
+                }
             }
         };
 
@@ -769,17 +811,25 @@ impl<'a> MixerView<'a> {
         // Mode indicators on right side
         let mut right_x = area.x + area.width;
         
-        if self.pads.active {
-            let label = "PADS";
-            right_x = right_x.saturating_sub(label.len() as u16 + 2);
+        if !self.state.master.playing {
+            let label = " PAUSED ";
+            right_x = right_x.saturating_sub(label.len() as u16 + 1);
             buf.set_string(right_x, area.y, label,
-                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
+                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
+        }
+
+        if self.pads.active {
+            let label = " PADS ";
+            right_x = right_x.saturating_sub(label.len() as u16 + 1);
+            buf.set_string(right_x, area.y, label,
+                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
         }
 
         if self.state.solo_active {
-            right_x = right_x.saturating_sub(6);
-            buf.set_string(right_x, area.y, "SOLO",
-                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
+            let label = " SOLO ";
+            right_x = right_x.saturating_sub(label.len() as u16 + 1);
+            buf.set_string(right_x, area.y, label,
+                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
         }
     }
 
@@ -844,14 +894,14 @@ impl<'a> MixerView<'a> {
         Clear.render(popup_area, buf);
         for y in popup_area.y..popup_area.y + popup_area.height {
             for x in popup_area.x..popup_area.x + popup_area.width {
-                buf.set_string(x, y, " ", Style::default().bg(BG_DARK));
+                buf.set_string(x, y, " ", Style::default().bg(BG_POPUP));
             }
         }
 
         let title = match deck {
-            Deck::A => " Select Source for Deck A ",
-            Deck::B => " Select Source for Deck B ",
-            Deck::C => " Select Source for Deck C ",
+            Deck::A => " SOURCE [Deck A] ",
+            Deck::B => " SOURCE [Deck B] ",
+            Deck::C => " SOURCE [Deck C] ",
         };
         
         let block = Block::default()
@@ -873,23 +923,62 @@ impl<'a> MixerView<'a> {
             ])
             .split(inner);
 
-        // Tabs
-        let tab_sockets = if picker.tab == SourcePickerTab::MpvSockets {
-            Span::styled(" [MPV Sockets] ", Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD))
-        } else {
-            Span::styled("  MPV Sockets  ", Style::default().fg(TEXT_DEFAULT))
-        };
-        let tab_files = if picker.tab == SourcePickerTab::AudioFiles {
-            Span::styled(" [Audio Files] ", Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD))
-        } else {
-            Span::styled("  Audio Files  ", Style::default().fg(TEXT_DEFAULT))
-        };
-        let tab_sc = if picker.tab == SourcePickerTab::SuperCollider {
-            Span::styled(" [SuperCollider] ", Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD))
-        } else {
-            Span::styled("  SuperCollider  ", Style::default().fg(TEXT_DEFAULT))
-        };
-        buf.set_line(chunks[0].x, chunks[0].y, &Line::from(vec![tab_sockets, tab_files, tab_sc]), chunks[0].width);
+        // Tabs — scroll horizontally so the active tab is always visible
+        let viewport_width = chunks[0].width as usize;
+        // Ensure the active tab is visible (mutates tab_scroll_offset through interior mutability)
+        // Since we can't mutate picker here, we compute the offset inline
+        let tab_widths: Vec<(SourcePickerTab, usize)> = vec![
+            (SourcePickerTab::MpvSockets, 16),
+            (SourcePickerTab::AudioFiles, 16),
+            (SourcePickerTab::SuperCollider, 18),
+            (SourcePickerTab::DeckActions, 17),
+        ];
+        let mut tab_x = 0;
+        let mut active_x = 0;
+        let mut active_width = 16;
+        for (tab, width) in &tab_widths {
+            if *tab == picker.tab {
+                active_x = tab_x;
+                active_width = *width;
+            }
+            tab_x += width;
+        }
+        let mut tab_scroll_offset = picker.tab_scroll_offset;
+        if active_x < tab_scroll_offset {
+            tab_scroll_offset = active_x;
+        } else if active_x + active_width > tab_scroll_offset + viewport_width {
+            tab_scroll_offset = active_x + active_width - viewport_width;
+        }
+
+        let all_tabs: Vec<(SourcePickerTab, &str, &str)> = vec![
+            (SourcePickerTab::MpvSockets, " [MPV Sockets] ", "  MPV Sockets  "),
+            (SourcePickerTab::AudioFiles, " [Audio Files] ", "  Audio Files  "),
+            (SourcePickerTab::SuperCollider, " [SuperCollider] ", "  SuperCollider  "),
+            (SourcePickerTab::DeckActions, " [Deck Actions] ", "  Deck Actions  "),
+        ];
+
+        // Build the full tab line as styled graphemes, then render the visible slice
+        let mut tab_line = Line::default();
+        let mut char_offset = 0;
+        for (tab, active_label, inactive_label) in &all_tabs {
+            let label = if picker.tab == *tab { *active_label } else { *inactive_label };
+            let is_active = picker.tab == *tab;
+            let style = if is_active {
+                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(TEXT_DEFAULT)
+            };
+            for ch in label.chars() {
+                if char_offset >= tab_scroll_offset && char_offset < tab_scroll_offset + viewport_width {
+                    tab_line.spans.push(Span::styled(ch.to_string(), style));
+                }
+                char_offset += 1;
+            }
+        }
+        buf.set_line(chunks[0].x, chunks[0].y, &tab_line, chunks[0].width);
+
+        // Update scroll offset so the active tab stays visible
+        // (will be applied on next keypress via ensure_tab_visible)
 
         // Search input with mode indicator
         let mode_label = match picker.input_mode {
@@ -936,7 +1025,7 @@ impl<'a> MixerView<'a> {
 
         // Hint line
         let hint = match picker.input_mode {
-            PickerInputMode::Normal => "i:insert  j/k:nav  g/G:top/bottom  Tab:switch  Enter:select  Esc:quit",
+            PickerInputMode::Normal => "i:insert  j/k:nav  h/l:tabs  g/G:top/bottom  Enter:select  Esc:quit",
             PickerInputMode::Insert => "Esc:normal  Tab:switch  Enter:select  Type to filter",
         };
         buf.set_string(chunks[3].x, chunks[3].y, hint, Style::default().fg(TEXT_GHOST));
@@ -1043,12 +1132,12 @@ impl<'a> MixerView<'a> {
     fn render_output_picker(&self, area: Rect, buf: &mut Buffer) {
         let (title, devices, selected_idx) = match self.output_picker_target {
             OutputPickerTarget::Master => (
-                " Select Master Output Device ",
+                " OUTPUT [Master] ",
                 self.master_output_devices,
                 self.selected_master_output_idx,
             ),
             OutputPickerTarget::Cue => (
-                " Select CUE Output Device ",
+                " OUTPUT [CUE] ",
                 self.cue_output_devices,
                 self.selected_cue_output_idx,
             ),

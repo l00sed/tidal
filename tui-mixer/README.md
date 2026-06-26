@@ -9,7 +9,6 @@ A terminal-based DJ mixer for live performance with [TidalCycles](https://tidalc
 - **Dual-deck mixer** with per-channel fader, pan, 3-band EQ, LPF/HPF
 - **DJ center** with crossfader (4 curves: Linear, Smooth, Cut, ConstantPower), cue mix, headphone/booth outputs
 - **Sample pads** — 4x4 grid with OneShot, Gate, Toggle, and Loop modes
-- **Audio capture** via [BlackHole](https://github.com/ExistentialAudio/BlackHole) with real-time biquad DSP
 - **Auto-discovery** of MPV sockets, SuperCollider, PulseAudio, PipeWire, JACK sources
 - **SuperCollider integration** — custom SynthDefs for mixer channel processing
 - **Mouse support** — click and drag faders/knobs
@@ -18,7 +17,7 @@ A terminal-based DJ mixer for live performance with [TidalCycles](https://tidalc
 ## Prerequisites
 
 - **Rust** (edition 2021)
-- **BlackHole 2ch** — virtual audio loopback (`brew install blackhole-2ch` on macOS)
+- **[Nerd Fonts](https://www.nerdfonts.com/)** — required for icons (rewind, fast-forward, etc.)
 - **MPV** — media playback with IPC socket support
 - **SuperCollider** (optional) — for TidalCycles integration
 
@@ -100,10 +99,10 @@ mpv --input-ipc-server=/tmp/mpv-music.sock music.mp3
 ## Architecture
 
 ```
-SC/Tidal → BlackHole 2ch → cpal input → ring buffer → DSP → cpal output → speakers
+SC/Tidal → MPV IPC → ring buffer → DSP → output → speakers
 ```
 
-The app follows MVC: `state/` (model), `ui/` (view), `app.rs` (controller). The audio pipeline captures from BlackHole, applies per-deck biquad filters (LPF, HPF, 3-band EQ), stereo mixing, crossfading, and pan in real-time.
+The app follows MVC: `state/` (model), `ui/` (view), `app.rs` (controller). The audio pipeline captures from MPV via IPC, applies per-deck biquad filters (LPF, HPF, 3-band EQ), stereo mixing, crossfading, and pan in real-time.
 
 ## License
 

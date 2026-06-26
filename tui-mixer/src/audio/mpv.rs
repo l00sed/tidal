@@ -10,7 +10,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::thread;
 
 /// Audio device entry from MPV's `audio-device-list` property.
@@ -24,11 +24,14 @@ pub struct AudioDeviceEntry {
 
 /// Lock-free meter storage — written by the polling thread, read by the UI.
 /// Peaks use CAS to keep the highest value between UI ticks (same as master).
-struct AtomicMeter {
+/// Also includes an onset-detection ring buffer for real-time BPM.
+pub struct AtomicMeter {
     peak_l: AtomicU32,
     peak_r: AtomicU32,
     rms_l: AtomicU32,
     rms_r: AtomicU32,
+    /// Detected BPM from onset detection (fixed-point ×100), 0 = not yet detected.
+    detected_bpm: AtomicU32,
 }
 
 impl AtomicMeter {
@@ -38,6 +41,7 @@ impl AtomicMeter {
             peak_r: AtomicU32::new(0),
             rms_l: AtomicU32::new(0),
             rms_r: AtomicU32::new(0),
+            detected_bpm: AtomicU32::new(0),
         }
     }
 
@@ -148,6 +152,11 @@ impl MpvClient {
         let mut req_id: u64 = 0;
         let mut line = String::new();
 
+        // Onset detection state
+        let mut energy_ring: Vec<f32> = Vec::with_capacity(100);
+        let mut onset_times: Vec<Instant> = Vec::with_capacity(32);
+        let mut last_onset = Instant::now() - Duration::from_secs(5);
+
         while !stop_flag.load(Ordering::Relaxed) {
             req_id += 1;
             let cmd = serde_json::json!({
@@ -193,12 +202,54 @@ impl MpvClient {
                                             }
                                         };
 
+                                        let r_l = dbfs_to_linear(rms_l_db);
+                                        let r_r = dbfs_to_linear(rms_r_db);
                                         meters.store(
                                             dbfs_to_linear(peak_l_db),
                                             dbfs_to_linear(peak_r_db),
-                                            dbfs_to_linear(rms_l_db),
-                                            dbfs_to_linear(rms_r_db),
+                                            r_l,
+                                            r_r,
                                         );
+
+                                        // Onset detection: energy from RMS
+                                        let energy = (r_l + r_r) * 0.5;
+                                        energy_ring.push(energy);
+                                        if energy_ring.len() > 100 {
+                                            energy_ring.remove(0);
+                                        }
+
+                                        if energy_ring.len() >= 20 {
+                                            let mean: f32 = energy_ring.iter().sum::<f32>() / energy_ring.len() as f32;
+                                            let var: f32 = energy_ring.iter().map(|e| (e - mean).powi(2)).sum::<f32>() / energy_ring.len() as f32;
+                                            let threshold = mean + 1.2 * var.sqrt();
+
+                                            let now = Instant::now();
+                                            let ms_since = now.duration_since(last_onset).as_millis() as f32;
+
+                                            if energy > threshold && energy > mean * 1.05 && ms_since >= 250.0 {
+                                                onset_times.push(now);
+                                                last_onset = now;
+                                                if onset_times.len() > 32 {
+                                                    onset_times.remove(0);
+                                                }
+
+                                                // BPM from median IOI (≥3 onsets)
+                                                if onset_times.len() >= 3 {
+                                                    let mut iois: Vec<f32> = onset_times.windows(2)
+                                                        .map(|w| w[1].duration_since(w[0]).as_millis() as f32)
+                                                        .filter(|ioi| *ioi >= 250.0 && *ioi <= 1000.0)
+                                                        .collect();
+                                                    if iois.len() >= 2 {
+                                                        iois.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                                                        let median = iois[iois.len() / 2];
+                                                        let bpm = (60000.0 / median * 100.0) as u32;
+                                                        if bpm >= 6000 && bpm <= 20000 { // 60.00–200.00 BPM
+                                                            meters.detected_bpm.store(bpm, Ordering::Relaxed);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 got_response = true;
@@ -220,7 +271,7 @@ impl MpvClient {
         }
     }
 
-    fn send_command(&mut self, command: Vec<serde_json::Value>) -> Result<Option<serde_json::Value>, String> {
+    pub fn send_command(&mut self, command: Vec<serde_json::Value>) -> Result<Option<serde_json::Value>, String> {
         let reader = self.reader.as_mut().ok_or("Not connected")?;
 
         self.request_id += 1;
@@ -305,6 +356,18 @@ impl MpvClient {
 
     pub fn set_speed(&mut self, speed: f32) -> Result<(), String> {
         self.set_property("speed", serde_json::json!(speed))
+    }
+
+    /// Get current playback position in seconds.
+    pub fn get_time_pos(&mut self) -> Result<f32, String> {
+        let val = self.get_property("time-pos")?;
+        val.as_f64().map(|v| v as f32).ok_or("Invalid time-pos".to_string())
+    }
+
+    /// Get total duration of current track in seconds.
+    pub fn get_duration(&mut self) -> Result<f32, String> {
+        let val = self.get_property("duration")?;
+        val.as_f64().map(|v| v as f32).ok_or("Invalid duration".to_string())
     }
 
     fn has_filter(&mut self, label: &str) -> bool {
@@ -449,6 +512,12 @@ impl MpvClient {
     pub fn get_audio_levels(&self) -> (f32, f32, f32, f32) {
         self.meters.decay_peaks(0.92);
         self.meters.load()
+    }
+
+    /// Read detected BPM from the onset detector (0.0 if not yet detected).
+    pub fn get_detected_bpm(&self) -> f32 {
+        let raw = self.meters.detected_bpm.load(Ordering::Relaxed);
+        raw as f32 / 100.0
     }
 }
 

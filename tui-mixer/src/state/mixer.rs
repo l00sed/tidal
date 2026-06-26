@@ -1,6 +1,7 @@
 //! Mixer channel state and controls
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// DJ section controls
 #[derive(Debug, Clone)]
@@ -51,9 +52,9 @@ pub struct MixerChannel {
     pub solo: bool,
     /// Pan position (-1.0 left, 0.0 center, 1.0 right)
     pub pan: f32,
-    /// Low-pass filter frequency (20-20000 Hz)
+    /// Low-pass filter frequency (20-20000 Hz, slam shortcuts: 200Hz-20kHz)
     pub lpf_freq: f32,
-    /// High-pass filter frequency (20-20000 Hz)
+    /// High-pass filter frequency (20-20000 Hz, slam shortcuts: 20Hz-3kHz)
     pub hpf_freq: f32,
     /// Low shelf EQ gain (-15 to +15 dB)
     pub eq_low: f32,
@@ -102,6 +103,30 @@ pub struct MixerChannel {
     /// Detected BPM of the currently loaded track (None = not yet analyzed)
     #[serde(default)]
     pub bpm: Option<f32>,
+    /// Base BPM captured at track load — used for stable speed factor display
+    #[serde(default)]
+    pub base_bpm: f32,
+    /// Target BPM for playback speed adjustment (user-controlled)
+    #[serde(default)]
+    pub target_bpm: f32,
+    /// Current playback position in seconds (polled from MPV)
+    #[serde(default)]
+    pub time_pos: f32,
+    /// Total duration of the current track in seconds
+    #[serde(default)]
+    pub duration: f32,
+    /// Scrub direction: -1.0 = reverse, 0.0 = stopped, 1.0 = forward
+    #[serde(skip)]
+    pub scrub_direction: f32,
+    /// Current scrub speed multiplier (accelerates while held)
+    #[serde(skip)]
+    pub scrub_speed: f32,
+    /// Whether the scrub was coarse (H/J/K/L) for faster acceleration
+    #[serde(skip)]
+    pub scrub_coarse: bool,
+    /// Accumulated seek amount (seek when threshold reached)
+    #[serde(skip)]
+    pub scrub_accumulator: f32,
 }
 
 fn default_playback_speed() -> f32 {
@@ -137,6 +162,14 @@ impl MixerChannel {
             playing: false,
             playback_speed: 1.0,
             bpm: None,
+            base_bpm: 0.0,
+            target_bpm: 120.0,
+            time_pos: 0.0,
+            duration: 0.0,
+            scrub_direction: 0.0,
+            scrub_speed: 0.0,
+            scrub_coarse: false,
+            scrub_accumulator: 0.0,
         }
     }
 
@@ -155,6 +188,7 @@ impl MixerChannel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelControl {
     PlayPause,
+    Scrub,
     Bpm,
     Fader,
     Pan,
@@ -178,6 +212,7 @@ impl ChannelControl {
     pub fn label(&self) -> &'static str {
         match self {
             ChannelControl::PlayPause => "PLAY",
+            ChannelControl::Scrub => "SCRUB",
             ChannelControl::Bpm => "BPM",
             ChannelControl::Fader => "FADER",
             ChannelControl::Pan => "PAN",
@@ -201,9 +236,10 @@ impl ChannelControl {
     pub fn is_continuous(&self) -> bool {
         matches!(
             self,
-            ChannelControl::Bpm
-                | ChannelControl::Fader
+            ChannelControl::Fader
                 | ChannelControl::Pan
+                | ChannelControl::Scrub
+                | ChannelControl::Bpm
                 | ChannelControl::LowPassFilter
                 | ChannelControl::HighPassFilter
                 | ChannelControl::EqLow
@@ -218,39 +254,41 @@ impl ChannelControl {
     /// CueControl items are rows 12-14 (Deck C only)
     pub fn row_index(&self) -> usize {
         match self {
-            ChannelControl::PlayPause => 0,
-            ChannelControl::Bpm => 1,
-            ChannelControl::EqHigh | ChannelControl::EqHighKill => 2,
-            ChannelControl::EqMid | ChannelControl::EqMidKill => 3,
-            ChannelControl::EqLow | ChannelControl::EqLowKill => 4,
-            ChannelControl::HighPassFilter => 5,
-            ChannelControl::LowPassFilter => 6,
-            ChannelControl::Pan => 7,
-            ChannelControl::Fader => 8,
-            ChannelControl::Mute => 9,
-            ChannelControl::Solo => 10,
-            ChannelControl::CueSendToA => 11,
-            ChannelControl::CueSendToB => 12,
-            ChannelControl::CueOutputSelect => 13,
+            ChannelControl::Scrub => 0,
+            ChannelControl::PlayPause => 1,
+            ChannelControl::Bpm => 2,
+            ChannelControl::EqHigh | ChannelControl::EqHighKill => 3,
+            ChannelControl::EqMid | ChannelControl::EqMidKill => 4,
+            ChannelControl::EqLow | ChannelControl::EqLowKill => 5,
+            ChannelControl::HighPassFilter => 6,
+            ChannelControl::LowPassFilter => 7,
+            ChannelControl::Pan => 8,
+            ChannelControl::Fader => 9,
+            ChannelControl::Mute => 10,
+            ChannelControl::Solo => 11,
+            ChannelControl::CueSendToA => 12,
+            ChannelControl::CueSendToB => 13,
+            ChannelControl::CueOutputSelect => 14,
         }
     }
 
     pub fn from_row_index(index: usize) -> Option<Self> {
         match index {
-            0 => Some(ChannelControl::PlayPause),
-            1 => Some(ChannelControl::Bpm),
-            2 => Some(ChannelControl::EqHigh),  // Default to slider, h/l navigates to kill
-            3 => Some(ChannelControl::EqMid),
-            4 => Some(ChannelControl::EqLow),
-            5 => Some(ChannelControl::HighPassFilter),
-            6 => Some(ChannelControl::LowPassFilter),
-            7 => Some(ChannelControl::Pan),
-            8 => Some(ChannelControl::Fader),
-            9 => Some(ChannelControl::Mute),
-            10 => Some(ChannelControl::Solo),
-            11 => Some(ChannelControl::CueSendToA),
-            12 => Some(ChannelControl::CueSendToB),
-            13 => Some(ChannelControl::CueOutputSelect),
+            0 => Some(ChannelControl::Scrub),
+            1 => Some(ChannelControl::PlayPause),
+            2 => Some(ChannelControl::Bpm),
+            3 => Some(ChannelControl::EqHigh),
+            4 => Some(ChannelControl::EqMid),
+            5 => Some(ChannelControl::EqLow),
+            6 => Some(ChannelControl::HighPassFilter),
+            7 => Some(ChannelControl::LowPassFilter),
+            8 => Some(ChannelControl::Pan),
+            9 => Some(ChannelControl::Fader),
+            10 => Some(ChannelControl::Mute),
+            11 => Some(ChannelControl::Solo),
+            12 => Some(ChannelControl::CueSendToA),
+            13 => Some(ChannelControl::CueSendToB),
+            14 => Some(ChannelControl::CueOutputSelect),
             _ => None,
         }
     }
@@ -259,7 +297,8 @@ impl ChannelControl {
     pub fn row_index_no_deck(&self) -> usize {
         match self {
             ChannelControl::PlayPause => 0, // Not used, but fallback
-            ChannelControl::Bpm => 0,       // Not used, but fallback
+            ChannelControl::Scrub => 0,       // Not used, but fallback
+            ChannelControl::Bpm => 0,          // Not used for non-deck, fallback
             ChannelControl::EqHigh | ChannelControl::EqHighKill => 0,
             ChannelControl::EqMid | ChannelControl::EqMidKill => 1,
             ChannelControl::EqLow | ChannelControl::EqLowKill => 2,
@@ -312,6 +351,8 @@ pub struct MasterChannel {
     pub fader: f32,
     /// Master mute
     pub muted: bool,
+    /// Master play/pause (controls all decks and loops)
+    pub playing: bool,
     /// Left peak level
     pub peak_left: f32,
     /// Right peak level
@@ -327,6 +368,7 @@ impl MasterChannel {
         Self {
             fader: 0.5,
             muted: false,
+            playing: true,
             peak_left: 0.0,
             peak_right: 0.0,
             rms_left: 0.0,
@@ -352,6 +394,7 @@ impl Default for MasterChannel {
 /// Which global control is selected (DJ section, master)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GlobalControl {
+    MasterPlayPause,
     Crossfader,
     HeadphoneVolume,
     MasterFader,
@@ -362,6 +405,7 @@ pub enum GlobalControl {
 impl GlobalControl {
     pub fn label(&self) -> &'static str {
         match self {
+            GlobalControl::MasterPlayPause => "PLAY",
             GlobalControl::Crossfader => "X-FADER",
             GlobalControl::HeadphoneVolume => "PHONES",
             GlobalControl::MasterFader => "MASTER",
@@ -401,8 +445,16 @@ pub struct MixerState {
     pub selected_global: GlobalControl,
     /// Is any solo active (for solo-in-place logic)
     pub solo_active: bool,
+    /// Per-channel fader levels saved before solo was activated (channel_idx -> fader).
+    /// Each channel's fader is saved independently when it first enters solo mode,
+    /// so switching between soloed decks preserves all their original levels.
+    pub pre_solo_faders: HashMap<usize, f32>,
+    /// CUE channel fader saved before solo was activated
+    pub pre_solo_cue_fader: Option<f32>,
     /// Terminal height for computing fader step size
     pub terminal_height: u16,
+    /// Per-channel play state saved before master pause (index 0 = deck A, 1 = deck B, 2 = CUE)
+    pub previously_playing: Vec<bool>,
 }
 
 /// Target deck for sending CUE
@@ -431,7 +483,10 @@ impl MixerState {
             selected_control: ChannelControl::Fader,
             selected_global: GlobalControl::Crossfader,
             solo_active: false,
+            pre_solo_faders: HashMap::new(),
+            pre_solo_cue_fader: None,
             terminal_height: 24,
+            previously_playing: vec![false; 3], // deck A, deck B, CUE
         }
     }
 
@@ -509,9 +564,39 @@ impl MixerState {
             self.selected_control.row_index_no_deck()
         };
         
-        // Max row indices: CUE=13 (CueOutputSelect), Deck A/B=10 (Solo), Non-deck=8 (Solo)
-        let max_row = if is_cue_pane { 13 } else if is_deck { 10 } else { 8 };
-        let new_row = if current_row == 0 { max_row } else { current_row - 1 };
+        // Check if scrubber is visible (track loaded)
+        let has_track = self.selected_channel()
+            .map(|ch| ch.connected && ch.duration > 0.0)
+            .unwrap_or(false);
+        
+        // Max row indices: CUE=14 (CueOutputSelect), Deck A/B=10 (Solo), Non-deck=8 (Solo)
+        let max_row = if is_cue_pane { 14 } else if is_deck { 10 } else { 8 };
+        // Min row: skip Scrub (0) if no track loaded
+        let min_row = if has_track { 0 } else { 1 };
+        let mut new_row = if current_row <= min_row { max_row } else { current_row - 1 };
+        
+        // CUE deck visual layout (3 rows):
+        //   Row 1: M(10) | ->A(12)
+        //   Row 2: S(11) | ->B(13)
+        //   Row 3: OUTPUT(14)
+        if is_cue_pane {
+            new_row = match current_row {
+                14 => 13,  // OUTPUT → ->B
+                13 => 12,  // ->B → ->A (up one row, same side)
+                12 => 9,   // →A → Fader (up to volume slider)
+                11 => 10,  // S → M (up one row, same side)
+                10 => 9,   // M → Fader
+                _ => if new_row <= min_row { max_row } else { new_row },
+            };
+        } else if is_deck && current_row == 11 {
+            // Decks A/B: S → Fader (skip M)
+            new_row = 9;
+        }
+        
+        // Skip Scrub when no track loaded
+        if !has_track && new_row == 0 {
+            new_row = max_row;
+        }
         
         if is_deck || is_cue_pane {
             if let Some(ctrl) = ChannelControl::from_row_index(new_row) {
@@ -522,8 +607,6 @@ impl MixerState {
         }
     }
 
-    /// Move selection down (round-robin)
-    /// `is_cue_pane` is true when the Deck C pane is active
     pub fn select_next_control(&mut self, is_cue_pane: bool) {
         let is_deck = self.is_deck_channel(self.selected_channel);
         let current_row = if is_deck {
@@ -532,9 +615,37 @@ impl MixerState {
             self.selected_control.row_index_no_deck()
         };
         
-        // Max row indices: CUE=13 (CueOutputSelect), Deck A/B=10 (Solo), Non-deck=8 (Solo)
-        let max_row = if is_cue_pane { 13 } else if is_deck { 10 } else { 8 };
-        let new_row = if current_row >= max_row { 0 } else { current_row + 1 };
+        // Check if scrubber is visible (track loaded)
+        let has_track = self.selected_channel()
+            .map(|ch| ch.connected && ch.duration > 0.0)
+            .unwrap_or(false);
+        
+        // Max row indices: CUE=14 (CueOutputSelect), Deck A/B=10 (Solo), Non-deck=8 (Solo)
+        let max_row = if is_cue_pane { 14 } else if is_deck { 10 } else { 8 };
+        // Min row: skip Scrub (0) if no track loaded
+        let min_row = if has_track { 0 } else { 1 };
+        let mut new_row = if current_row >= max_row { min_row } else { current_row + 1 };
+        
+        // Skip Scrub when no track loaded
+        if !has_track && new_row == 0 {
+            new_row = 1;
+        }
+        
+        // CUE deck visual layout (3 rows):
+        //   Row 1: M(10) | ->A(12)
+        //   Row 2: S(11) | ->B(13)
+        //   Row 3: OUTPUT(14)
+        if is_cue_pane {
+            new_row = match current_row {
+                9 => 10,   // Fader → M
+                10 => 11,  // M → S (down one row, same side)
+                11 => 14,  // S → OUTPUT (down to row 3)
+                12 => 13,  // ->A → ->B (down one row, same side)
+                13 => 14,  // ->B → OUTPUT (down to row 3)
+                14 => min_row,  // OUTPUT → wrap to top (skip Scrub if no track)
+                _ => if new_row >= max_row { min_row } else { new_row },
+            };
+        }
         
         if is_deck || is_cue_pane {
             if let Some(ctrl) = ChannelControl::from_row_index(new_row) {
@@ -563,20 +674,24 @@ impl MixerState {
                             let step = 1.0 / track_h;
                             channel.fader = (channel.fader + delta.signum() * step).clamp(0.0, 1.0);
                         }
-                        ChannelControl::Bpm => {
+                        ChannelControl::Scrub => {
                             channel.playback_speed = (channel.playback_speed + delta * 0.5).clamp(0.5, 2.0);
+                        }
+                        ChannelControl::Bpm => {
+                            // Adjust target BPM: +/- 1 BPM per keypress
+                            channel.target_bpm = (channel.target_bpm + delta * 20.0).clamp(10.0, 400.0);
                         }
                         ChannelControl::Pan => {
                             channel.pan = (channel.pan + delta).clamp(-1.0, 1.0);
                         }
                         ChannelControl::LowPassFilter => {
                             let log_freq = channel.lpf_freq.log10();
-                            let new_log = (log_freq + delta * 4.0).clamp(2.0, 4.3);
+                            let new_log = (log_freq + delta * 4.0).clamp(1.3, 4.3); // 20Hz - 20000Hz
                             channel.lpf_freq = 10f32.powf(new_log);
                         }
                         ChannelControl::HighPassFilter => {
                             let log_freq = channel.hpf_freq.log10();
-                            let new_log = (log_freq + delta * 4.0).clamp(1.3, 3.7);
+                            let new_log = (log_freq + delta * 4.0).clamp(1.3, 4.3); // 20Hz - 20000Hz
                             channel.hpf_freq = 10f32.powf(new_log);
                         }
                         ChannelControl::EqLow => {
@@ -609,6 +724,7 @@ impl MixerState {
                     GlobalControl::MasterOutputSelect => {}
                     // Buttons/toggles don't need continuous adjustment
                     GlobalControl::MasterMute => {}
+                    GlobalControl::MasterPlayPause => {}
                 }
             }
         }
@@ -641,6 +757,36 @@ impl MixerState {
 
     fn update_solo_state(&mut self) {
         self.solo_active = self.channels.iter().any(|c| c.solo);
+    }
+
+    /// Save a channel's fader level before it enters solo mode.
+    /// If the channel already has a saved level, this is a no-op (preserves the original).
+    pub fn save_fader_for_solo(&mut self, channel_idx: usize) {
+        if channel_idx == 2 {
+            // CUE channel
+            if self.pre_solo_cue_fader.is_none() {
+                self.pre_solo_cue_fader = Some(self.cue_channel.fader);
+            }
+        } else if let Some(ch) = self.channels.get(channel_idx) {
+            self.pre_solo_faders.entry(channel_idx).or_insert(ch.fader);
+        }
+    }
+
+    /// Restore a channel's fader level saved before solo was activated.
+    /// Returns true if restoration happened.
+    pub fn restore_fader_from_solo(&mut self, channel_idx: usize) -> bool {
+        if channel_idx == 2 {
+            if let Some(fader) = self.pre_solo_cue_fader.take() {
+                self.cue_channel.fader = fader;
+                return true;
+            }
+        } else if let Some(fader) = self.pre_solo_faders.remove(&channel_idx) {
+            if let Some(ch) = self.channels.get_mut(channel_idx) {
+                ch.fader = fader;
+                return true;
+            }
+        }
+        false
     }
 
     /// Update metering levels — reactive to fader, EQ, filters, pan, crossfader, and master gain.

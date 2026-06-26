@@ -11,7 +11,6 @@ src/
 ├── main.rs              # Entry point, CLI parsing, 20fps render loop
 ├── app.rs               # App state machine (8 modes), event handling, sync logic
 ├── audio/
-│   ├── capture.rs       # BlackHole loopback → ring buffer → biquad DSP chain
 │   ├── discovery.rs     # Auto-discover MPV, SC, PulseAudio, PipeWire, JACK sources
 │   ├── mpv.rs           # Sync MPV IPC client (Unix socket, lavfi filters)
 │   ├── sample_cache.rs  # Rodio-based sample preloader, 16-voice polyphony
@@ -32,7 +31,6 @@ src/
 
 - **3-level nav**: PaneSelect → ControlSelect → Edit (vim hjkl, Esc to go back)
 - **State machine** in `app.rs`: 8 modes handling keyboard + mouse input
-- **Lock-free audio**: `crossbeam::ArrayQueue` ring buffer in capture callback
 - **Channel controls**: 15 variants in `ChannelControl` enum, 9 in `GlobalControl`
 - **Crossfader**: 4 curves (Linear, Smooth, Cut, ConstantPower) in `state/mixer.rs`
 - **SynthDefs**: Custom SuperCollider synths in `synthdefs/mixerChannel.scd`
@@ -100,7 +98,7 @@ cargo run -- -s "A" /tmp/mpv-a.sock -s "B" /tmp/mpv-b.sock
 DEBUG=1 cargo run        # run with debug panel visible at bottom of screen
 ```
 
-**Prerequisites**: Rust 2021, BlackHole 2ch (`brew install blackhole-2ch`), MPV, optional SuperCollider.
+**Prerequisites**: Rust 2021, [Nerd Fonts](https://www.nerdfonts.com/), MPV, optional SuperCollider.
 
 The `DEBUG=1` environment variable enables a 5-line debug log panel at the bottom of the TUI, showing MPV IPC results, solo state, and errors. Use it to diagnose audio routing or control issues.
 
@@ -134,6 +132,12 @@ No test suite currently. Run `cargo check` and `cargo clippy` for validation.
 - **State exports via `mod.rs`** — keep re-exports clean, avoid deep imports
 - **Widgets are self-contained** — each widget in `ui/` handles its own rendering and area calculation
 - **New panes**: Follow the checklist in "Adding new panes" above
+
+### Cross-platform compatibility
+- **Keep it cross-platform** — the TUI should work on macOS, Linux, and Windows without platform-specific code in core paths
+- **No OS-level input interception** — media keys, global hotkeys, and other OS-grabbed keys are not portable. Use standard keyboard keys that all terminal emulators pass through (letters, numbers, function keys, arrows)
+- **No platform-specific dependencies in core** — if a feature requires OS-specific APIs (e.g., macOS `MediaRemote.framework`, Linux `evdev`), gate it behind `#[cfg(target_os)]` with a fallback, or avoid it entirely
+- **Terminal emulators vary** — not all terminals pass the same escape sequences. Stick to common keys (F1-F12, letters, modifiers) rather than relying on extended key codes
 
 ## UI Conventions
 

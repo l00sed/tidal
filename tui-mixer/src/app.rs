@@ -49,6 +49,7 @@ pub enum SourcePickerTab {
     MpvSockets,
     AudioFiles,
     SuperCollider,
+    DeckActions,
 }
 
 /// Source picker state
@@ -64,6 +65,8 @@ pub struct SourcePickerState {
     pub current_dir: PathBuf,  // Current directory being browsed
     pub root_dir: PathBuf,     // Root samples directory (can't go above this)
     pub visible_height: usize, // Number of visible items (set by UI)
+    /// Character offset for horizontal tab scrolling
+    pub tab_scroll_offset: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +82,7 @@ impl SourcePickerState {
     pub fn new() -> Self {
         Self {
             tab: SourcePickerTab::AudioFiles,
-            input_mode: PickerInputMode::Insert,
+            input_mode: PickerInputMode::Normal,
             query: String::new(),
             items: Vec::new(),
             filtered: Vec::new(),
@@ -88,6 +91,7 @@ impl SourcePickerState {
             current_dir: PathBuf::new(),
             root_dir: PathBuf::new(),
             visible_height: 12,
+            tab_scroll_offset: 0,
         }
     }
 
@@ -151,6 +155,61 @@ impl SourcePickerState {
             self.scroll_offset = self.selected;
         } else if self.selected >= self.scroll_offset + self.visible_height {
             self.scroll_offset = self.selected.saturating_sub(self.visible_height - 1);
+        }
+    }
+
+    /// Cycle to the next tab (forward round-robin)
+    pub fn next_tab(&mut self) {
+        self.tab = match self.tab {
+            SourcePickerTab::MpvSockets => SourcePickerTab::AudioFiles,
+            SourcePickerTab::AudioFiles => SourcePickerTab::SuperCollider,
+            SourcePickerTab::SuperCollider => SourcePickerTab::DeckActions,
+            SourcePickerTab::DeckActions => SourcePickerTab::MpvSockets,
+        };
+        self.scroll_tab_into_view(60);
+    }
+
+    /// Cycle to the previous tab (backward round-robin)
+    pub fn prev_tab(&mut self) {
+        self.tab = match self.tab {
+            SourcePickerTab::MpvSockets => SourcePickerTab::DeckActions,
+            SourcePickerTab::DeckActions => SourcePickerTab::SuperCollider,
+            SourcePickerTab::SuperCollider => SourcePickerTab::AudioFiles,
+            SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
+        };
+        self.scroll_tab_into_view(60);
+    }
+
+    /// Ensure the selected tab is visible within the given viewport width.
+    /// Adjusts tab_scroll_offset so the active tab label fits on screen.
+    fn scroll_tab_into_view(&mut self, viewport_width: usize) {
+        // Tab labels: active uses brackets (extra 2 chars), inactive padded to same width
+        let tab_widths: Vec<(SourcePickerTab, usize)> = vec![
+            (SourcePickerTab::MpvSockets, 16),   // " [MPV Sockets] " or "  MPV Sockets  "
+            (SourcePickerTab::AudioFiles, 16),    // " [Audio Files] " or "  Audio Files  "
+            (SourcePickerTab::SuperCollider, 18), // " [SuperCollider] " or "  SuperCollider  "
+            (SourcePickerTab::DeckActions, 17),   // " [Deck Actions] " or "  Deck Actions  "
+        ];
+
+        // Compute x-position of each tab label
+        let mut x = 0;
+        let mut active_x = 0;
+        let mut active_width = 16;
+        for (tab, width) in &tab_widths {
+            if *tab == self.tab {
+                active_x = x;
+                active_width = *width;
+            }
+            x += width;
+        }
+
+        // If active tab is before the viewport, scroll left
+        if active_x < self.tab_scroll_offset {
+            self.tab_scroll_offset = active_x;
+        }
+        // If active tab extends past the viewport, scroll right
+        else if active_x + active_width > self.tab_scroll_offset + viewport_width {
+            self.tab_scroll_offset = active_x + active_width - viewport_width;
         }
     }
 
@@ -223,6 +282,11 @@ pub struct App {
     channel_areas: Vec<ChannelArea>,
     // Sample pad areas for mouse hit testing
     pad_areas: Vec<(usize, u16, u16, u16, u16)>, // (pad_idx, x, y, w, h)
+    // Pane areas for mouse hit testing
+    xfader_area: Option<PaneArea>,
+    master_area: Option<PaneArea>,
+    cue_area: Option<PaneArea>,
+    loops_area: Option<PaneArea>,
     // Source picker
     pub source_picker: SourcePickerState,
     pub music_dir: PathBuf,
@@ -261,6 +325,14 @@ pub struct App {
     pub output_picker_target: OutputPickerTarget,
     // Debug log messages (circular buffer, last 100 messages)
     pub debug_log: Vec<String>,
+    // Counter for MPV state polling (poll every N ticks)
+    mpv_poll_counter: u8,
+    // Timestamp (elapsed_ms) of last TUI-initiated volume push per deck (0,1,2)
+    last_volume_push_ms: [u64; 3],
+    // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
+    consecutive_poll_failures: [u8; 3],
+    // Pending BPM results from background analysis (channel_idx, bpm)
+    pending_bpm: Arc<Mutex<Vec<(usize, f32)>>>,
 }
 
 /// Which output device picker is active
@@ -275,6 +347,38 @@ pub enum OutputPickerTarget {
 pub struct ChannelArea {
     pub bounds: (u16, u16, u16, u16), // x, y, width, height
     pub control_rows: Vec<(ChannelControl, u16, u16)>, // control, y_start, y_end
+}
+
+/// Generic rectangular area for a pane (xfader, master, CUE, etc.)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PaneArea {
+    pub x: u16,
+    pub y: u16,
+    pub w: u16,
+    pub h: u16,
+}
+
+impl PaneArea {
+    pub fn contains(&self, px: u16, py: u16) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+}
+
+/// Result of a mouse hit-test across all panes
+#[derive(Debug, Clone)]
+pub enum HitResult {
+    /// Click on a channel strip control
+    Channel(usize, ChannelControl),
+    /// Click on a sample pad
+    Pad(usize),
+    /// Click/drag on the crossfader
+    Crossfader,
+    /// Click on master pane (specific control inferred from y position)
+    Master,
+    /// Click on CUE pane (specific control inferred from y position)
+    Cue,
+    /// Click on loops pane
+    Loops,
 }
 
 impl App {
@@ -314,6 +418,10 @@ impl App {
             drag_start_value: None,
             channel_areas: Vec::new(),
             pad_areas: Vec::new(),
+            xfader_area: None,
+            master_area: None,
+            cue_area: None,
+            loops_area: None,
             source_picker: SourcePickerState::new(),
             music_dir: cwd,
             samples_dir: default_samples_dir,
@@ -338,6 +446,10 @@ impl App {
             output_picker_active: false,
             output_picker_target: OutputPickerTarget::Master,
             debug_log: Vec::new(),
+            mpv_poll_counter: 0,
+            last_volume_push_ms: [0; 3],
+            consecutive_poll_failures: [0; 3],
+            pending_bpm: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -386,6 +498,190 @@ impl App {
 
         self.mixer.update_meters(&real_channels);
         self.sample_pads.update();
+
+        // Poll MPV state every 5 ticks (~250ms) for bidirectional sync
+        self.mpv_poll_counter = self.mpv_poll_counter.wrapping_add(1);
+        if self.mpv_poll_counter % 5 == 0 {
+            self.poll_mpv_state();
+        }
+
+        // Scrub: tick accumulation, decay speed, and poll positions
+        self.tick_scrub();
+        self.decay_scrub_speed();
+        self.poll_scrub_positions();
+
+        // Apply any pending BPM results from background analysis
+        self.apply_pending_bpm();
+
+        // Read real-time onset-detected BPM from MPV metering thread
+        self.poll_onset_bpm();
+    }
+
+    /// Poll each connected MPV deck for state changes and sync back to mixer.
+    /// Reads play/pause and volume. Volume readback reverses the full formula
+    /// (fader * gain * master * 2.0 * 200.0) to extract the per-channel fader.
+    /// Skips volume readback for 1s after TUI pushes a change to avoid race conditions.
+    /// Clears deck if socket disappears or track ends.
+    fn poll_mpv_state(&mut self) {
+        let deck_a_channel = self.mixer.dj.deck_a_channel;
+        let deck_b_channel = self.mixer.dj.deck_b_channel;
+        let (gain_a, gain_b) = self.calculate_crossfader_gains();
+        let master = self.mixer.master.fader;
+        let now = self.elapsed_ms;
+        let cooldown_ms = 1000;
+
+        // Skip volume readback while solo is active — MPV volumes are muted
+        // by solo logic and don't reflect true fader positions.
+        let solo_active = self.mixer.solo_active;
+
+        // Collect poll results to avoid borrow conflicts with clear_deck()
+        struct PollResult {
+            deck: Deck,
+            pause_ok: bool,
+            playing: bool,
+            volume_ok: bool,
+            fader: f32,
+            time_pos: Option<f32>,
+            duration: Option<f32>,
+        }
+
+        let mut results: Vec<PollResult> = Vec::new();
+
+        // Read deck A
+        if let Some(ref mut client) = self.mpv_deck_a {
+            let mut pause_ok = false;
+            let mut playing = false;
+            let mut volume_ok = false;
+            let mut fader = 0.0;
+            if let Ok(paused) = client.get_pause() {
+                playing = !paused;
+                pause_ok = true;
+            }
+            if !solo_active && now.saturating_sub(self.last_volume_push_ms[0]) >= cooldown_ms {
+                if let Ok(vol) = client.get_volume() {
+                    let divisor = gain_a * master * 2.0 * 200.0;
+                    if divisor > 0.0 {
+                        fader = (vol / divisor).clamp(0.0, 1.0);
+                        volume_ok = true;
+                    }
+                }
+            }
+            let time_pos = client.get_time_pos().ok();
+            let duration = client.get_duration().ok();
+            results.push(PollResult { deck: Deck::A, pause_ok, playing, volume_ok, fader, time_pos, duration });
+        }
+
+        // Read deck B
+        if let Some(ref mut client) = self.mpv_deck_b {
+            let mut pause_ok = false;
+            let mut playing = false;
+            let mut volume_ok = false;
+            let mut fader = 0.0;
+            if let Ok(paused) = client.get_pause() {
+                playing = !paused;
+                pause_ok = true;
+            }
+            if !solo_active && now.saturating_sub(self.last_volume_push_ms[1]) >= cooldown_ms {
+                if let Ok(vol) = client.get_volume() {
+                    let divisor = gain_b * master * 2.0 * 200.0;
+                    if divisor > 0.0 {
+                        fader = (vol / divisor).clamp(0.0, 1.0);
+                        volume_ok = true;
+                    }
+                }
+            }
+            let time_pos = client.get_time_pos().ok();
+            let duration = client.get_duration().ok();
+            results.push(PollResult { deck: Deck::B, pause_ok, playing, volume_ok, fader, time_pos, duration });
+        }
+
+        // Read CUE (no crossfader, gain=1.0)
+        if let Some(ref mut client) = self.mpv_deck_c {
+            let mut pause_ok = false;
+            let mut playing = false;
+            let mut volume_ok = false;
+            let mut fader = 0.0;
+            if let Ok(paused) = client.get_pause() {
+                playing = !paused;
+                pause_ok = true;
+            }
+            if !solo_active && now.saturating_sub(self.last_volume_push_ms[2]) >= cooldown_ms {
+                if let Ok(vol) = client.get_volume() {
+                    let divisor = master * 2.0 * 200.0;
+                    if divisor > 0.0 {
+                        fader = (vol / divisor).clamp(0.0, 1.0);
+                        volume_ok = true;
+                    }
+                }
+            }
+            let time_pos = client.get_time_pos().ok();
+            let duration = client.get_duration().ok();
+            results.push(PollResult { deck: Deck::C, pause_ok, playing, volume_ok, fader, time_pos, duration });
+        }
+
+        // Apply results and detect failures / track end
+        let mut decks_to_clear: Vec<Deck> = Vec::new();
+
+        for result in &results {
+            let deck_idx = match result.deck {
+                Deck::A => 0,
+                Deck::B => 1,
+                Deck::C => 2,
+            };
+
+            // Socket failure detection: if get_pause() failed, the socket is dead
+            if !result.pause_ok {
+                self.consecutive_poll_failures[deck_idx] += 1;
+                if self.consecutive_poll_failures[deck_idx] >= 2 {
+                    decks_to_clear.push(result.deck);
+                }
+                continue;
+            }
+
+            // Reset failure counter on success
+            self.consecutive_poll_failures[deck_idx] = 0;
+
+            // Apply volume/fader state
+            let ch_idx = match result.deck {
+                Deck::A => deck_a_channel,
+                Deck::B => deck_b_channel,
+                Deck::C => self.mixer.dj.deck_c_channel,
+            };
+
+            if result.deck == Deck::C {
+                self.mixer.cue_channel.playing = result.playing;
+                if result.volume_ok {
+                    self.mixer.cue_channel.fader = result.fader;
+                }
+            } else if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                ch.playing = result.playing;
+                if result.volume_ok {
+                    ch.fader = result.fader;
+                }
+                if let Some(tp) = result.time_pos {
+                    ch.time_pos = tp;
+                }
+                if let Some(dur) = result.duration {
+                    ch.duration = dur;
+                }
+
+                // Track-end detection: playback stopped and position is at/near end
+                // Only clear if we have a known duration and are very close to it.
+                // This avoids false positives from playlists (MPV advances to next track).
+                if !result.playing
+                    && ch.duration > 0.0
+                    && ch.time_pos >= ch.duration - 1.0
+                    && ch.connected
+                {
+                    decks_to_clear.push(result.deck);
+                }
+            }
+        }
+
+        // Clear dead/ended decks (outside borrow scope)
+        for deck in decks_to_clear {
+            self.clear_deck(deck);
+        }
     }
 
     /// Check if we're in edit mode
@@ -415,6 +711,12 @@ impl App {
             // Source picker for Deck C (CUE) from anywhere
             KeyCode::Char('C') => {
                 self.open_source_picker(Deck::C);
+                return;
+            }
+            // F8 toggles master play/pause from any mode
+            KeyCode::F(8) => {
+                self.mixer.master.playing = !self.mixer.master.playing;
+                self.sync_all_playpause();
                 return;
             }
             _ => {}
@@ -587,6 +889,20 @@ impl App {
                 self.sync_pane_to_mixer();
             }
 
+            // Crossfader slam shortcuts (when Xfader pane is selected)
+            KeyCode::Char('a') => {
+                if self.selected_pane == SelectedPane::Xfader {
+                    self.mixer.dj.crossfader = -1.0; // Slam to full A
+                    self.sync_current_control_to_mpv();
+                }
+            }
+            KeyCode::Char('b') => {
+                if self.selected_pane == SelectedPane::Xfader {
+                    self.mixer.dj.crossfader = 1.0; // Slam to full B
+                    self.sync_current_control_to_mpv();
+                }
+            }
+
             // Enter: activate control select mode for this pane
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if self.selected_pane == SelectedPane::Xfader {
@@ -617,6 +933,19 @@ impl App {
                 }
             }
 
+            // X (shift-x): clear the focused deck
+            KeyCode::Char('X') => {
+                let deck = match self.selected_pane {
+                    SelectedPane::DeckA => Some(Deck::A),
+                    SelectedPane::DeckB => Some(Deck::B),
+                    SelectedPane::DeckC => Some(Deck::C),
+                    _ => None,
+                };
+                if let Some(deck) = deck {
+                    self.clear_deck(deck);
+                }
+            }
+
             // Quick toggle shortcuts (work in PaneSelect too)
             KeyCode::Char('m') => {
                 if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
@@ -631,17 +960,30 @@ impl App {
                 }
             }
             KeyCode::Char('s') => {
-                if let SelectionFocus::Channel(_ch_idx) = self.mixer.focus {
+                if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
                     let was_solo = self.mixer.selected_channel_mut().map(|c| c.solo).unwrap_or(false);
                     if !was_solo {
-                        // Exclusive solo: clear all others, then enable this one
-                        for ch in &mut self.mixer.channels {
-                            ch.solo = false;
+                        // Turning solo ON: save this channel's fader, restore any other soloed decks
+                        self.mixer.save_fader_for_solo(ch_idx);
+                        for i in 0..self.mixer.channels.len() {
+                            if i != ch_idx && self.mixer.channels[i].solo {
+                                self.mixer.channels[i].solo = false;
+                                self.mixer.restore_fader_from_solo(i);
+                            }
                         }
-                        self.mixer.cue_channel.solo = false;
-                    }
-                    if let Some(channel) = self.mixer.selected_channel_mut() {
-                        channel.solo = !was_solo;
+                        if self.mixer.cue_channel.solo {
+                            self.mixer.cue_channel.solo = false;
+                            self.mixer.restore_fader_from_solo(2);
+                        }
+                        if let Some(channel) = self.mixer.selected_channel_mut() {
+                            channel.solo = true;
+                        }
+                    } else {
+                        // Turning solo OFF: restore this channel's fader
+                        if let Some(channel) = self.mixer.selected_channel_mut() {
+                            channel.solo = false;
+                        }
+                        self.mixer.restore_fader_from_solo(ch_idx);
                     }
                     self.mixer.solo_active = self.mixer.channels.iter().any(|c| c.solo)
                         || self.mixer.cue_channel.solo;
@@ -680,7 +1022,7 @@ impl App {
             }
             SelectedPane::Master => {
                 self.mixer.focus = SelectionFocus::Global;
-                self.mixer.selected_global = GlobalControl::MasterFader;
+                self.mixer.selected_global = GlobalControl::MasterPlayPause;
             }
             SelectedPane::DeckC => {
                 self.mixer.focus = SelectionFocus::Channel(2);
@@ -813,6 +1155,27 @@ impl App {
                 if self.is_current_control_continuous() {
                     self.mode = AppMode::Edit;
                 } else {
+                    // If PlayPause on an empty deck, open source picker instead of toggling
+                    if self.mixer.selected_control == ChannelControl::PlayPause {
+                        if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
+                            let is_empty = self.mixer.get_channel(ch_idx)
+                                .map(|c| !c.connected)
+                                .unwrap_or(true);
+                            if is_empty {
+                                let deck = if ch_idx == self.mixer.dj.deck_a_channel {
+                                    Deck::A
+                                } else if ch_idx == self.mixer.dj.deck_b_channel {
+                                    Deck::B
+                                } else if ch_idx == self.mixer.dj.deck_c_channel {
+                                    Deck::C
+                                } else {
+                                    Deck::A // fallback
+                                };
+                                self.open_source_picker(deck);
+                                return;
+                            }
+                        }
+                    }
                     self.toggle_current_control();
                 }
             }
@@ -823,6 +1186,11 @@ impl App {
                     if let Some(rack_idx) = self.rack_state.selected_rack {
                         self.start_rack_recording(rack_idx);
                     }
+                } else if self.selected_pane == SelectedPane::DeckA
+                    || self.selected_pane == SelectedPane::DeckB
+                    || self.selected_pane == SelectedPane::DeckC
+                {
+                    self.reset_deck_to_defaults();
                 }
             }
 
@@ -860,16 +1228,30 @@ impl App {
                 }
             }
             KeyCode::Char('s') => {
-                if let SelectionFocus::Channel(_ch_idx) = self.mixer.focus {
+                if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
                     let was_solo = self.mixer.selected_channel_mut().map(|c| c.solo).unwrap_or(false);
                     if !was_solo {
-                        for ch in &mut self.mixer.channels {
-                            ch.solo = false;
+                        // Turning solo ON: save this channel's fader, restore any other soloed decks
+                        self.mixer.save_fader_for_solo(ch_idx);
+                        for i in 0..self.mixer.channels.len() {
+                            if i != ch_idx && self.mixer.channels[i].solo {
+                                self.mixer.channels[i].solo = false;
+                                self.mixer.restore_fader_from_solo(i);
+                            }
                         }
-                        self.mixer.cue_channel.solo = false;
-                    }
-                    if let Some(channel) = self.mixer.selected_channel_mut() {
-                        channel.solo = !was_solo;
+                        if self.mixer.cue_channel.solo {
+                            self.mixer.cue_channel.solo = false;
+                            self.mixer.restore_fader_from_solo(2);
+                        }
+                        if let Some(channel) = self.mixer.selected_channel_mut() {
+                            channel.solo = true;
+                        }
+                    } else {
+                        // Turning solo OFF: restore this channel's fader
+                        if let Some(channel) = self.mixer.selected_channel_mut() {
+                            channel.solo = false;
+                        }
+                        self.mixer.restore_fader_from_solo(ch_idx);
                     }
                     self.mixer.solo_active = self.mixer.channels.iter().any(|c| c.solo)
                         || self.mixer.cue_channel.solo;
@@ -958,9 +1340,10 @@ impl App {
             SelectedPane::Xfader => {} // Single control, nothing to navigate
             SelectedPane::Master => {
                 self.mixer.selected_global = match self.mixer.selected_global {
+                    GlobalControl::MasterPlayPause => GlobalControl::MasterFader,
                     GlobalControl::MasterFader => GlobalControl::MasterMute,
-                    GlobalControl::MasterMute => GlobalControl::MasterOutputSelect,
-                    GlobalControl::MasterOutputSelect => GlobalControl::MasterFader,
+                    GlobalControl::MasterMute => GlobalControl::MasterPlayPause,
+                    GlobalControl::MasterOutputSelect => GlobalControl::MasterPlayPause,
                     other => other,
                 };
             }
@@ -1013,9 +1396,10 @@ impl App {
             SelectedPane::Xfader => {} // Single control, nothing to navigate
             SelectedPane::Master => {
                 self.mixer.selected_global = match self.mixer.selected_global {
-                    GlobalControl::MasterFader => GlobalControl::MasterOutputSelect,
+                    GlobalControl::MasterPlayPause => GlobalControl::MasterOutputSelect,
+                    GlobalControl::MasterFader => GlobalControl::MasterPlayPause,
                     GlobalControl::MasterMute => GlobalControl::MasterFader,
-                    GlobalControl::MasterOutputSelect => GlobalControl::MasterMute,
+                    GlobalControl::MasterOutputSelect => GlobalControl::MasterFader,
                     other => other,
                 };
             }
@@ -1038,7 +1422,33 @@ impl App {
                     other => other,
                 };
             }
-        } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB || self.selected_pane == SelectedPane::DeckC {
+        } else if self.selected_pane == SelectedPane::DeckC {
+            // CUE deck: special navigation for swapped layout
+            match self.mixer.selected_control {
+                ChannelControl::Mute => {
+                    // M → -> A (same visual row)
+                    self.mixer.selected_control = ChannelControl::CueSendToA;
+                }
+                ChannelControl::CueSendToA => {
+                    // -> A → M (same visual row)
+                    self.mixer.selected_control = ChannelControl::Mute;
+                }
+                ChannelControl::Solo => {
+                    // S → -> B (same visual row)
+                    self.mixer.selected_control = ChannelControl::CueSendToB;
+                }
+                ChannelControl::CueSendToB => {
+                    // -> B → S (same visual row)
+                    self.mixer.selected_control = ChannelControl::Solo;
+                }
+                _ => {
+                    // For other controls, use standard EQ kill pair logic
+                    if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
+                        self.mixer.selected_control = paired;
+                    }
+                }
+            }
+        } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB {
             match self.mixer.selected_control {
                 ChannelControl::Mute | ChannelControl::Solo => {
                     // Toggle between Mute and Solo
@@ -1046,14 +1456,6 @@ impl App {
                         ChannelControl::Solo
                     } else {
                         ChannelControl::Mute
-                    };
-                }
-                ChannelControl::CueSendToA | ChannelControl::CueSendToB => {
-                    // Toggle between -> A and -> B
-                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::CueSendToA {
-                        ChannelControl::CueSendToB
-                    } else {
-                        ChannelControl::CueSendToA
                     };
                 }
                 _ => {
@@ -1069,6 +1471,10 @@ impl App {
                 }
                 GlobalControl::MasterOutputSelect => {
                     self.mixer.selected_global = GlobalControl::MasterMute;
+                }
+                GlobalControl::MasterPlayPause => {
+                    self.mixer.master.playing = !self.mixer.master.playing;
+                    self.sync_all_playpause();
                 }
                 _ => {}
             }
@@ -1089,20 +1495,39 @@ impl App {
                     other => other,
                 };
             }
-        } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB || self.selected_pane == SelectedPane::DeckC {
+        } else if self.selected_pane == SelectedPane::DeckC {
+            // CUE deck: special navigation for swapped layout
+            match self.mixer.selected_control {
+                ChannelControl::Mute => {
+                    // M → -> A (same visual row)
+                    self.mixer.selected_control = ChannelControl::CueSendToA;
+                }
+                ChannelControl::CueSendToA => {
+                    // -> A → M (same visual row)
+                    self.mixer.selected_control = ChannelControl::Mute;
+                }
+                ChannelControl::Solo => {
+                    // S → -> B (same visual row)
+                    self.mixer.selected_control = ChannelControl::CueSendToB;
+                }
+                ChannelControl::CueSendToB => {
+                    // -> B → S (same visual row)
+                    self.mixer.selected_control = ChannelControl::Solo;
+                }
+                _ => {
+                    // For other controls, use standard EQ kill pair logic
+                    if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
+                        self.mixer.selected_control = paired;
+                    }
+                }
+            }
+        } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB {
             match self.mixer.selected_control {
                 ChannelControl::Mute | ChannelControl::Solo => {
                     self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
                         ChannelControl::Solo
                     } else {
                         ChannelControl::Mute
-                    };
-                }
-                ChannelControl::CueSendToA | ChannelControl::CueSendToB => {
-                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::CueSendToA {
-                        ChannelControl::CueSendToB
-                    } else {
-                        ChannelControl::CueSendToA
                     };
                 }
                 _ => {
@@ -1118,6 +1543,10 @@ impl App {
                 }
                 GlobalControl::MasterOutputSelect => {
                     self.mixer.selected_global = GlobalControl::MasterMute;
+                }
+                GlobalControl::MasterPlayPause => {
+                    self.mixer.master.playing = !self.mixer.master.playing;
+                    self.sync_all_playpause();
                 }
                 _ => {}
             }
@@ -1142,7 +1571,32 @@ impl App {
         match self.mixer.focus {
             SelectionFocus::Channel(ch_idx) => {
                 let control = self.mixer.selected_control;
-                self.mixer.toggle_selected();
+                if control == ChannelControl::Solo {
+                    let was_solo = self.mixer.get_channel(ch_idx).map(|c| c.solo).unwrap_or(false);
+                    if !was_solo {
+                        // Turning solo ON: save this channel's fader, restore any other soloed decks
+                        self.mixer.save_fader_for_solo(ch_idx);
+                        for i in 0..self.mixer.channels.len() {
+                            if i != ch_idx && self.mixer.channels[i].solo {
+                                self.mixer.channels[i].solo = false;
+                                self.mixer.restore_fader_from_solo(i);
+                            }
+                        }
+                        if self.mixer.cue_channel.solo {
+                            self.mixer.cue_channel.solo = false;
+                            self.mixer.restore_fader_from_solo(2);
+                        }
+                        self.mixer.toggle_selected();
+                    } else {
+                        // Turning solo OFF: restore this channel's fader
+                        self.mixer.toggle_selected();
+                        self.mixer.restore_fader_from_solo(ch_idx);
+                    }
+                    self.mixer.solo_active = self.mixer.channels.iter().any(|c| c.solo)
+                        || self.mixer.cue_channel.solo;
+                } else {
+                    self.mixer.toggle_selected();
+                }
 
                 // Sync to MPV after toggle
                 match control {
@@ -1169,6 +1623,10 @@ impl App {
                         self.mixer.master.muted = !self.mixer.master.muted;
                         self.sync_deck_volume(true);
                         self.sync_deck_volume(false);
+                    }
+                    GlobalControl::MasterPlayPause => {
+                        self.mixer.master.playing = !self.mixer.master.playing;
+                        self.sync_all_playpause();
                     }
                     _ => {}
                 }
@@ -1205,38 +1663,132 @@ impl App {
 
             // Adjust values with hjkl
             KeyCode::Char('h') | KeyCode::Left => {
-                self.mixer.adjust_selected(-0.05);
-                self.sync_current_control_to_mpv();
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(-1.0, false);
+                } else {
+                    self.mixer.adjust_selected(-0.05);
+                    self.sync_current_control_to_mpv();
+                }
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.mixer.adjust_selected(0.05);
-                self.sync_current_control_to_mpv();
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(1.0, false);
+                } else {
+                    self.mixer.adjust_selected(0.05);
+                    self.sync_current_control_to_mpv();
+                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.mixer.adjust_selected(0.05);
-                self.sync_current_control_to_mpv();
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(1.0, false);
+                } else {
+                    self.mixer.adjust_selected(0.05);
+                    self.sync_current_control_to_mpv();
+                }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.mixer.adjust_selected(-0.05);
-                self.sync_current_control_to_mpv();
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(-1.0, false);
+                } else {
+                    self.mixer.adjust_selected(-0.05);
+                    self.sync_current_control_to_mpv();
+                }
             }
 
             // Coarse adjustment with Shift
             KeyCode::Char('H') => {
-                self.mixer.adjust_selected(-0.2);
-                self.sync_current_control_to_mpv();
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(-1.0, true);
+                } else if self.is_filter_selected() {
+                    match self.mixer.selected_control {
+                        ChannelControl::LowPassFilter => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.lpf_freq = 200.0;
+                            }
+                        }
+                        ChannelControl::HighPassFilter => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.hpf_freq = 20.0;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.sync_current_control_to_mpv();
+                } else if self.is_pan_selected() {
+                    if let Some(channel) = self.mixer.selected_channel_mut() {
+                        channel.pan = -1.0;
+                    }
+                    self.sync_current_control_to_mpv();
+                } else {
+                    self.mixer.adjust_selected(-0.2);
+                    self.sync_current_control_to_mpv();
+                }
             }
             KeyCode::Char('L') => {
-                self.mixer.adjust_selected(0.2);
-                self.sync_current_control_to_mpv();
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(1.0, true);
+                } else if self.is_filter_selected() {
+                    match self.mixer.selected_control {
+                        ChannelControl::LowPassFilter => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.lpf_freq = 20000.0;
+                            }
+                        }
+                        ChannelControl::HighPassFilter => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.hpf_freq = 3000.0;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.sync_current_control_to_mpv();
+                } else if self.is_pan_selected() {
+                    if let Some(channel) = self.mixer.selected_channel_mut() {
+                        channel.pan = 1.0;
+                    }
+                    self.sync_current_control_to_mpv();
+                } else {
+                    self.mixer.adjust_selected(0.2);
+                    self.sync_current_control_to_mpv();
+                }
             }
             KeyCode::Char('K') => {
-                self.mixer.adjust_selected(0.2);
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(1.0, true);
+                } else if self.is_volume_fader_selected() {
+                    self.mixer.adjust_selected(0.25);
+                } else {
+                    self.mixer.adjust_selected(0.2);
+                }
                 self.sync_current_control_to_mpv();
             }
             KeyCode::Char('J') => {
-                self.mixer.adjust_selected(-0.2);
+                if self.mixer.selected_control == ChannelControl::Scrub {
+                    self.start_scrub(-1.0, true);
+                } else if self.is_volume_fader_selected() {
+                    self.mixer.adjust_selected(-0.25);
+                } else {
+                    self.mixer.adjust_selected(-0.2);
+                }
                 self.sync_current_control_to_mpv();
+            }
+
+            // Crossfader slam shortcuts (when crossfader is active in Edit mode)
+            KeyCode::Char('a') => {
+                if matches!(self.mixer.focus, SelectionFocus::Global)
+                    && matches!(self.mixer.selected_global, GlobalControl::Crossfader)
+                {
+                    self.mixer.dj.crossfader = -1.0; // Slam to full A
+                    self.sync_current_control_to_mpv();
+                }
+            }
+            KeyCode::Char('b') => {
+                if matches!(self.mixer.focus, SelectionFocus::Global)
+                    && matches!(self.mixer.selected_global, GlobalControl::Crossfader)
+                {
+                    self.mixer.dj.crossfader = 1.0; // Slam to full B
+                    self.sync_current_control_to_mpv();
+                }
             }
 
             // Reset
@@ -1255,9 +1807,17 @@ impl App {
                                     channel.pan = 0.0;
                                 }
                             }
-                            ChannelControl::Bpm => {
+                            ChannelControl::Scrub => {
                                 if let Some(channel) = self.mixer.selected_channel_mut() {
                                     channel.playback_speed = 1.0;
+                                    channel.scrub_direction = 0.0;
+                                    channel.scrub_speed = 0.0;
+                                    channel.scrub_accumulator = 0.0;
+                                }
+                            }
+                            ChannelControl::Bpm => {
+                                if let Some(channel) = self.mixer.selected_channel_mut() {
+                                    channel.target_bpm = if channel.base_bpm > 0.0 { channel.base_bpm } else { 120.0 };
                                 }
                             }
                             ChannelControl::Fader => {
@@ -1295,6 +1855,16 @@ impl App {
                     match control {
                         ChannelControl::Fader => channel.fader = 0.5,
                         ChannelControl::Pan => channel.pan = 0.0,
+                        ChannelControl::Scrub => {
+                            channel.playback_speed = 1.0;
+                            channel.scrub_direction = 0.0;
+                            channel.scrub_speed = 0.0;
+                            channel.scrub_accumulator = 0.0;
+                        }
+                        ChannelControl::Bpm => {
+                            // Reset to x1.00: target_bpm = base BPM from first detection
+                            channel.target_bpm = if channel.base_bpm > 0.0 { channel.base_bpm } else { 120.0 };
+                        }
                         ChannelControl::LowPassFilter => channel.lpf_freq = 20000.0,
                         ChannelControl::HighPassFilter => channel.hpf_freq = 20.0,
                         ChannelControl::EqLow => channel.eq_low = 0.0,
@@ -1308,10 +1878,74 @@ impl App {
                 match self.mixer.selected_global {
                     GlobalControl::HeadphoneVolume => self.mixer.dj.headphone_volume = 1.0,
                     GlobalControl::MasterFader => self.mixer.master.fader = 0.5,
+                    GlobalControl::Crossfader => self.mixer.dj.crossfader = 0.0,
                     _ => {}
                 }
             }
         }
+    }
+
+    /// Reset all controls on the currently selected deck to defaults
+    fn reset_deck_to_defaults(&mut self) {
+        let ch_idx = match self.mixer.focus {
+            SelectionFocus::Channel(ch) => ch,
+            _ => return,
+        };
+        if let Some(channel) = self.mixer.get_channel_mut(ch_idx) {
+            channel.fader = 0.5;
+            channel.pan = 0.0;
+            channel.eq_low = 0.0;
+            channel.eq_mid = 0.0;
+            channel.eq_high = 0.0;
+            channel.eq_low_kill = false;
+            channel.eq_mid_kill = false;
+            channel.eq_high_kill = false;
+            channel.lpf_freq = 20000.0;
+            channel.hpf_freq = 20.0;
+            channel.muted = false;
+            channel.solo = false;
+            channel.target_bpm = if channel.base_bpm > 0.0 { channel.base_bpm } else { 120.0 };
+            channel.scrub_direction = 0.0;
+            channel.scrub_speed = 0.0;
+            channel.scrub_accumulator = 0.0;
+            channel.playback_speed = 1.0;
+        }
+        // Sync all controls to MPV/SC
+        self.sync_volume_to_mpv(ch_idx);
+        self.sync_pan_to_mpv(ch_idx);
+        self.sync_eq_to_mpv(ch_idx);
+        self.sync_lpf_to_mpv(ch_idx);
+        self.sync_hpf_to_mpv(ch_idx);
+        self.sync_mute_to_mpv(ch_idx);
+        self.sync_bpm_to_mpv(ch_idx);
+        self.mixer.solo_active = false;
+    }
+
+    /// Check if the currently selected control is a volume fader
+    fn is_volume_fader_selected(&self) -> bool {
+        match self.mixer.focus {
+            SelectionFocus::Channel(_) => {
+                matches!(self.mixer.selected_control, ChannelControl::Fader)
+            }
+            SelectionFocus::Global => {
+                matches!(self.mixer.selected_global, GlobalControl::MasterFader)
+            }
+        }
+    }
+
+    /// Check if the currently selected control is a filter (LPF or HPF)
+    fn is_filter_selected(&self) -> bool {
+        matches!(self.mixer.focus, SelectionFocus::Channel(_))
+            && matches!(
+                self.mixer.selected_control,
+                ChannelControl::LowPassFilter | ChannelControl::HighPassFilter
+            )
+    }
+
+    /// Check if the currently selected control is pan
+    fn is_pan_selected(&self) -> bool {
+        matches!(self.mixer.focus, SelectionFocus::Channel(_))
+            && matches!(self.mixer.selected_control, ChannelControl::Pan)
     }
 
     /// Handle keys when sample pad mode is active
@@ -1695,24 +2329,151 @@ impl App {
     fn handle_mixer_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Try to select a channel/control at this position
-                if let Some((channel_idx, control)) = self.hit_test(mouse.column, mouse.row) {
-                    self.mixer.selected_channel = channel_idx;
-                    self.mixer.selected_control = control;
-                    self.mixer.focus = SelectionFocus::Channel(channel_idx);
+                if let Some(hit) = self.hit_test_all(mouse.column, mouse.row) {
+                    match hit {
+                        HitResult::Channel(channel_idx, control) => {
+                            self.mixer.selected_channel = channel_idx;
+                            self.mixer.selected_control = control;
+                            self.mixer.focus = SelectionFocus::Channel(channel_idx);
+                            self.selected_pane = match channel_idx {
+                                0 => SelectedPane::DeckA,
+                                _ => SelectedPane::DeckB,
+                            };
 
-                    // Start drag for continuous controls
-                    if control.is_continuous() {
-                        self.drag_start_y = Some(mouse.row);
-                        self.drag_start_value = self.get_current_control_value();
-                    } else {
-                        // Toggle for buttons
-                        self.mixer.toggle_selected();
+                            if control.is_continuous() {
+                                self.drag_start_y = Some(mouse.row);
+                                self.drag_start_value = self.get_current_control_value();
+                            } else {
+                                self.mixer.toggle_selected();
+                            }
+                        }
+                        HitResult::Pad(pad_idx) => {
+                            // Switch to DJ center pane and trigger pad
+                            self.selected_pane = SelectedPane::DjCenter;
+                            self.sample_pads.trigger_pad(pad_idx);
+                            self.play_sample(pad_idx);
+                        }
+                        HitResult::Crossfader => {
+                            self.selected_pane = SelectedPane::Xfader;
+                            self.mixer.focus = SelectionFocus::Global;
+                            self.mixer.selected_global = GlobalControl::Crossfader;
+                            // Click-to-position: calculate crossfader value from x
+                            if let Some(area) = &self.xfader_area {
+                                let inner_x = mouse.column.saturating_sub(area.x);
+                                let pos = (inner_x as f32 / area.w as f32) * 2.0 - 1.0;
+                                self.mixer.dj.crossfader = pos.clamp(-1.0, 1.0);
+                                self.drag_start_x = Some(mouse.row);
+                                self.drag_start_value = Some(self.mixer.dj.crossfader);
+                            }
+                        }
+                        HitResult::Master => {
+                            self.selected_pane = SelectedPane::Master;
+                            self.mixer.focus = SelectionFocus::Global;
+                            // Determine which control based on y position within master area
+                            if let Some(area) = &self.master_area {
+                                let rel_y = mouse.row.saturating_sub(area.y);
+                                let h = area.h;
+                                if rel_y <= 4 {
+                                    // Play/pause area
+                                    self.mixer.selected_global = GlobalControl::MasterPlayPause;
+                                    self.mixer.master.playing = !self.mixer.master.playing;
+                                    self.sync_all_playpause();
+                                } else if rel_y >= h.saturating_sub(3) {
+                                    // Button row (M / OUT)
+                                    let mid_x = area.x + area.w / 2;
+                                    if mouse.column < mid_x {
+                                        self.mixer.selected_global = GlobalControl::MasterMute;
+                                        self.mixer.master.muted = !self.mixer.master.muted;
+                                    } else {
+                                        self.mixer.selected_global = GlobalControl::MasterOutputSelect;
+                                    }
+                                } else {
+                                    // Fader area
+                                    self.mixer.selected_global = GlobalControl::MasterFader;
+                                    self.drag_start_y = Some(mouse.row);
+                                    self.drag_start_value = Some(self.mixer.master.fader);
+                                }
+                            }
+                        }
+                        HitResult::Cue => {
+                            self.selected_pane = SelectedPane::DeckC;
+                            self.mixer.focus = SelectionFocus::Channel(2);
+                            // Determine control from y position
+                            if let Some(area) = &self.cue_area {
+                                let rel_y = mouse.row.saturating_sub(area.y);
+                                let h = area.h;
+                                let controls_h = h.saturating_sub(4); // approximate
+                                if rel_y > controls_h {
+                                    // Button area at bottom
+                                    let mid_x = area.x + area.w / 2;
+                                    if mouse.column < mid_x {
+                                        self.mixer.selected_control = ChannelControl::CueSendToA;
+                                    } else {
+                                        self.mixer.selected_control = ChannelControl::CueSendToB;
+                                    }
+                                    self.mixer.toggle_selected();
+                                } else {
+                                    // Fader area
+                                    self.mixer.selected_control = ChannelControl::Fader;
+                                    self.drag_start_y = Some(mouse.row);
+                                    self.drag_start_value = self.get_current_control_value();
+                                }
+                            }
+                        }
+                        HitResult::Loops => {
+                            self.selected_pane = SelectedPane::Loops;
+                        }
                     }
                 }
             }
 
             MouseEventKind::Drag(MouseButton::Left) => {
+                // Handle crossfader horizontal drag
+                if self.selected_pane == SelectedPane::Xfader {
+                    if let (Some(start_x), Some(start_value), Some(area)) =
+                        (self.drag_start_x, self.drag_start_value, &self.xfader_area)
+                    {
+                        let delta = (mouse.column as i16 - start_x as i16) as f32;
+                        let sensitivity = 2.0 / area.w as f32;
+                        self.mixer.dj.crossfader =
+                            (start_value + delta * sensitivity).clamp(-1.0, 1.0);
+                        return;
+                    }
+                }
+
+                // Handle master fader vertical drag
+                if self.selected_pane == SelectedPane::Master
+                    && self.mixer.selected_global == GlobalControl::MasterFader
+                {
+                    if let (Some(start_y), Some(start_value)) =
+                        (self.drag_start_y, self.drag_start_value)
+                    {
+                        let delta = (start_y as i16 - mouse.row as i16) as f32;
+                        let sensitivity = 0.02;
+                        self.mixer.master.fader =
+                            (start_value + delta * sensitivity).clamp(0.0, 1.0);
+                        return;
+                    }
+                }
+
+                // Handle CUE fader vertical drag
+                if self.selected_pane == SelectedPane::DeckC
+                    && self.mixer.selected_control == ChannelControl::Fader
+                {
+                    if let (Some(start_y), Some(start_value)) =
+                        (self.drag_start_y, self.drag_start_value)
+                    {
+                        let delta = (start_y as i16 - mouse.row as i16) as f32;
+                        let sensitivity = 0.02;
+                        if let Some(ch) = self.mixer.channels.get_mut(2) {
+                            ch.fader =
+                                (start_value + delta * sensitivity).clamp(0.0, 1.0);
+                        }
+                        return;
+                    }
+                }
+
+                // Channel strip drag
                 if let (Some(start_y), Some(start_value)) = (self.drag_start_y, self.drag_start_value) {
                     let delta = (start_y as i16 - mouse.row as i16) as f32;
                     let sensitivity = 0.02;
@@ -1805,6 +2566,61 @@ impl App {
     /// Update channel areas for mouse hit testing
     pub fn update_channel_areas(&mut self, areas: Vec<ChannelArea>) {
         self.channel_areas = areas;
+    }
+
+    /// Update pane areas for mouse hit testing
+    pub fn update_pane_areas(
+        &mut self,
+        xfader: Option<PaneArea>,
+        master: Option<PaneArea>,
+        cue: Option<PaneArea>,
+        loops: Option<PaneArea>,
+        pads: Vec<(usize, u16, u16, u16, u16)>,
+    ) {
+        self.xfader_area = xfader;
+        self.master_area = master;
+        self.cue_area = cue;
+        self.loops_area = loops;
+        self.pad_areas = pads;
+    }
+
+    /// General hit-test across all panes
+    pub fn hit_test_all(&self, x: u16, y: u16) -> Option<HitResult> {
+        // Check channel strips first
+        if let Some((idx, ctrl)) = self.hit_test(x, y) {
+            return Some(HitResult::Channel(idx, ctrl));
+        }
+        // Check pads
+        for &(pad_idx, px, py, pw, ph) in &self.pad_areas {
+            if x >= px && x < px + pw && y >= py && y < py + ph {
+                return Some(HitResult::Pad(pad_idx));
+            }
+        }
+        // Check crossfader
+        if let Some(area) = &self.xfader_area {
+            if area.contains(x, y) {
+                return Some(HitResult::Crossfader);
+            }
+        }
+        // Check master
+        if let Some(area) = &self.master_area {
+            if area.contains(x, y) {
+                return Some(HitResult::Master);
+            }
+        }
+        // Check CUE
+        if let Some(area) = &self.cue_area {
+            if area.contains(x, y) {
+                return Some(HitResult::Cue);
+            }
+        }
+        // Check loops
+        if let Some(area) = &self.loops_area {
+            if area.contains(x, y) {
+                return Some(HitResult::Loops);
+            }
+        }
+        None
     }
 
     /// Hit test to find which channel/control is at a screen position
@@ -1947,6 +2763,9 @@ impl App {
             SourcePickerTab::SuperCollider => {
                 self.scan_supercollider_sources();
             }
+            SourcePickerTab::DeckActions => {
+                self.scan_deck_actions();
+            }
         }
 
         self.source_picker.filter();
@@ -2045,6 +2864,24 @@ impl App {
         });
     }
 
+    fn scan_deck_actions(&mut self) {
+        let decks = [
+            (Deck::A, "A", self.mpv_deck_a.is_some() || self.sc_deck_a.is_some()),
+            (Deck::B, "B", self.mpv_deck_b.is_some() || self.sc_deck_b.is_some()),
+            (Deck::C, "C", self.mpv_deck_c.is_some() || self.sc_deck_c.is_some()),
+        ];
+        for (_deck, label, connected) in &decks {
+            let status = if *connected { "●" } else { "○" };
+            self.source_picker.items.push(SourcePickerItem {
+                name: format!("{} Clear Deck {}", status, label),
+                path: PathBuf::new(),
+                is_socket: false,
+                is_udp: false,
+                is_dir: false,
+            });
+        }
+    }
+
     /// Open sample picker for a pad
     fn open_sample_picker(&mut self, pad_idx: usize) {
         self.source_picker = SourcePickerState::new();
@@ -2137,14 +2974,14 @@ impl App {
                 if let Some(ref mut engine) = self.sample_engine {
                     // Use cached engine for instant preview
                     let _ = engine.play(&item.path);
-                } else {
-                    // Fallback to mpv
-                    let _ = std::process::Command::new("mpv")
-                        .arg("--no-video")
-                        .arg("--really-quiet")
-                        .arg("--no-terminal")
-                        .arg(&item.path)
-                        .spawn();
+                    } else {
+                        // Fallback to mpv
+                        let _ = std::process::Command::new("mpv")
+                            .arg("--no-video")
+                            .arg("--really-quiet")
+                            .arg("--no-terminal")
+                            .arg(&item.path)
+                            .spawn();
                 }
             }
         }
@@ -2273,6 +3110,14 @@ impl App {
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.source_picker.move_up();
                 }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.source_picker.prev_tab();
+                    self.scan_sources();
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.source_picker.next_tab();
+                    self.scan_sources();
+                }
                 KeyCode::Char('g') => {
                     self.source_picker.selected = 0;
                     self.source_picker.scroll_offset = 0;
@@ -2283,19 +3128,11 @@ impl App {
                     self.source_picker.clamp_scroll();
                 }
                 KeyCode::Tab => {
-                    self.source_picker.tab = match self.source_picker.tab {
-                        SourcePickerTab::MpvSockets => SourcePickerTab::AudioFiles,
-                        SourcePickerTab::AudioFiles => SourcePickerTab::SuperCollider,
-                        SourcePickerTab::SuperCollider => SourcePickerTab::MpvSockets,
-                    };
+                    self.source_picker.next_tab();
                     self.scan_sources();
                 }
                 KeyCode::BackTab => {
-                    self.source_picker.tab = match self.source_picker.tab {
-                        SourcePickerTab::MpvSockets => SourcePickerTab::SuperCollider,
-                        SourcePickerTab::SuperCollider => SourcePickerTab::AudioFiles,
-                        SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
-                    };
+                    self.source_picker.prev_tab();
                     self.scan_sources();
                 }
                 KeyCode::Enter => {
@@ -2321,19 +3158,11 @@ impl App {
                     self.source_picker.filter();
                 }
                 KeyCode::Tab => {
-                    self.source_picker.tab = match self.source_picker.tab {
-                        SourcePickerTab::MpvSockets => SourcePickerTab::AudioFiles,
-                        SourcePickerTab::AudioFiles => SourcePickerTab::SuperCollider,
-                        SourcePickerTab::SuperCollider => SourcePickerTab::MpvSockets,
-                    };
+                    self.source_picker.next_tab();
                     self.scan_sources();
                 }
                 KeyCode::BackTab => {
-                    self.source_picker.tab = match self.source_picker.tab {
-                        SourcePickerTab::MpvSockets => SourcePickerTab::SuperCollider,
-                        SourcePickerTab::SuperCollider => SourcePickerTab::AudioFiles,
-                        SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
-                    };
+                    self.source_picker.prev_tab();
                     self.scan_sources();
                 }
                 KeyCode::Up => {
@@ -2351,8 +3180,68 @@ impl App {
         }
     }
 
+    /// Fully reset a deck: drop MPV/SC client, reset channel state to defaults.
+    fn clear_deck(&mut self, deck: Deck) {
+        let ch_idx = match deck {
+            Deck::A => self.mixer.dj.deck_a_channel,
+            Deck::B => self.mixer.dj.deck_b_channel,
+            Deck::C => self.mixer.dj.deck_c_channel,
+        };
+
+        // Drop MPV client
+        match deck {
+            Deck::A => self.mpv_deck_a = None,
+            Deck::B => self.mpv_deck_b = None,
+            Deck::C => self.mpv_deck_c = None,
+        }
+
+        // Free SC synths
+        match deck {
+            Deck::A => {
+                if let Some(ref old) = self.sc_deck_a {
+                    let _ = old.free_all();
+                }
+                self.sc_deck_a = None;
+            }
+            Deck::B => {
+                if let Some(ref old) = self.sc_deck_b {
+                    let _ = old.free_all();
+                }
+                self.sc_deck_b = None;
+            }
+            Deck::C => {
+                if let Some(ref old) = self.sc_deck_c {
+                    let _ = old.free_all();
+                }
+                self.sc_deck_c = None;
+            }
+        }
+
+        // Reset channel to defaults (preserves name and index)
+        if let Some(ch) = self.mixer.channels.get_mut(ch_idx) {
+            let name = ch.name.clone();
+            let index = ch.index;
+            *ch = crate::state::MixerChannel::new(name, index);
+        }
+    }
+
     /// Assign selected source to deck
     fn select_source_for_deck(&mut self, deck: Deck) {
+        // Handle DeckActions tab — clear the selected deck
+        if self.source_picker.tab == SourcePickerTab::DeckActions {
+            if let Some(item) = self.source_picker.selected_item().cloned() {
+                if item.name.contains("Clear Deck A") {
+                    self.clear_deck(Deck::A);
+                } else if item.name.contains("Clear Deck B") {
+                    self.clear_deck(Deck::B);
+                } else if item.name.contains("Clear Deck C") {
+                    self.clear_deck(Deck::C);
+                }
+            }
+            self.mode = AppMode::PaneSelect;
+            return;
+        }
+
         if let Some(item) = self.source_picker.selected_item().cloned() {
             // Deck::C uses cue_channel which is not in the channels Vec
             if deck == Deck::C {
@@ -2399,6 +3288,7 @@ impl App {
                 if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
                     channel.name = item.name.clone();
                     channel.connected = connected;
+                    channel.base_bpm = 0.0; // Reset for new track detection
 
                     // Sync initial volume from MPV
                     if connected {
@@ -2434,9 +3324,12 @@ impl App {
 
                 // Trigger BPM analysis if we have a file path
                 if let Some(path) = file_path {
+                    let pending = self.pending_bpm.clone();
                     let on_result = Arc::new(Mutex::new(move |result: crate::audio::BpmResult| {
-                        // BPM result will be picked up on next tick
                         tracing::debug!("BPM detected for channel {}: {:.1} (conf: {:.2})", channel_idx, result.bpm, result.confidence);
+                        if let Ok(mut queue) = pending.lock() {
+                            queue.push((channel_idx, result.bpm));
+                        }
                     }));
                     BpmAnalyzer::analyze_file(&path, on_result);
                 }
@@ -2513,6 +3406,7 @@ impl App {
 
             self.mixer.cue_channel.name = item.name.clone();
             self.mixer.cue_channel.connected = connected;
+            self.mixer.cue_channel.base_bpm = 0.0; // Reset for new track
 
             if connected {
                 if let Ok(vol) = client.get_volume() {
@@ -2540,8 +3434,13 @@ impl App {
 
             // Trigger BPM analysis if we have a file path
             if let Some(path) = file_path {
+                let pending = self.pending_bpm.clone();
+                let channel_idx = self.mixer.dj.deck_c_channel;
                 let on_result = Arc::new(Mutex::new(move |result: crate::audio::BpmResult| {
                     tracing::debug!("BPM detected for CUE: {:.1} (conf: {:.2})", result.bpm, result.confidence);
+                    if let Ok(mut queue) = pending.lock() {
+                        queue.push((channel_idx, result.bpm));
+                    }
                 }));
                 BpmAnalyzer::analyze_file(&path, on_result);
             }
@@ -2693,6 +3592,9 @@ impl App {
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_volume(sc_vol);
         }
+        if channel_idx < 3 {
+            self.last_volume_push_ms[channel_idx] = self.elapsed_ms;
+        }
         self.sync_capture_dsp_params();
     }
 
@@ -2784,6 +3686,162 @@ impl App {
         for msg in msgs { self.log_debug(msg); }
     }
 
+    /// Start or accelerate a scrub on the currently selected deck channel.
+    /// direction: -1.0 = reverse, 1.0 = forward
+    /// coarse: true for H/J/K/L (faster acceleration)
+    fn start_scrub(&mut self, direction: f32, coarse: bool) {
+        if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
+            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                ch.scrub_direction = direction;
+                ch.scrub_coarse = coarse;
+                // Accelerate: each keypress increases speed
+                let accel = if coarse { 1.2 } else { 0.2 };
+                ch.scrub_speed = (ch.scrub_speed + accel).clamp(0.1, 25.0);
+            }
+        }
+    }
+
+    /// Tick scrub state for all channels. Called every frame (~50ms).
+    /// Advances accumulated seek amount and sends seek commands to MPV.
+    pub fn tick_scrub(&mut self) {
+        let dt = 0.05; // ~50ms per tick
+        let deck_a_ch = self.mixer.dj.deck_a_channel;
+        let deck_b_ch = self.mixer.dj.deck_b_channel;
+        let deck_c_ch = self.mixer.dj.deck_c_channel;
+
+        for ch_idx in [deck_a_ch, deck_b_ch, deck_c_ch] {
+            let (direction, speed) = self.mixer.get_channel(ch_idx)
+                .map(|c| (c.scrub_direction, c.scrub_speed))
+                .unwrap_or((0.0, 0.0));
+
+            if direction == 0.0 || speed <= 0.0 {
+                continue;
+            }
+
+            // Seek amount = direction * speed * dt (in seconds)
+            let seek_amount = direction * speed * dt;
+
+            // Accumulate in per-channel field
+            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                ch.scrub_accumulator += seek_amount;
+
+                // Seek when accumulator reaches a minimum threshold
+                if ch.scrub_accumulator.abs() >= 0.02 {
+                    let seek_to = ch.scrub_accumulator;
+                    ch.scrub_accumulator = 0.0;
+
+                    if let Some(client) = self.mpv_for_channel(ch_idx) {
+                        let _ = client.send_command(vec![
+                            "seek".into(),
+                            serde_json::json!(seek_to),
+                            "relative".into(),
+                        ]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Decay scrub speed for all channels. Called every frame.
+    /// Speed decays toward 0 when no keys are being pressed.
+    pub fn decay_scrub_speed(&mut self) {
+        let decay = 0.85; // Speed decays by 15% per tick
+        for ch in &mut self.mixer.channels {
+            if ch.scrub_speed > 0.01 {
+                ch.scrub_speed *= decay;
+                if ch.scrub_speed < 0.01 {
+                    ch.scrub_speed = 0.0;
+                    ch.scrub_direction = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Poll time_pos and duration from MPV for all deck channels.
+    pub fn poll_scrub_positions(&mut self) {
+        let deck_a_ch = self.mixer.dj.deck_a_channel;
+        let deck_b_ch = self.mixer.dj.deck_b_channel;
+        let deck_c_ch = self.mixer.dj.deck_c_channel;
+
+        for ch_idx in [deck_a_ch, deck_b_ch, deck_c_ch] {
+            let time_pos = self.mpv_for_channel(ch_idx)
+                .and_then(|c| c.get_time_pos().ok());
+            let duration = self.mpv_for_channel(ch_idx)
+                .and_then(|c| c.get_duration().ok());
+
+            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                if let Some(tp) = time_pos {
+                    ch.time_pos = tp;
+                }
+                if let Some(dur) = duration {
+                    ch.duration = dur;
+                }
+            }
+        }
+    }
+
+    /// Apply pending BPM results from background analysis to channel state
+    fn apply_pending_bpm(&mut self) {
+        let results: Vec<(usize, f32)> = {
+            if let Ok(mut queue) = self.pending_bpm.lock() {
+                queue.drain(..).collect()
+            } else {
+                Vec::new()
+            }
+        };
+        for (ch_idx, bpm) in results {
+            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                ch.bpm = Some(bpm);
+            }
+        }
+    }
+
+    /// Read real-time onset-detected BPM from each MPV metering thread.
+    /// Read real-time onset-detected BPM from each MPV metering thread.
+    /// Captures base_bpm on first detection for stable speed factor.
+    fn poll_onset_bpm(&mut self) {
+        let deck_a_ch = self.mixer.dj.deck_a_channel;
+        let deck_b_ch = self.mixer.dj.deck_b_channel;
+
+        if let Some(ref client) = self.mpv_deck_a {
+            let bpm = client.get_detected_bpm();
+            if bpm > 0.0 {
+                if let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
+                    if ch.base_bpm == 0.0 {
+                        ch.base_bpm = bpm;
+                        ch.target_bpm = bpm; // Start at x1.00
+                    }
+                    ch.bpm = Some(bpm);
+                }
+            }
+        }
+        if let Some(ref client) = self.mpv_deck_b {
+            let bpm = client.get_detected_bpm();
+            if bpm > 0.0 {
+                if let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
+                    if ch.base_bpm == 0.0 {
+                        ch.base_bpm = bpm;
+                        ch.target_bpm = bpm;
+                    }
+                    ch.bpm = Some(bpm);
+                }
+            }
+        }
+        // Deck C maps to channel 6 (CUE)
+        if let Some(ref client) = self.mpv_deck_c {
+            let bpm = client.get_detected_bpm();
+            if bpm > 0.0 {
+                if let Some(ch) = self.mixer.get_channel_mut(6) {
+                    if ch.base_bpm == 0.0 {
+                        ch.base_bpm = bpm;
+                        ch.target_bpm = bpm;
+                    }
+                    ch.bpm = Some(bpm);
+                }
+            }
+        }
+    }
+
     /// Sync mute state to MPV/SC for a channel
     pub fn sync_mute_to_mpv(&mut self, channel_idx: usize) {
         let muted = self.mixer.get_channel(channel_idx)
@@ -2825,17 +3883,54 @@ impl App {
         }
     }
 
-    /// Sync playback speed (BPM) to MPV for a channel
-    pub fn sync_speed_to_mpv(&mut self, channel_idx: usize) {
-        let speed = self.mixer.get_channel(channel_idx)
-            .map(|c| c.playback_speed)
-            .unwrap_or(1.0);
+    /// Sync master play/pause to all connected channels
+    pub fn sync_all_playpause(&mut self) {
+        let playing = self.mixer.master.playing;
 
-        if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_speed(speed);
-        }
-        if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_speed(speed);
+        if playing {
+            // Resume: only resume channels that were playing before the pause
+            let prev = self.mixer.previously_playing.clone();
+
+            for (idx, &was_playing) in prev.iter().enumerate() {
+                if let Some(channel) = self.mixer.get_channel_mut(idx) {
+                    channel.playing = was_playing;
+                }
+                let paused = !was_playing;
+                if let Some(client) = self.mpv_for_channel(idx) {
+                    let _ = client.set_pause(paused);
+                }
+                if let Some(client) = self.sc_for_channel(idx) {
+                    let _ = client.set_pause(paused);
+                }
+            }
+        } else {
+            // Pause: save current play state of each channel, then pause all
+            self.mixer.previously_playing.clear();
+            for idx in 0..self.mixer.channels.len() {
+                let was_playing = self.mixer.get_channel(idx)
+                    .map(|c| c.playing)
+                    .unwrap_or(false);
+                self.mixer.previously_playing.push(was_playing);
+                if let Some(channel) = self.mixer.get_channel_mut(idx) {
+                    channel.playing = false;
+                }
+                if let Some(client) = self.mpv_for_channel(idx) {
+                    let _ = client.set_pause(true);
+                }
+                if let Some(client) = self.sc_for_channel(idx) {
+                    let _ = client.set_pause(true);
+                }
+            }
+            // Also save and pause CUE channel
+            let cue_was_playing = self.mixer.cue_channel.playing;
+            self.mixer.previously_playing.push(cue_was_playing);
+            self.mixer.cue_channel.playing = false;
+            if let Some(client) = self.mpv_for_channel(2) {
+                let _ = client.set_pause(true);
+            }
+            if let Some(client) = self.sc_for_channel(2) {
+                let _ = client.set_pause(true);
+            }
         }
     }
 
@@ -2847,8 +3942,11 @@ impl App {
                     ChannelControl::Fader => {
                         self.sync_volume_to_mpv(ch_idx);
                     }
+                    ChannelControl::Scrub => {
+                        // Scrub is handled by tick_scrub, no sync needed here
+                    }
                     ChannelControl::Bpm => {
-                        self.sync_speed_to_mpv(ch_idx);
+                        self.sync_bpm_to_mpv(ch_idx);
                     }
                     ChannelControl::Pan => {
                         self.sync_pan_to_mpv(ch_idx);
@@ -2941,6 +4039,20 @@ impl App {
             let _ = client.set_pan(pan);
         }
         self.sync_capture_dsp_params();
+    }
+
+    /// Sync BPM-based speed to MPV for a channel
+    /// Speed = target_bpm / base_bpm (stable reference from first detection)
+    fn sync_bpm_to_mpv(&mut self, channel_idx: usize) {
+        let (target_bpm, base_bpm) = self.mixer.get_channel(channel_idx)
+            .map(|c| (c.target_bpm, c.base_bpm))
+            .unwrap_or((120.0, 120.0));
+
+        let base = if base_bpm > 0.0 { base_bpm } else { 120.0 };
+        let speed = (target_bpm / base).clamp(0.1, 4.0);
+        if let Some(client) = self.mpv_for_channel(channel_idx) {
+            let _ = client.set_speed(speed);
+        }
     }
 
     /// Sync crossfader position to both deck volumes

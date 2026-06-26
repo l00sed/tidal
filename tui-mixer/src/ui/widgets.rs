@@ -149,6 +149,10 @@ pub struct DeckIndicator {
     selected: bool,
     /// Whether source is connected
     connected: bool,
+    /// Scrub direction (-1.0 backward, 0.0 none, 1.0 forward)
+    scrub_direction: f32,
+    /// Scrub speed (0.0 = not scrubbing)
+    scrub_speed: f32,
 }
 
 impl DeckIndicator {
@@ -162,6 +166,8 @@ impl DeckIndicator {
             source_name: None,
             selected: false,
             connected: false,
+            scrub_direction: 0.0,
+            scrub_speed: 0.0,
         }
     }
 
@@ -199,6 +205,12 @@ impl DeckIndicator {
         self.connected = connected;
         self
     }
+
+    pub fn scrub(mut self, direction: f32, speed: f32) -> Self {
+        self.scrub_direction = direction;
+        self.scrub_speed = speed;
+        self
+    }
 }
 
 impl Widget for DeckIndicator {
@@ -223,7 +235,17 @@ impl Widget for DeckIndicator {
         
         // Calculate which segment to highlight based on frame and speed
         let highlight_pos = if self.playing {
-            ((self.frame as f32 * self.speed) as usize) % 12
+            let base = self.frame as f32;
+            // Speed up animation when scrubbing
+            let speed_mult = 1.0 + self.scrub_speed * 0.5;
+            let adjusted = base * speed_mult;
+            let pos = (adjusted as usize) % 12;
+            // Reverse direction when scrubbing backwards
+            if self.scrub_direction < 0.0 {
+                11 - pos
+            } else {
+                pos
+            }
         } else {
             12 // No highlight when stopped
         };
@@ -279,8 +301,17 @@ impl Widget for DeckIndicator {
         }
 
         // Center: play/pause icon (toggleable when source connected)
+        // When scrubbing, show direction instead of play/pause
         let center_char = if self.connected {
-            if self.playing { "▶" } else { "⏸" }
+            if self.scrub_direction < 0.0 {
+                "󰑟"  // Nerd Font rewind
+            } else if self.scrub_direction > 0.0 {
+                "󰈑"  // Nerd Font fast-forward
+            } else if self.playing {
+                "▶"
+            } else {
+                "⏸"
+            }
         } else {
             // No source - show deck label dimmed
             &self.label.to_string()

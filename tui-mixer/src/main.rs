@@ -285,9 +285,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             
             frame.render_widget(view, frame.area());
 
-            // Update channel areas for mouse hit testing
-            let areas = calculate_channel_areas(frame.area(), app.mixer.channels.len());
-            app.update_channel_areas(areas);
+            // Update areas for mouse hit testing
+            let (channel_areas, xfader_area, master_area, cue_area, loops_area, pad_areas) =
+                calculate_all_areas(frame.area(), app.mixer.channels.len());
+            app.update_channel_areas(channel_areas);
+            app.update_pane_areas(xfader_area, master_area, cue_area, loops_area, pad_areas);
         })?;
 
         // Handle events
@@ -328,15 +330,26 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
     }
 }
 
-/// Calculate the screen areas for each channel strip for mouse hit testing
-fn calculate_channel_areas(area: Rect, num_channels: usize) -> Vec<app::ChannelArea> {
+/// Calculate screen areas for all panes for mouse hit testing.
+/// Returns (channel_areas, xfader_area, master_area, cue_area, loops_area, pad_areas).
+fn calculate_all_areas(
+    area: Rect,
+    num_channels: usize,
+) -> (
+    Vec<app::ChannelArea>,
+    Option<app::PaneArea>,
+    Option<app::PaneArea>,
+    Option<app::PaneArea>,
+    Option<app::PaneArea>,
+    Vec<(usize, u16, u16, u16, u16)>,
+) {
     use crate::state::ChannelControl;
 
     if num_channels == 0 {
-        return Vec::new();
+        return (Vec::new(), None, None, None, None, Vec::new());
     }
 
-    // Mirror the layout calculations from MixerView
+    // Mirror the layout from MixerView::render_mixer_full_width
     let header_height = 3u16;
     let footer_height = 3u16;
     let mixer_area = Rect::new(
@@ -346,33 +359,52 @@ fn calculate_channel_areas(area: Rect, num_channels: usize) -> Vec<app::ChannelA
         area.height.saturating_sub(header_height + footer_height),
     );
 
-    let master_width = 14u16;
-    let available_for_channels = mixer_area.width.saturating_sub(master_width + 2);
-    let min_channel_width = 12u16;
-    let max_channel_width = 20u16;
-    let channel_width = (available_for_channels / num_channels as u16)
-        .clamp(min_channel_width, max_channel_width);
+    let deck_max_width = 21u16;
+    let master_width = 21u16;
+    let min_dj_width = 20u16;
 
-    let mut areas = Vec::with_capacity(num_channels);
+    let total_fixed = deck_max_width * 2 + master_width + min_dj_width;
+    let deck_width = if mixer_area.width >= total_fixed {
+        deck_max_width
+    } else {
+        ((mixer_area.width.saturating_sub(master_width + min_dj_width)) / 2).max(10)
+    };
 
+    let dj_center_width = mixer_area.width.saturating_sub(deck_width * 2 + master_width);
+
+    // Horizontal chunks: [Deck A] [DJ center] [Deck B] [Master column]
+    let chunk_a_x = mixer_area.x;
+    let chunk_dj_x = chunk_a_x + deck_width;
+    let chunk_b_x = chunk_dj_x + dj_center_width;
+    let chunk_m_x = chunk_b_x + deck_width;
+
+    // DJ center vertical: [Pads] [Loops] [Xfader]
+    let loops_height = (mixer_area.height as f32 * 0.20) as u16;
+    let loops_height = loops_height.max(3);
+    let xfader_height = 5u16;
+
+    let pads_y = mixer_area.y;
+    let pads_h = mixer_area.height.saturating_sub(loops_height + xfader_height);
+    let loops_y = pads_y + pads_h;
+    let xfader_y = loops_y + loops_height;
+
+    // Master column vertical: [CUE] [Master]
+    let cue_h = (mixer_area.height as f32 * 0.66) as u16;
+    let master_h = mixer_area.height.saturating_sub(cue_h);
+    let cue_y = mixer_area.y;
+    let master_y = cue_y + cue_h;
+
+    // ── Channel strip areas ──
+    let channel_width = (dj_center_width / num_channels as u16).max(10);
+    let mut channel_areas = Vec::with_capacity(num_channels);
     for i in 0..num_channels {
-        let x = mixer_area.x + (i as u16 * channel_width);
-        let y = mixer_area.y;
-        let w = channel_width;
-        let h = mixer_area.height;
-
-        // Calculate control row positions (approximate based on layout constraints)
-        let inner_y = y + 1; // Account for border
-        let inner_h = h.saturating_sub(2);
-
-        // These ratios match the Layout constraints in ChannelStrip
-        let row_heights = [4, 4, 4, 3, 3, 4, 8, 3, 3, 3]; // Approximate
+        let x = chunk_a_x + i as u16 * channel_width;
+        let w = channel_width.min(mixer_area.width.saturating_sub(x - mixer_area.x));
+        let inner_y = mixer_area.y + 1;
+        let inner_h = mixer_area.height.saturating_sub(2);
+        let row_heights = [4, 4, 4, 3, 3, 4, 8, 3, 3, 3];
         let total: u16 = row_heights.iter().sum();
         let scale = inner_h as f32 / total as f32;
-
-        let mut control_rows = Vec::new();
-        let mut current_y = inner_y;
-
         let controls = [
             ChannelControl::EqHigh,
             ChannelControl::EqMid,
@@ -384,19 +416,80 @@ fn calculate_channel_areas(area: Rect, num_channels: usize) -> Vec<app::ChannelA
             ChannelControl::Mute,
             ChannelControl::Solo,
         ];
-
+        let mut control_rows = Vec::new();
+        let mut current_y = inner_y;
         for (j, &control) in controls.iter().enumerate() {
             let row_h = (row_heights[j] as f32 * scale) as u16;
             let y_end = current_y + row_h;
             control_rows.push((control, current_y, y_end));
             current_y = y_end;
         }
-
-        areas.push(app::ChannelArea {
-            bounds: (x, y, w, h),
+        channel_areas.push(app::ChannelArea {
+            bounds: (x, mixer_area.y, w, mixer_area.height),
             control_rows,
         });
     }
 
-    areas
+    // ── Crossfader area ──
+    let xfader_area = app::PaneArea {
+        x: chunk_dj_x,
+        y: xfader_y,
+        w: dj_center_width,
+        h: xfader_height,
+    };
+
+    // ── Master area ──
+    let master_area = app::PaneArea {
+        x: chunk_m_x,
+        y: master_y,
+        w: master_width.min(mixer_area.width.saturating_sub(chunk_m_x - mixer_area.x)),
+        h: master_h,
+    };
+
+    // ── CUE area ──
+    let cue_area = app::PaneArea {
+        x: chunk_m_x,
+        y: cue_y,
+        w: master_width.min(mixer_area.width.saturating_sub(chunk_m_x - mixer_area.x)),
+        h: cue_h,
+    };
+
+    // ── Loops area ──
+    let loops_area = app::PaneArea {
+        x: chunk_dj_x,
+        y: loops_y,
+        w: dj_center_width,
+        h: loops_height,
+    };
+
+    // ── Pad areas (4x4 grid centered in pads area) ──
+    let mut pad_areas = Vec::new();
+    if pads_h >= 6 && dj_center_width >= 12 {
+        let cell_w = 5u16;
+        let cell_h = 3u16;
+        let gap_x = 1u16;
+        let grid_w = cell_w * 4 + gap_x * 3;
+        let grid_h = cell_h * 4;
+        let offset_x = (dj_center_width.saturating_sub(grid_w)) / 2;
+        let offset_y = (pads_h.saturating_sub(grid_h)) / 2;
+        for row in 0..4u16 {
+            for col in 0..4u16 {
+                let pad_idx = (row * 4 + col) as usize;
+                let x = chunk_dj_x + offset_x + col * (cell_w + gap_x);
+                let y = pads_y + offset_y + row * cell_h;
+                if x + cell_w <= chunk_dj_x + dj_center_width && y + cell_h <= pads_y + pads_h {
+                    pad_areas.push((pad_idx, x, y, cell_w, cell_h));
+                }
+            }
+        }
+    }
+
+    (
+        channel_areas,
+        Some(xfader_area),
+        Some(master_area),
+        Some(cue_area),
+        Some(loops_area),
+        pad_areas,
+    )
 }

@@ -174,9 +174,10 @@ impl<'a> Widget for ChannelStrip<'a> {
         
         let constraints = if has_deck {
             vec![
+                Constraint::Length(1),  // Scrubber (hidden until track loaded)
                 Constraint::Length(7),  // Deck indicator (ring + padding + marquee)
                 Constraint::Length(1),  // Separator
-                Constraint::Length(1),  // BPM slider
+                Constraint::Length(1),  // BPM display
                 Constraint::Length(1),  // Separator
                 Constraint::Length(1),  // EQ High
                 Constraint::Length(1),  // Separator
@@ -217,6 +218,13 @@ impl<'a> Widget for ChannelStrip<'a> {
 
         // Deck indicator (only for deck channels)
         if has_deck {
+            // Scrubber (only shown when track loaded)
+            let has_track = self.channel.connected && self.channel.duration > 0.0;
+            if has_track {
+                self.render_scrub_bar(chunks[idx], buf, self.is_control_selected(ChannelControl::Scrub));
+            }
+            idx += 1;
+
             let deck_label = self.deck_label.unwrap_or("");
             let deck_char = if deck_label.contains('A') { 'A' } else if deck_label.contains('B') { 'B' } else { 'C' };
             let source_name = if self.channel.connected {
@@ -232,18 +240,51 @@ impl<'a> Widget for ChannelStrip<'a> {
                 .source_name(source_name)
                 .connected(self.channel.connected)
                 .selected(self.is_control_selected(ChannelControl::PlayPause))
+                .scrub(self.channel.scrub_direction, self.channel.scrub_speed)
                 .render(chunks[idx], buf);
             idx += 1;
 
-            // Separator between deck indicator and BPM
+            // Separator
             self.draw_separator(chunks[idx], buf);
             idx += 1;
 
-            // BPM/Speed control (only for deck channels)
-            self.render_bpm_bar(chunks[idx], buf, self.is_control_selected(ChannelControl::Bpm));
+            // BPM display (always shown) - label left, value right, highlighted when focused
+            let bpm_selected = self.is_control_selected(ChannelControl::Bpm);
+            let bpm_editing = self.is_control_editing(ChannelControl::Bpm);
+            let bpm_value = if let Some(bpm) = self.channel.bpm {
+                format!("{:.0}", bpm)
+            } else {
+                "---".to_string()
+            };
+            let label_style = if bpm_editing {
+                Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
+            } else if bpm_selected {
+                Style::default().fg(TEXT_EDITING)
+            } else {
+                Style::default().fg(TEXT_DIM)
+            };
+            let value_style = if bpm_editing {
+                Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+            } else if bpm_selected {
+                Style::default().fg(TEXT_BRIGHT)
+            } else {
+                Style::default().fg(TEXT_DEFAULT)
+            };
+            // Label left-aligned, value right-aligned
+            let bpm_area = chunks[idx];
+            buf.set_string(bpm_area.x, bpm_area.y, "BPM", label_style);
+            // Show speed factor when selected (e.g. x0.85)
+            if bpm_selected || bpm_editing {
+                let base = self.channel.base_bpm;
+                let speed = if base > 0.0 { self.channel.target_bpm / base } else { 1.0 };
+                let factor_str = format!("x{:.2}", speed);
+                buf.set_string(bpm_area.x + 4, bpm_area.y, &factor_str, Style::default().fg(TEXT_DIM));
+            }
+            let val_right = bpm_area.x + bpm_area.width;
+            buf.set_string(val_right.saturating_sub(4), bpm_area.y, &format!("{:>4}", bpm_value), value_style);
             idx += 1;
 
-            // Separator between BPM and EQ
+            // Separator
             self.draw_separator(chunks[idx], buf);
             idx += 1;
         }
@@ -565,76 +606,100 @@ impl<'a> ChannelStrip<'a> {
         buf.set_string(val_x, y, &padded_display, val_style);
     }
     
-    /// Render BPM/speed control bar
-    fn render_bpm_bar(&self, area: Rect, buf: &mut Buffer, selected: bool) {
+    /// Render scrub slider showing elapsed/total time with position bar
+    fn render_scrub_bar(&self, area: Rect, buf: &mut Buffer, selected: bool) {
         if area.width < 4 || area.height < 1 {
             return;
         }
-        
-        let editing = self.is_control_editing(ChannelControl::Bpm);
-        
-        // Show detected BPM if available, otherwise show speed
-        let label = if let Some(bpm) = self.channel.bpm {
-            format!("{:.0}", bpm)
-        } else {
-            // Show speed as percentage while waiting for BPM
-            let speed = self.channel.playback_speed;
-            format!("{:.0}%", speed * 100.0)
+
+        let y = area.y;
+        let editing = self.is_control_editing(ChannelControl::Scrub);
+
+        let format_time = |secs: f32| -> String {
+            let total = secs.max(0.0) as u32;
+            let m = total / 60;
+            let s = total % 60;
+            format!("{}:{:02}", m, s)
         };
-        
-        let label_style = if selected {
-            Style::default().fg(TEXT_EDITING)
-        } else if self.channel.bpm.is_some() {
+
+        let elapsed = format_time(self.channel.time_pos);
+        let total = format_time(self.channel.duration);
+
+        let position = if self.channel.duration > 0.0 {
+            (self.channel.time_pos / self.channel.duration).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        let time_str = format!("{} / {}", elapsed, total);
+        let time_x = area.x + area.width.saturating_sub(time_str.len() as u16);
+        let time_style = if editing {
+            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+        } else if selected {
             Style::default().fg(TEXT_BRIGHT)
         } else {
-            Style::default().fg(TEXT_GHOST)
+            Style::default().fg(TEXT_DEFAULT)
         };
-        
-        // Draw "BPM" label on far left
-        let bpm_label = "BPM";
-        let bpm_label_style = if selected || editing {
-            Style::default().fg(TEXT_EDITING)
-        } else {
-            Style::default().fg(TEXT_DIM)
-        };
-        if area.width >= 8 {
-            buf.set_string(area.x, area.y, bpm_label, bpm_label_style);
+        buf.set_string(time_x, y, &time_str, time_style);
+
+        let bar_start = area.x;
+        let bar_end = time_x.saturating_sub(1);
+        if bar_end > bar_start + 2 {
+            let bar_width = (bar_end - bar_start) as usize;
+            let filled = (position * bar_width as f32) as usize;
+            for i in 0..bar_width {
+                let ch = if i == filled { "◆" } else { "─" };
+                let color = if i < filled {
+                    if editing { TEXT_BRIGHT } else { METER_FILL }
+                } else {
+                    METER_TRACK
+                };
+                buf.set_string(bar_start + i as u16, y, ch, Style::default().fg(color));
+            }
         }
-        
-        // Draw BPM value right-aligned
-        let value_x = area.x + area.width.saturating_sub(label.len() as u16);
-        buf.set_string(value_x, area.y, &label, label_style);
     }
 
-    fn render_button_row(&self, area: Rect, buf: &mut Buffer, bottom_border: bool) {
+    fn render_button_row(&self, area: Rect, buf: &mut Buffer, is_cue: bool) {
         if area.width < 3 {
             return;
         }
 
-        // Two equal columns: M │ S
+        // Two equal columns: M │ S (or M │ -> A for CUE)
         let sep_x = area.x + area.width / 2;
         let left_w = sep_x - area.x;
         let right_w = area.x + area.width - sep_x - 1;
 
         // Center each letter within its half (with 1-cell padding on each side)
         let m_x = area.x + 1 + (left_w - 2) / 2;
-        let s_x = sep_x + 2 + (right_w - 2) / 2;
+        
+        // For CUE deck, right side shows "-> A" instead of "S"
+        let (right_label, right_control, right_active) = if is_cue {
+            ("-> A", ChannelControl::CueSendToA, false)
+        } else {
+            ("S", ChannelControl::Solo, self.channel.solo)
+        };
+        
+        // Calculate position for right label
+        let s_x = if is_cue {
+            // "-> A" is 4 chars, shift left by 1 (one less padding on left)
+            sep_x + 1 + (right_w.saturating_sub(4)) / 2
+        } else {
+            // "S" is 1 char, centered
+            sep_x + 2 + (right_w - 2) / 2
+        };
         
         let sep_style = Style::default().fg(SEPARATOR);
         // ┬ on the separator line above, connecting downward into the M|S split
-        // │ on the button row between M and S
-        // ┴ on the separator line below (CUE deck only), connecting upward
+        // │ on the button row between M and S/-> A
+        // Note: bottom junction for CUE is handled by render_cue_pane separator
         if area.y > 0 {
             buf.set_string(sep_x, area.y - 1, "┬", sep_style);
         }
         buf.set_string(sep_x, area.y, "│", sep_style);
-        if bottom_border {
-            buf.set_string(sep_x, area.y + area.height, "┴", sep_style);
-        }
         
         // Highlight background for active toggles (with 1-cell padding on edges)
         let active_m_bg = if self.channel.muted { Some(STATUS_MUTED) } else { None };
-        let active_s_bg = if self.channel.solo { Some(BORDER_ACTIVE) } else { None };
+        let active_s_bg = if right_active { Some(BORDER_ACTIVE) } else { None };
 
         // Fill M column background if active (skip first and last cell)
         if let Some(bg) = active_m_bg {
@@ -642,7 +707,7 @@ impl<'a> ChannelStrip<'a> {
                 buf.set_string(x, area.y, " ", Style::default().bg(bg));
             }
         }
-        // Fill S column background if active (skip first and last cell)
+        // Fill S/-> A column background if active (skip first and last cell)
         if let Some(bg) = active_s_bg {
             for x in sep_x + 2..area.x + area.width - 1 {
                 buf.set_string(x, area.y, " ", Style::default().bg(bg));
@@ -659,15 +724,15 @@ impl<'a> ChannelStrip<'a> {
         };
         buf.set_string(m_x, area.y, "M", m_style);
 
-        // S - Solo
-        let s_style = if self.channel.solo {
+        // S - Solo (or -> A for CUE)
+        let s_style = if right_active {
             Style::default().fg(Color::Black).bg(BORDER_ACTIVE)
-        } else if self.is_control_selected(ChannelControl::Solo) {
+        } else if self.is_control_selected(right_control) {
             Style::default().fg(TEXT_EDITING)
         } else {
             Style::default().fg(TEXT_DIM)
         };
-        buf.set_string(s_x, area.y, "S", s_style);
+        buf.set_string(s_x, area.y, right_label, s_style);
     }
 }
 
@@ -678,6 +743,9 @@ pub struct MasterStrip<'a> {
     selected: bool,
     selected_control: Option<GlobalControl>,
     editing: bool,
+    frame: u8,
+    /// True if any deck or CUE channel has playing == true
+    any_channel_playing: bool,
 }
 
 impl<'a> MasterStrip<'a> {
@@ -688,6 +756,8 @@ impl<'a> MasterStrip<'a> {
             selected: false,
             selected_control: None,
             editing: false,
+            frame: 0,
+            any_channel_playing: false,
         }
     }
 
@@ -706,6 +776,16 @@ impl<'a> MasterStrip<'a> {
 
     pub fn editing(mut self, editing: bool) -> Self {
         self.editing = editing;
+        self
+    }
+
+    pub fn frame(mut self, frame: u8) -> Self {
+        self.frame = frame;
+        self
+    }
+
+    pub fn any_channel_playing(mut self, v: bool) -> Self {
+        self.any_channel_playing = v;
         self
     }
 }
@@ -741,17 +821,110 @@ impl<'a> Widget for MasterStrip<'a> {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(3), // Play/Pause spinner (3×3 ring)
+                Constraint::Length(1), // Separator
                 Constraint::Min(6),    // Meters and fader
                 Constraint::Length(1), // Separator
                 Constraint::Length(1), // M | OUT
             ])
             .split(inner);
 
-        // Stereo meter and fader
+        // ── Play/Pause spinner (full-width ring) ──
+        let pp_area = chunks[0];
+        let pp_selected = self.selected_control == Some(GlobalControl::MasterPlayPause);
+        let playing = self.master.playing && self.any_channel_playing;
+
+        // Background highlight when paused
+        if !playing {
+            for y in pp_area.y..pp_area.y + pp_area.height {
+                for x in pp_area.x..pp_area.x + pp_area.width {
+                    buf.set_string(x, y, " ", Style::default().bg(Color::Rgb(20, 20, 20)));
+                }
+            }
+        }
+
+        let cx = pp_area.x + pp_area.width / 2;
+        let cy = pp_area.y + pp_area.height / 2;
+        let hw = pp_area.width as i16 / 2 - 1; // 1 col padding each side
+
+        // Build full-width ring segments clockwise: top → right → bottom → left
+        // Total segments: 2*(2*hw+1) + 2 = 4*hw + 4
+        let num_segments = (4 * hw + 4) as usize;
+        let highlight_pos = if playing {
+            (self.frame as usize) % num_segments
+        } else {
+            num_segments
+        };
+
+        let dim = Style::default().fg(Color::Rgb(35, 35, 35));
+        let glow = Style::default().fg(STATUS_PLAYING).add_modifier(Modifier::BOLD);
+        let trail = Style::default().fg(STATUS_PLAYING);
+        let sel_glow = Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD);
+        let sel_ring = Style::default().fg(BORDER_ACTIVE);
+
+        // Generate ring positions: top-left corner, top edge, top-right corner,
+        // right edge, bottom-right corner, bottom edge, bottom-left corner, left edge
+        let mut ring: Vec<(i16, i16, &str)> = Vec::with_capacity(num_segments);
+        // Top-left corner
+        ring.push((-hw, -1, "╭"));
+        // Top horizontal (left to right)
+        for x in (-hw + 1)..hw {
+            ring.push((x, -1, "─"));
+        }
+        // Top-right corner
+        ring.push((hw, -1, "╮"));
+        // Right edge
+        ring.push((hw, 0, "│"));
+        // Bottom-right corner
+        ring.push((hw, 1, "╯"));
+        // Bottom horizontal (right to left)
+        for x in (1 - hw..hw).rev() {
+            ring.push((x, 1, "─"));
+        }
+        // Bottom-left corner
+        ring.push((-hw, 1, "╰"));
+        // Left edge
+        ring.push((-hw, 0, "│"));
+
+        for (i, (dx, dy, ch)) in ring.iter().enumerate() {
+            let x = (cx as i16 + dx) as u16;
+            let y = (cy as i16 + dy) as u16;
+            let prev = (i + num_segments - 1) % num_segments;
+            let next = (i + 1) % num_segments;
+            let style = if pp_selected {
+                if playing && i == highlight_pos { sel_glow } else { sel_ring }
+            } else if playing {
+                if i == highlight_pos { glow }
+                else if i == prev || i == next { trail }
+                else { dim }
+            } else {
+                dim
+            };
+            buf.set_string(x, y, ch, style);
+        }
+
+        // Center: play / pause icon
+        let center_char = if playing { "▶" } else { "⏸" };
+        let center_style = if pp_selected {
+            Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+        } else if playing {
+            Style::default().fg(STATUS_PLAYING).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_DIM)
+        };
+        buf.set_string(cx, cy, center_char, center_style);
+
+        // ── Separator below play/pause ────────────────────────
+        let sep1_y = chunks[1].y;
+        for x in chunks[1].x..chunks[1].x + chunks[1].width {
+            buf.set_string(x, sep1_y, "─", Style::default().fg(SEPARATOR));
+        }
+
+        // ── Stereo meter and fader ─────────────────────────────
         let meter_fader = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(3), Constraint::Min(3)])
-            .split(chunks[0]);
+            .split(chunks[2]);
 
         LevelMeter::new(0.0)
             .stereo(self.master.rms_left, self.master.rms_right)
@@ -766,14 +939,14 @@ impl<'a> Widget for MasterStrip<'a> {
             .label(db_label)
             .render(meter_fader[1], buf);
 
-        // Separator before buttons
-        let sep_y = chunks[1].y;
-        for x in chunks[1].x..chunks[1].x + chunks[1].width {
+        // ── Separator before buttons ──────────────────────────
+        let sep_y = chunks[3].y;
+        for x in chunks[3].x..chunks[3].x + chunks[3].width {
             buf.set_string(x, sep_y, "─", Style::default().fg(SEPARATOR));
         }
 
-        // M | OUT button row
-        let btn_area = chunks[2];
+        // ── M | OUT button row ────────────────────────────────
+        let btn_area = chunks[4];
         if btn_area.width >= 3 {
             let sep_x = btn_area.x + btn_area.width / 2;
             let left_w = sep_x - btn_area.x;

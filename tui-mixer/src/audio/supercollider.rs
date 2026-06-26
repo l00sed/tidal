@@ -266,11 +266,6 @@ impl SuperColliderClient {
         }
     }
 
-    /// Set playback speed (stub — SC tempo is controlled via TempoClock)
-    pub fn set_speed(&self, _speed: f32) -> Result<(), String> {
-        Ok(())
-    }
-
     /// Free all nodes (cleanup)
     pub fn free_all(&self) -> Result<(), String> {
         self.free_monitor_synth()?;
