@@ -816,46 +816,39 @@ impl MixerState {
         self.master.rms_right *= 0.85;
 
         if !self.master.muted {
-            let sum_l: f32 = self
-                .channels
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| !c.muted && (!self.solo_active || c.solo))
-                .map(|(i, c)| {
-                    let xf_g = if i == self.dj.deck_a_channel {
-                        xf_gain_a
-                    } else if i == self.dj.deck_b_channel {
-                        xf_gain_b
-                    } else {
-                        1.0
-                    };
-                    c.rms_left * ((1.0 - c.pan) * 0.5 + 0.25) * xf_g
-                })
-                .sum();
-            let sum_r: f32 = self
-                .channels
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| !c.muted && (!self.solo_active || c.solo))
-                .map(|(i, c)| {
-                    let xf_g = if i == self.dj.deck_a_channel {
-                        xf_gain_a
-                    } else if i == self.dj.deck_b_channel {
-                        xf_gain_b
-                    } else {
-                        1.0
-                    };
-                    c.rms_right * ((1.0 + c.pan) * 0.5 + 0.25) * xf_g
-                })
-                .sum();
+            let mut sum_l: f32 = 0.0;
+            let mut sum_r: f32 = 0.0;
+            let mut peak_sum_l: f32 = 0.0;
+            let mut peak_sum_r: f32 = 0.0;
+
+            for (i, c) in self.channels.iter().enumerate() {
+                if c.muted || (self.solo_active && !c.solo) {
+                    continue;
+                }
+                let xf_g = if i == self.dj.deck_a_channel {
+                    xf_gain_a
+                } else if i == self.dj.deck_b_channel {
+                    xf_gain_b
+                } else {
+                    1.0
+                };
+                let pan_l = (1.0 - c.pan) * 0.5 + 0.25;
+                let pan_r = (1.0 + c.pan) * 0.5 + 0.25;
+                sum_l += c.rms_left * pan_l * xf_g;
+                sum_r += c.rms_right * pan_r * xf_g;
+                peak_sum_l += c.peak_left * pan_l * xf_g;
+                peak_sum_r += c.peak_right * pan_r * xf_g;
+            }
 
             let master_l = (sum_l * self.master.fader).min(1.0);
             let master_r = (sum_r * self.master.fader).min(1.0);
+            let master_peak_l = (peak_sum_l * self.master.fader).min(1.0);
+            let master_peak_r = (peak_sum_r * self.master.fader).min(1.0);
 
             self.master.rms_left = self.master.rms_left.max(master_l);
             self.master.rms_right = self.master.rms_right.max(master_r);
-            self.master.peak_left = self.master.peak_left.max((master_l * 1.15).min(1.0));
-            self.master.peak_right = self.master.peak_right.max((master_r * 1.15).min(1.0));
+            self.master.peak_left = self.master.peak_left.max(master_peak_l);
+            self.master.peak_right = self.master.peak_right.max(master_peak_r);
         }
     }
 }
