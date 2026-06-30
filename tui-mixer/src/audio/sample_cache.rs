@@ -1,15 +1,15 @@
 //! Sample cache for instant playback
-//! 
+//!
 //! Preloads audio samples into memory for zero-latency triggering.
 
+use crate::audio::effects::CustomEffects;
+use rodio::mixer::Mixer;
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::collections::HashMap;
 use std::fs::File;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
-use rodio::mixer::Mixer;
-use crate::audio::effects::CustomEffects;
 
 #[derive(Clone)]
 pub struct CachedSample {
@@ -20,8 +20,8 @@ pub struct CachedSample {
 
 impl CachedSample {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let file = File::open(path)
-            .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+        let file =
+            File::open(path).map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
         let decoder = Decoder::try_from(file)
             .map_err(|e| format!("Failed to decode {}: {}", path.display(), e))?;
         let sample_rate = decoder.sample_rate().get();
@@ -94,6 +94,10 @@ pub struct SampleEngine {
     recording_buffer: Option<Arc<std::sync::Mutex<Vec<f32>>>>,
     recording_sample_rate: u32,
     recording_channels: u16,
+    // Per-pad recording buffers (for rack recording)
+    pad_recording_buffers: Vec<Option<Arc<std::sync::Mutex<Vec<f32>>>>>,
+    // Whether we're doing per-pad recording
+    per_pad_recording: bool,
 }
 
 impl SampleEngine {
@@ -110,13 +114,22 @@ impl SampleEngine {
             recording_buffer: None,
             recording_sample_rate: 44100,
             recording_channels: 2,
+            pad_recording_buffers: vec![None; 16],
+            per_pad_recording: false,
         })
     }
 
-    pub fn start_recording(&mut self, sample_rate: u32, channels: u16) {
-        self.recording_buffer = Some(Arc::new(std::sync::Mutex::new(Vec::new())));
+    /// Start per-pad recording - records each pad's audio separately
+    /// Call this instead of start_recording() for rack recording
+    pub fn start_pad_recording(&mut self, sample_rate: u32, channels: u16) {
+        self.recording_buffer = None; // No global buffer
         self.recording_sample_rate = sample_rate;
         self.recording_channels = channels;
+        self.per_pad_recording = true;
+        // Initialize per-pad buffers
+        self.pad_recording_buffers = (0..16)
+            .map(|_| Some(Arc::new(std::sync::Mutex::new(Vec::new()))))
+            .collect();
     }
 
     pub fn stop_recording(&mut self) -> Option<Vec<f32>> {
@@ -169,7 +182,9 @@ impl SampleEngine {
         self.cleanup();
         self.evict_oldest();
 
-        let cached = self.cache.get(path)
+        let cached = self
+            .cache
+            .get(path)
             .ok_or_else(|| "Sample not in cache".to_string())?;
         let source = CachedSampleSource::new(cached);
         let player = Player::connect_new(&self.mixer);
@@ -201,7 +216,9 @@ impl SampleEngine {
         if let Some(cfg) = config {
             player.set_volume(cfg.volume);
 
-            let cached = self.cache.get(path)
+            let cached = self
+                .cache
+                .get(path)
                 .ok_or_else(|| "Sample not in cache".to_string())?;
             let source = CachedSampleSource::new(cached);
 
@@ -209,7 +226,9 @@ impl SampleEngine {
             let src = apply_dsp_chain(source, cfg);
             self.append_source(&player, src);
         } else {
-            let cached = self.cache.get(path)
+            let cached = self
+                .cache
+                .get(path)
                 .ok_or_else(|| "Sample not in cache".to_string())?;
             let source = CachedSampleSource::new(cached);
             self.append_source(&player, source);
@@ -219,8 +238,85 @@ impl SampleEngine {
         Ok(())
     }
 
+    /// Play a sample with DSP effects and per-pad recording support for rack recording
+    pub fn play_with_config_and_recording(
+        &mut self,
+        path: &Path,
+        config: Option<&crate::state::PadConfig>,
+        pad_idx: usize,
+    ) -> Result<(), String> {
+        if let Some(cfg) = config {
+            if cfg.mute {
+                return Ok(());
+            }
+        }
+
+        if !self.cache.contains_key(path) {
+            self.preload(path)?;
+        }
+
+        self.cleanup();
+        self.evict_oldest();
+
+        let player = Player::connect_new(&self.mixer);
+
+        if let Some(cfg) = config {
+            player.set_volume(cfg.volume);
+
+            let cached = self
+                .cache
+                .get(path)
+                .ok_or_else(|| "Sample not in cache".to_string())?;
+            let source = CachedSampleSource::new(cached);
+
+            // Apply effects chain
+            let src = apply_dsp_chain(source, cfg);
+            self.append_source_with_pad_recording(&player, src, pad_idx);
+        } else {
+            let cached = self
+                .cache
+                .get(path)
+                .ok_or_else(|| "Sample not in cache".to_string())?;
+            let source = CachedSampleSource::new(cached);
+            self.append_source_with_pad_recording(&player, source, pad_idx);
+        }
+
+        self.players.push(player);
+        Ok(())
+    }
+
     fn append_source<S: Source<Item = f32> + Send + 'static>(&self, player: &Player, src: S) {
         if let Some(ref recording_buf) = self.recording_buffer {
+            player.append(RecordingSource::new(
+                src,
+                Arc::clone(recording_buf),
+                self.recording_sample_rate,
+                self.recording_channels,
+            ));
+        } else {
+            player.append(src);
+        }
+    }
+
+    /// Append source with per-pad recording support
+    fn append_source_with_pad_recording<S: Source<Item = f32> + Send + 'static>(
+        &self,
+        player: &Player,
+        src: S,
+        pad_idx: usize,
+    ) {
+        if self.per_pad_recording && pad_idx < 16 {
+            if let Some(ref pad_buf) = self.pad_recording_buffers[pad_idx] {
+                player.append(RecordingSource::new(
+                    src,
+                    Arc::clone(pad_buf),
+                    self.recording_sample_rate,
+                    self.recording_channels,
+                ));
+            } else {
+                player.append(src);
+            }
+        } else if let Some(ref recording_buf) = self.recording_buffer {
             player.append(RecordingSource::new(
                 src,
                 Arc::clone(recording_buf),
@@ -256,7 +352,9 @@ impl SampleEngine {
     #[allow(dead_code)]
     pub fn cache_stats(&self) -> (usize, usize) {
         let count = self.cache.len();
-        let bytes: usize = self.cache.values()
+        let bytes: usize = self
+            .cache
+            .values()
             .map(|s| s.samples.len() * std::mem::size_of::<f32>())
             .sum();
         (count, bytes)
@@ -286,19 +384,19 @@ fn apply_dsp_chain<S: Source<Item = f32> + Send + 'static>(
     cfg: &crate::state::PadConfig,
 ) -> Box<dyn Source<Item = f32> + Send> {
     // Apply effects in order: HP → LP → EQ → Distortion → Chorus → Reverb
-    
+
     let mut boxed: Box<dyn Source<Item = f32> + Send> = Box::new(src);
-    
+
     // High-pass filter
     if cfg.high_pass > 20.1 {
         boxed = Box::new(boxed.high_pass(cfg.high_pass as u32));
     }
-    
+
     // Low-pass filter
     if cfg.low_pass < 19999.0 {
         boxed = Box::new(boxed.low_pass(cfg.low_pass as u32));
     }
-    
+
     // EQ bands (simple gain-based for now)
     if (cfg.eq_low - 1.0).abs() > 0.01 {
         boxed = Box::new(boxed.amplify(cfg.eq_low));
@@ -309,12 +407,12 @@ fn apply_dsp_chain<S: Source<Item = f32> + Send + 'static>(
     if (cfg.eq_high - 1.0).abs() > 0.01 {
         boxed = Box::new(boxed.amplify(cfg.eq_high));
     }
-    
+
     // Distortion (hard-clipping with filtering)
     if cfg.distortion > 0.01 {
         boxed = Box::new(boxed.custom_distortion(cfg.distortion));
     }
-    
+
     // Chorus (multi-voice with triangular LFO)
     if cfg.chorus > 0.01 {
         let rate = 0.4 + cfg.chorus * 1.6; // 0.4 - 2.0 Hz
@@ -322,13 +420,88 @@ fn apply_dsp_chain<S: Source<Item = f32> + Send + 'static>(
         let mix = cfg.chorus * 0.4; // 0 - 0.4 wet/dry
         boxed = Box::new(boxed.custom_chorus(rate, depth, mix));
     }
-    
+
     // Reverb (Freeverb algorithm)
     if cfg.reverb > 0.01 {
         boxed = Box::new(boxed.custom_reverb(cfg.reverb, cfg.reverb, cfg.reverb));
     }
-    
+
     boxed
+}
+
+/// Apply DSP effects to a buffer of samples
+/// This applies the same effects as apply_dsp_chain but works on pre-recorded audio.
+fn apply_dsp_to_buffer(samples: &[f32], cfg: &crate::state::PadConfig) -> Vec<f32> {
+    if samples.is_empty() {
+        return samples.to_vec();
+    }
+
+    let mut result = samples.to_vec();
+
+    // Apply effects in order: Volume → HP → LP → EQ → Distortion
+
+    // Volume
+    let volume = cfg.volume;
+    for s in result.iter_mut() {
+        *s *= volume;
+    }
+
+    // High-pass filter (simple first-order)
+    if cfg.high_pass > 20.1 {
+        let cutoff = cfg.high_pass as f64;
+        let rc = 1.0 / (cutoff * std::f64::consts::TAU);
+        let dt = 1.0 / 44100.0;
+        let alpha = dt / (rc + dt);
+        let mut prev = result[0];
+        for s in result.iter_mut() {
+            *s = (alpha * (*s as f64) + (1.0 - alpha) * (prev as f64)) as f32;
+            prev = *s;
+        }
+    }
+
+    // Low-pass filter (simple first-order)
+    if cfg.low_pass < 19999.0 {
+        let cutoff = cfg.low_pass as f64;
+        let rc = 1.0 / (cutoff * std::f64::consts::TAU);
+        let dt = 1.0 / 44100.0;
+        let alpha = dt / (rc + dt);
+        let mut prev = result[0];
+        for s in result.iter_mut() {
+            *s = ((1.0 - alpha) * (*s as f64) + alpha * (prev as f64)) as f32;
+            prev = *s;
+        }
+    }
+
+    // EQ bands (simple gain-based)
+    if (cfg.eq_low - 1.0).abs() > 0.01 {
+        let gain = cfg.eq_low;
+        for s in result.iter_mut() {
+            *s *= gain;
+        }
+    }
+    if (cfg.eq_mid - 1.0).abs() > 0.01 {
+        let gain = cfg.eq_mid;
+        for s in result.iter_mut() {
+            *s *= gain;
+        }
+    }
+    if (cfg.eq_high - 1.0).abs() > 0.01 {
+        let gain = cfg.eq_high;
+        for s in result.iter_mut() {
+            *s *= gain;
+        }
+    }
+
+    // Distortion (soft clipping)
+    if cfg.distortion > 0.01 {
+        let amount = cfg.distortion * 10.0; // Scale to reasonable range
+        for s in result.iter_mut() {
+            let x = *s * amount;
+            *s = x.tanh() / amount;
+        }
+    }
+
+    result
 }
 
 pub struct RecordingSource<S> {
@@ -339,8 +512,18 @@ pub struct RecordingSource<S> {
 }
 
 impl<S> RecordingSource<S> {
-    pub fn new(inner: S, buffer: Arc<std::sync::Mutex<Vec<f32>>>, sample_rate: u32, channels: u16) -> Self {
-        Self { inner, buffer, sample_rate, channels }
+    pub fn new(
+        inner: S,
+        buffer: Arc<std::sync::Mutex<Vec<f32>>>,
+        sample_rate: u32,
+        channels: u16,
+    ) -> Self {
+        Self {
+            inner,
+            buffer,
+            sample_rate,
+            channels,
+        }
     }
 }
 
@@ -374,6 +557,19 @@ pub struct RackPlayer {
     mixer: Mixer,
     players: HashMap<usize, Player>,
     buffers: HashMap<usize, (Vec<f32>, u32, u16)>,
+    // Reference to rack state for tempo access
+    #[allow(dead_code)]
+    rack_state: Option<std::sync::Arc<std::sync::Mutex<crate::state::RackState>>>,
+}
+
+/// A recorded trigger with the actual audio sample data
+pub struct TriggerWithSample {
+    /// Milliseconds from the start of the recording
+    pub time_ms: u64,
+    /// The recorded audio samples for this trigger
+    pub samples: Vec<f32>,
+    /// Pad configuration at the time of recording
+    pub config: crate::state::PadConfig,
 }
 
 impl RackPlayer {
@@ -382,15 +578,34 @@ impl RackPlayer {
             mixer,
             players: HashMap::new(),
             buffers: HashMap::new(),
+            rack_state: None,
         }
     }
 
-    pub fn set_loop_buffer(&mut self, rack_idx: usize, samples: Vec<f32>, sample_rate: u32, channels: u16) {
-        self.buffers.insert(rack_idx, (samples, sample_rate, channels));
+    /// Set the rack state reference for tempo access
+    #[allow(dead_code)]
+    pub fn set_rack_state(
+        &mut self,
+        rack_state: std::sync::Arc<std::sync::Mutex<crate::state::RackState>>,
+    ) {
+        self.rack_state = Some(rack_state);
     }
-    
+
+    pub fn set_loop_buffer(
+        &mut self,
+        rack_idx: usize,
+        samples: Vec<f32>,
+        sample_rate: u32,
+        channels: u16,
+    ) {
+        self.buffers
+            .insert(rack_idx, (samples, sample_rate, channels));
+    }
+
     pub fn play_loop(&mut self, rack_idx: usize) -> Result<(), String> {
-        let (samples, sample_rate, channels) = self.buffers.get(&rack_idx)
+        let (samples, sample_rate, channels) = self
+            .buffers
+            .get(&rack_idx)
             .ok_or_else(|| format!("No audio buffer for rack {}", rack_idx))?;
 
         if samples.is_empty() {
@@ -427,7 +642,10 @@ impl RackPlayer {
     }
 
     pub fn is_playing(&self, rack_idx: usize) -> bool {
-        self.players.get(&rack_idx).map(|p| !p.empty()).unwrap_or(false)
+        self.players
+            .get(&rack_idx)
+            .map(|p| !p.empty())
+            .unwrap_or(false)
     }
 
     #[allow(dead_code)]
@@ -455,6 +673,83 @@ impl RackPlayer {
     #[allow(dead_code)]
     pub fn play(&mut self, rack_idx: usize) -> Result<(), String> {
         self.play_loop(rack_idx)
+    }
+
+    /// Render a rack using per-pad recordings with DSP applied
+    /// This method takes trigger times, per-pad sample data, and pad configs,
+    /// applies DSP effects, and creates a loop buffer that respects trigger timing.
+    #[allow(dead_code)]
+    pub fn render_rack_with_dsp(
+        &mut self,
+        rack_idx: usize,
+        triggers: &Vec<TriggerWithSample>,
+        _pad_configs: &[crate::state::PadConfig; 16],
+        loop_beats: usize,
+    ) -> Result<(), String> {
+        if triggers.is_empty() {
+            return Err("No triggers to render".to_string());
+        }
+
+        // Get tempo from the rack
+        let tempo = if let Some(ref rack_state_arc) = self.rack_state {
+            match rack_state_arc.lock() {
+                Ok(rack_state) => rack_state
+                    .racks
+                    .get(rack_idx)
+                    .map(|r| r.tempo)
+                    .unwrap_or(120.0),
+                Err(_) => 120.0,
+            }
+        } else {
+            120.0
+        };
+
+        // Calculate samples per beat at 44.1kHz
+        let sample_rate = 44100;
+        let samples_per_beat = (sample_rate as f64 * 60.0 / tempo as f64) as usize;
+
+        // Calculate total samples based on loop_beats
+        // We need to loop after loop_beats beats
+        let total_samples = loop_beats * samples_per_beat * 2; // Stereo
+        let mut buffer = vec![0.0f32; total_samples];
+
+        // Render each trigger
+        for trigger in triggers {
+            let start_sample = (trigger.time_ms as usize * sample_rate / 1000) * 2;
+
+            // Get sample data
+            let samples = &trigger.samples;
+            let cfg = &trigger.config;
+
+            // Apply DSP effects to the samples
+            let processed_samples = apply_dsp_to_buffer(samples, cfg);
+
+            // Mix into the buffer at the correct position
+            for (i, sample) in processed_samples.iter().enumerate() {
+                let pos = start_sample + i * 2; // Stereo: 2 samples per frame
+                if pos < buffer.len() {
+                    // Left channel
+                    buffer[pos] += sample;
+                    // Right channel (mono-to-stereo)
+                    if pos + 1 < buffer.len() {
+                        buffer[pos + 1] += sample;
+                    }
+                }
+            }
+        }
+
+        // Normalize to prevent clipping
+        let max_amplitude = buffer.iter().map(|s| s.abs()).fold(0.0, f32::max);
+        if max_amplitude > 0.9 {
+            let scale = 0.9 / max_amplitude;
+            for s in buffer.iter_mut() {
+                *s *= scale;
+            }
+        }
+
+        self.buffers
+            .insert(rack_idx, (buffer, sample_rate as u32, 2));
+        Ok(())
     }
 
     #[allow(dead_code)]

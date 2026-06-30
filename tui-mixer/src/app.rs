@@ -1408,6 +1408,12 @@ impl App {
 
     /// Navigate left within DJ center (CUE/PH/BT are horizontal, pads too)
     fn navigate_control_left(&mut self) {
+        if self.selected_pane == SelectedPane::Loops {
+            if self.rack_state.selected_rack.is_some() {
+                self.rack_state.select_rack_control_up();
+                return;
+            }
+        }
         if self.selected_pane == SelectedPane::DjCenter {
             if let Some(pad_idx) = self.selected_pad_idx {
                 let row = pad_idx / 4;
@@ -1483,6 +1489,12 @@ impl App {
 
     /// Navigate right within DJ center
     fn navigate_control_right(&mut self) {
+        if self.selected_pane == SelectedPane::Loops {
+            if self.rack_state.selected_rack.is_some() {
+                self.rack_state.select_rack_control_down();
+                return;
+            }
+        }
         if self.selected_pane == SelectedPane::DjCenter {
             if let Some(pad_idx) = self.selected_pad_idx {
                 let row = pad_idx / 4;
@@ -2003,8 +2015,13 @@ impl App {
             if let Some(sample_path) = &pad.sample_path {
                 if sample_path.exists() {
                     let config = pad.config.clone();
+                    let is_rack = self.is_rack_recording();
                     if let Some(ref mut engine) = self.sample_engine {
-                        let _ = engine.play_with_config(sample_path, Some(&config));
+                        if is_rack {
+                            let _ = engine.play_with_config_and_recording(sample_path, Some(&config), pad_idx);
+                        } else {
+                            let _ = engine.play_with_config(sample_path, Some(&config));
+                        }
                     } else {
                         // Fallback to mpv if sample engine unavailable
                         let _ = std::process::Command::new("mpv")
@@ -2144,10 +2161,10 @@ impl App {
                         self.mode = AppMode::SamplePads;
                         self.sample_pads.active = true;
                         
-                        // Start audio recording
+                        // Start per-pad audio recording for proper loop timing and DSP
                         if let Some(ref mut engine) = self.sample_engine {
-                            engine.start_recording(44100, 2);  // Standard sample rate and stereo
-                            self.log_debug("Started audio recording");
+                            engine.start_pad_recording(44100, 2);  // Per-pad recording
+                            self.log_debug("Started per-pad audio recording");
                         }
                     }
                 }

@@ -5,7 +5,7 @@ mod discovery;
 pub mod effects;
 mod mpv;
 pub mod output;
-mod sample_cache;
+pub mod sample_cache;
 mod source;
 pub mod supercollider;
 

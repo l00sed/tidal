@@ -263,10 +263,18 @@ impl<'a> MixerView<'a> {
                 self.state.channels.len(),
                 self.state.selected_control.label()
             ),
-            SelectionFocus::Global => format!(
-                "DJ  {}",
-                self.state.selected_global.label()
-            ),
+            SelectionFocus::Global => {
+                let pane_label = match self.selected_pane {
+                    SelectedPane::DeckA => "DECK A",
+                    SelectedPane::DeckB => "DECK B",
+                    SelectedPane::DeckC => "DECK C",
+                    SelectedPane::Master => "MASTER",
+                    SelectedPane::DjCenter => "PADS",
+                    SelectedPane::Loops => "LOOPS",
+                    SelectedPane::Xfader => "XFADER",
+                };
+                format!("{}  {}", pane_label, self.state.selected_global.label())
+            }
         };
         let status_x = area.x + area.width.saturating_sub(status.len() as u16 + 1);
         buf.set_string(status_x, area.y, &status, Style::default().fg(METER_TRACK));
@@ -790,17 +798,17 @@ impl<'a> MixerView<'a> {
             match self.state.focus {
                 SelectionFocus::Channel(_) => {
                     if self.state.selected_control.is_continuous() {
-                        "hjkl:nav  Enter:edit  m:mute  s:solo  Tab:DJ  ?:help"
+                        "hjkl:nav  Enter:edit  m:mute  s:solo  Tab:pane  ?:help"
                     } else {
-                        "hjkl:nav  Enter:toggle  Tab:DJ  ?:help"
+                        "hjkl:nav  Enter:toggle  Tab:pane  ?:help"
                     }
                 }
                 SelectionFocus::Global => {
                     // Show crossfader slam shortcuts when Xfader pane is selected
                     if self.selected_pane == SelectedPane::Xfader {
-                        "a:A  b:B  Enter:edit  Tab:CH  ?:help"
+                        "a:A  b:B  Enter:edit  Tab:deck  ?:help"
                     } else {
-                        "hjkl:nav  Enter:edit  Tab:CH  ?:help"
+                        "hjkl:nav  Enter:edit  Tab:deck  ?:help"
                     }
                 }
             }
@@ -831,6 +839,13 @@ impl<'a> MixerView<'a> {
             buf.set_string(right_x, area.y, label,
                 Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
         }
+
+        if self.state.mute_active() {
+            let label = " MUTE ";
+            right_x = right_x.saturating_sub(label.len() as u16 + 1);
+            buf.set_string(right_x, area.y, label,
+                Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD));
+        }
     }
 
     fn render_help_overlay(&self, area: Rect, buf: &mut Buffer) {
@@ -857,7 +872,7 @@ impl<'a> MixerView<'a> {
 
         let help_text = vec![
             Line::from(Span::styled("Navigation", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("  Tab      Switch panes (A/DJ/B/Master)"),
+            Line::from("  Tab      Switch panes (Deck A/Pads/Deck B/Master)"),
             Line::from("  Enter    Select pane / Enter control mode"),
             Line::from("  Esc      Go back one level"),
             Line::from("  hjkl     Navigate controls / adjust values"),
@@ -870,7 +885,7 @@ impl<'a> MixerView<'a> {
             Line::from(Span::styled("Source & Pads", Style::default().add_modifier(Modifier::BOLD))),
             Line::from("  A/B      Open source picker for deck A/B"),
             Line::from("  P        Toggle pad trigger mode"),
-            Line::from("  Enter    Assign sample (in DJ center pads)"),
+            Line::from("  Enter    Assign sample (in pads pane)"),
             Line::from(""),
             Line::from(Span::styled("Quick Keys", Style::default().add_modifier(Modifier::BOLD))),
             Line::from("  m/s      Mute / Solo"),

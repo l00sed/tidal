@@ -759,6 +759,14 @@ impl MixerState {
         self.solo_active = self.channels.iter().any(|c| c.solo);
     }
 
+    /// Check if any deck (A, B, CUE) or master is muted
+    pub fn mute_active(&self) -> bool {
+        // Check any deck channel is muted
+        self.channels.iter().any(|c| c.muted)
+            || self.cue_channel.muted
+            || self.master.muted
+    }
+
     /// Save a channel's fader level before it enters solo mode.
     /// If the channel already has a saved level, this is a no-op (preserves the original).
     pub fn save_fader_for_solo(&mut self, channel_idx: usize) {

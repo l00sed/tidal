@@ -503,6 +503,15 @@ pub struct RackTrigger {
     pub pad_idx: usize,
 }
 
+/// Which control is currently selected on a rack
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RackControl {
+    Volume,
+    Mute,
+    Tempo,
+    PlayPause,
+}
+
 /// Recording/playback mode for racks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RackMode {
@@ -557,6 +566,8 @@ pub struct RackState {
     pub racks: Vec<Rack>,
     /// Currently selected rack index (None = '+' button selected)
     pub selected_rack: Option<usize>,
+    /// Currently selected control within the rack
+    pub selected_rack_control: Option<RackControl>,
     /// Current recording/playback mode
     pub mode: RackMode,
     /// Timestamp when recording started (in ms since program start)
@@ -568,6 +579,7 @@ impl RackState {
         Self {
             racks: Vec::new(),
             selected_rack: None,
+            selected_rack_control: Some(RackControl::Volume),
             mode: RackMode::Idle,
             recording_start_ms: 0,
         }
@@ -615,6 +627,25 @@ impl RackState {
             None => self.selected_rack = Some(0),
         }
     }
+
+    /// Move rack control selection up (round-robin)
+    pub fn select_rack_control_up(&mut self) {
+        let controls = [RackControl::Volume, RackControl::Mute, RackControl::Tempo, RackControl::PlayPause];
+        let current = self.selected_rack_control.unwrap_or(RackControl::Volume);
+        let idx = controls.iter().position(|&c| c == current).unwrap_or(0);
+        let new_idx = if idx == 0 { controls.len() - 1 } else { idx - 1 };
+        self.selected_rack_control = Some(controls[new_idx]);
+    }
+
+    /// Move rack control selection down (round-robin)
+    pub fn select_rack_control_down(&mut self) {
+        let controls = [RackControl::Volume, RackControl::Mute, RackControl::Tempo, RackControl::PlayPause];
+        let current = self.selected_rack_control.unwrap_or(RackControl::Volume);
+        let idx = controls.iter().position(|&c| c == current).unwrap_or(0);
+        let new_idx = if idx + 1 >= controls.len() { 0 } else { idx + 1 };
+        self.selected_rack_control = Some(controls[new_idx]);
+    }
+
 }
 
 impl Default for RackState {
