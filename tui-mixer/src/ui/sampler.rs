@@ -272,6 +272,7 @@ fn format_hz(hz: f32) -> String {
 pub struct RackRow<'a> {
     rack: &'a Rack,
     selected: bool,
+    selected_control: Option<crate::state::RackControl>,
     frame: u8,
     recording: bool,
     count_in: Option<(u8, u8)>,
@@ -282,6 +283,7 @@ impl<'a> RackRow<'a> {
         Self {
             rack,
             selected: false,
+            selected_control: None,
             frame: 0,
             recording: false,
             count_in: None,
@@ -290,6 +292,11 @@ impl<'a> RackRow<'a> {
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn selected_control(mut self, control: Option<crate::state::RackControl>) -> Self {
+        self.selected_control = control;
         self
     }
 
@@ -338,7 +345,10 @@ impl<'a> Widget for RackRow<'a> {
 
         // Tempo display (rightmost, 4 chars)
         let tempo_str = format!("{:.0}", self.rack.tempo);
-        let tempo_style = if self.selected {
+        let tempo_is_selected = self.selected && self.selected_control == Some(crate::state::RackControl::Tempo);
+        let tempo_style = if tempo_is_selected {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if self.selected {
             Style::default().fg(Color::Cyan)
         } else {
             Style::default().fg(Color::DarkGray)
@@ -378,12 +388,15 @@ impl<'a> Widget for RackRow<'a> {
 
         // Mute button (3 chars + 1 space gap before indicator)
         let mute_x = indicator_x.saturating_sub(4);
+        let mute_is_selected = self.selected && self.selected_control == Some(crate::state::RackControl::Mute);
         let (label, color) = if self.rack.mute {
             ("[M]", Color::Red)
         } else {
             ("[M]", Color::DarkGray)
         };
-        let mute_style = if self.selected {
+        let mute_style = if mute_is_selected {
+            Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if self.selected {
             Style::default().fg(color).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(color)
@@ -395,7 +408,10 @@ impl<'a> Widget for RackRow<'a> {
         let slider_x = mute_x.saturating_sub(slider_w + 1);
         if slider_x > area.x + name.len() as u16 {
             let filled = (self.rack.volume * (slider_w as f32 - 2.0)) as usize;
-            let bar_style = if self.selected {
+            let volume_is_selected = self.selected && self.selected_control == Some(crate::state::RackControl::Volume);
+            let bar_style = if volume_is_selected {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else if self.selected {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::DarkGray)

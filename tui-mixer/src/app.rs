@@ -1100,9 +1100,30 @@ impl App {
                     }
                 }
                 if self.selected_pane == SelectedPane::Loops {
-                    // Rack selected → toggle playback
                     if let Some(rack_idx) = self.rack_state.selected_rack {
-                        self.toggle_rack_playback(rack_idx);
+                        let control = self.rack_state.selected_rack_control
+                            .unwrap_or(crate::state::RackControl::Volume);
+                        match control {
+                            crate::state::RackControl::Volume | crate::state::RackControl::Tempo => {
+                                // Continuous control → enter Edit mode
+                                self.mode = AppMode::Edit;
+                            }
+                            crate::state::RackControl::Mute => {
+                                // Toggle mute
+                                if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
+                                    rack.mute = !rack.mute;
+                                    if rack.playing {
+                                        if let Some(ref mut player) = self.rack_player {
+                                            let vol = if rack.mute { 0.0 } else { rack.volume };
+                                            player.set_volume(rack_idx, vol);
+                                        }
+                                    }
+                                }
+                            }
+                            crate::state::RackControl::PlayPause => {
+                                self.toggle_rack_playback(rack_idx);
+                            }
+                        }
                         return;
                     }
                 }
@@ -1675,7 +1696,9 @@ impl App {
 
             // Adjust values with hjkl
             KeyCode::Char('h') | KeyCode::Left => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(-0.05, -1.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(-1.0, false);
                 } else {
                     self.mixer.adjust_selected(-0.05);
@@ -1683,7 +1706,9 @@ impl App {
                 }
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(0.05, 1.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(1.0, false);
                 } else {
                     self.mixer.adjust_selected(0.05);
@@ -1691,7 +1716,9 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(0.05, 1.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(1.0, false);
                 } else {
                     self.mixer.adjust_selected(0.05);
@@ -1699,7 +1726,9 @@ impl App {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(-0.05, -1.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(-1.0, false);
                 } else {
                     self.mixer.adjust_selected(-0.05);
@@ -1709,7 +1738,9 @@ impl App {
 
             // Coarse adjustment with Shift
             KeyCode::Char('H') => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(-0.05, -5.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(-1.0, true);
                 } else if self.is_filter_selected() {
                     match self.mixer.selected_control {
@@ -1737,7 +1768,9 @@ impl App {
                 }
             }
             KeyCode::Char('L') => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(0.05, 5.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(1.0, true);
                 } else if self.is_filter_selected() {
                     match self.mixer.selected_control {
@@ -1765,7 +1798,9 @@ impl App {
                 }
             }
             KeyCode::Char('K') => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(0.05, 5.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(1.0, true);
                 } else if self.is_volume_fader_selected() {
                     self.mixer.adjust_selected(0.25);
@@ -1775,7 +1810,9 @@ impl App {
                 self.sync_current_control_to_mpv();
             }
             KeyCode::Char('J') => {
-                if self.mixer.selected_control == ChannelControl::Scrub {
+                if self.selected_pane == SelectedPane::Loops {
+                    self.adjust_rack_control(-0.05, -5.0);
+                } else if self.mixer.selected_control == ChannelControl::Scrub {
                     self.start_scrub(-1.0, true);
                 } else if self.is_volume_fader_selected() {
                     self.mixer.adjust_selected(-0.25);
@@ -1805,8 +1842,12 @@ impl App {
 
             // Reset
             KeyCode::Char('0') => {
-                self.reset_current_control();
-                self.sync_current_control_to_mpv();
+                if self.selected_pane == SelectedPane::Loops {
+                    self.reset_rack_control();
+                } else {
+                    self.reset_current_control();
+                    self.sync_current_control_to_mpv();
+                }
             }
 
             // Center (for pan/crossfader) or reset to default
@@ -2055,7 +2096,9 @@ impl App {
                 }
             } else {
                 if let Some(ref mut player) = self.rack_player {
-                    match player.play_loop(rack_idx) {
+                    let volume = rack.volume;
+                    let tempo = rack.tempo;
+                    match player.play_loop(rack_idx, volume, tempo) {
                         Ok(_) => {
                             rack.playing = true;
                             self.log_debug(format!("Started loop playback for rack {}", rack_idx));
@@ -2066,6 +2109,62 @@ impl App {
                     }
                 } else {
                     self.log_debug("No rack player available");
+                }
+            }
+        }
+    }
+
+    /// Adjust the currently selected rack control
+    fn adjust_rack_control(&mut self, volume_delta: f32, tempo_delta: f32) {
+        if let Some(rack_idx) = self.rack_state.selected_rack {
+            if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
+                let was_playing = rack.playing;
+                match self.rack_state.selected_rack_control {
+                    Some(crate::state::RackControl::Volume) => {
+                        rack.volume = (rack.volume + volume_delta).clamp(0.0, 1.0);
+                        if was_playing {
+                            if let Some(ref mut player) = self.rack_player {
+                                player.set_volume(rack_idx, rack.volume);
+                            }
+                        }
+                    }
+                    Some(crate::state::RackControl::Tempo) => {
+                        rack.tempo = (rack.tempo + tempo_delta).clamp(20.0, 400.0);
+                        if was_playing {
+                            if let Some(ref mut player) = self.rack_player {
+                                player.set_tempo(rack_idx, rack.tempo);
+                            }
+                        }
+                    }
+                    _ => {} // Mute and PlayPause are toggles, not adjustable
+                }
+            }
+        }
+    }
+
+    /// Reset the currently selected rack control to its default value
+    fn reset_rack_control(&mut self) {
+        if let Some(rack_idx) = self.rack_state.selected_rack {
+            if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
+                let was_playing = rack.playing;
+                match self.rack_state.selected_rack_control {
+                    Some(crate::state::RackControl::Volume) => {
+                        rack.volume = 0.8;
+                        if was_playing {
+                            if let Some(ref mut player) = self.rack_player {
+                                player.set_volume(rack_idx, 0.8);
+                            }
+                        }
+                    }
+                    Some(crate::state::RackControl::Tempo) => {
+                        rack.tempo = 120.0;
+                        if was_playing {
+                            if let Some(ref mut player) = self.rack_player {
+                                player.set_tempo(rack_idx, 120.0);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -2098,7 +2197,7 @@ impl App {
             
             // Stop recording and get the audio buffer (captures exact timing)
             if let Some(ref mut engine) = self.sample_engine {
-                if let Some(mut recorded_audio) = engine.stop_recording() {
+                if let Some(mut recorded_audio) = engine.stop_pad_recording() {
                     if recorded_audio.is_empty() {
                         self.log_debug("Warning: Recorded audio buffer is empty (no samples triggered)");
                         // Still set an empty buffer so the rack can be played later
@@ -2127,17 +2226,20 @@ impl App {
                             player.set_loop_buffer(rack_idx, recorded_audio, 44100, 2);
                             
                             // Start playback
-                            if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
+                            let (volume, tempo) = if let Some(rack) = self.rack_state.racks.get_mut(rack_idx) {
                                 rack.playing = true;
-                            }
-                            match player.play_loop(rack_idx) {
+                                (rack.volume, rack.tempo)
+                            } else {
+                                (0.8, 120.0)
+                            };
+                            match player.play_loop(rack_idx, volume, tempo) {
                                 Ok(_) => self.log_debug(format!("Started loop playback for rack {}", rack_idx)),
                                 Err(e) => self.log_debug(format!("Failed to play loop: {}", e)),
                             }
                         }
                     }
                 } else {
-                    self.log_debug("ERROR: stop_recording() returned None - this should never happen!");
+                    self.log_debug("ERROR: stop_pad_recording() returned None - no per-pad recording was active");
                 }
             }
         }

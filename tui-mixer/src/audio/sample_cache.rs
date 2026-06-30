@@ -132,19 +132,52 @@ impl SampleEngine {
             .collect();
     }
 
-    pub fn stop_recording(&mut self) -> Option<Vec<f32>> {
-        self.recording_buffer.take().map(|buf| {
-            // Try to unwrap the Arc. If other RecordingSources still hold references,
-            // clone the buffer contents instead of failing
-            match Arc::try_unwrap(buf) {
-                Ok(mutex) => mutex.into_inner().unwrap_or_else(|_| Vec::new()),
-                Err(arc) => {
-                    // Arc still has other references (active RecordingSources)
-                    // Clone the buffer contents
-                    arc.lock().map(|b| b.clone()).unwrap_or_else(|_| Vec::new())
-                }
+    /// Stop per-pad recording and return the mixed stereo buffer.
+    /// Mixes all non-empty per-pad buffers into a single stereo output.
+    pub fn stop_pad_recording(&mut self) -> Option<Vec<f32>> {
+        if !self.per_pad_recording {
+            return None;
+        }
+        self.per_pad_recording = false;
+
+        // Extract all per-pad buffers
+        let pad_buffers: Vec<Vec<f32>> = self.pad_recording_buffers
+            .iter_mut()
+            .filter_map(|slot| {
+                slot.take().and_then(|arc| {
+                    match Arc::try_unwrap(arc) {
+                        Ok(mutex) => {
+                            let buf = mutex.into_inner().unwrap_or_default();
+                            if buf.is_empty() { None } else { Some(buf) }
+                        }
+                        Err(arc) => {
+                            let buf = arc.lock().map(|b| b.clone()).unwrap_or_default();
+                            if buf.is_empty() { None } else { Some(buf) }
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        if pad_buffers.is_empty() {
+            return None;
+        }
+
+        // Find the longest buffer to determine mix length
+        let max_len = pad_buffers.iter().map(|b| b.len()).max().unwrap_or(0);
+        if max_len == 0 {
+            return None;
+        }
+
+        // Mix all pad buffers together (stereo: interleaved L/R)
+        let mut mixed = vec![0.0f32; max_len];
+        for pad_buf in &pad_buffers {
+            for (i, sample) in pad_buf.iter().enumerate() {
+                mixed[i] += sample;
             }
-        })
+        }
+
+        Some(mixed)
     }
 
     #[allow(dead_code)]
@@ -602,7 +635,7 @@ impl RackPlayer {
             .insert(rack_idx, (samples, sample_rate, channels));
     }
 
-    pub fn play_loop(&mut self, rack_idx: usize) -> Result<(), String> {
+    pub fn play_loop(&mut self, rack_idx: usize, volume: f32, tempo: f32) -> Result<(), String> {
         let (samples, sample_rate, channels) = self
             .buffers
             .get(&rack_idx)
@@ -624,6 +657,9 @@ impl RackPlayer {
         };
 
         let player = Player::connect_new(&self.mixer);
+        player.set_volume(volume);
+        // Tempo: 120 BPM is the reference speed (1.0x)
+        player.set_speed(tempo / 120.0);
         player.append(source.repeat_infinite());
         self.players.insert(rack_idx, player);
 
@@ -672,7 +708,7 @@ impl RackPlayer {
 
     #[allow(dead_code)]
     pub fn play(&mut self, rack_idx: usize) -> Result<(), String> {
-        self.play_loop(rack_idx)
+        self.play_loop(rack_idx, 0.8, 120.0)
     }
 
     /// Render a rack using per-pad recordings with DSP applied
@@ -795,6 +831,12 @@ impl RackPlayer {
     pub fn set_volume(&mut self, rack_idx: usize, volume: f32) {
         if let Some(player) = self.players.get(&rack_idx) {
             player.set_volume(volume);
+        }
+    }
+
+    pub fn set_tempo(&mut self, rack_idx: usize, tempo: f32) {
+        if let Some(player) = self.players.get(&rack_idx) {
+            player.set_speed(tempo / 120.0);
         }
     }
 }

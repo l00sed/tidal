@@ -570,8 +570,14 @@ impl<'a> MixerView<'a> {
                     }
                     _ => None,
                 };
+                let selected_control = if is_selected {
+                    rack_state.selected_rack_control
+                } else {
+                    None
+                };
                 RackRow::new(rack)
                     .selected(is_selected)
+                    .selected_control(selected_control)
                     .frame(self.frame)
                     .recording(is_recording)
                     .count_in_opt(count_in)
