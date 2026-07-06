@@ -327,6 +327,7 @@ pub struct App {
     pub debug_log: Vec<String>,
     // Counter for MPV state polling (poll every N ticks)
     mpv_poll_counter: u8,
+    source_refresh_counter: u8,
     // Timestamp (elapsed_ms) of last TUI-initiated volume push per deck (0,1,2)
     last_volume_push_ms: [u64; 3],
     // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
@@ -447,6 +448,7 @@ impl App {
             output_picker_target: OutputPickerTarget::Master,
             debug_log: Vec::new(),
             mpv_poll_counter: 0,
+            source_refresh_counter: 0,
             last_volume_push_ms: [0; 3],
             consecutive_poll_failures: [0; 3],
             pending_bpm: Arc::new(Mutex::new(Vec::new())),
@@ -503,6 +505,32 @@ impl App {
         self.mpv_poll_counter = self.mpv_poll_counter.wrapping_add(1);
         if self.mpv_poll_counter % 5 == 0 {
             self.poll_mpv_state();
+        }
+
+        // Refresh source picker every 10 ticks (~500ms) when open on MPV Sockets tab
+        if matches!(self.mode, AppMode::SourcePicker(_))
+            && matches!(self.source_picker.tab, SourcePickerTab::MpvSockets)
+        {
+            self.source_refresh_counter = self.source_refresh_counter.wrapping_add(1);
+            if self.source_refresh_counter % 10 == 0 {
+                // Save current selection to restore after refresh
+                let prev_path = self.source_picker.filtered.get(self.source_picker.selected)
+                    .and_then(|&idx| self.source_picker.items.get(idx))
+                    .map(|item| item.path.clone());
+
+                self.scan_sources();
+
+                // Restore selection if the previously selected item still exists
+                if let Some(path) = prev_path {
+                    if let Some(new_idx) = self.source_picker.items.iter().position(|item| item.path == path) {
+                        // Re-filter to find the new index in filtered list
+                        self.source_picker.filter();
+                        if let Some(filtered_idx) = self.source_picker.filtered.iter().position(|&idx| idx == new_idx) {
+                            self.source_picker.selected = filtered_idx;
+                        }
+                    }
+                }
+            }
         }
 
         // Scrub: tick accumulation, decay speed, and poll positions
