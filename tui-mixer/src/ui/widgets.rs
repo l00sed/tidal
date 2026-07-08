@@ -228,7 +228,7 @@ impl Widget for DeckIndicator {
         }
 
         let cx = area.x + area.width / 2;
-        let cy = area.y + area.height / 2;
+        let cy = area.y + area.height.saturating_sub(1) / 2;
 
         // Futuristic ring animation - 8 segments around center
         // When playing, one segment is highlighted and rotates
@@ -480,6 +480,7 @@ impl Widget for Crossfader {
         buf.set_string(cap_x.saturating_sub(1), track_y + 1, "└─┘", cap_style);
     }
 }
+
 
 /// Level meter widget (VU meter style)
 pub struct LevelMeter {

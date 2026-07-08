@@ -5,7 +5,7 @@ mod sampler;
 
 pub use mixer::{
     ChannelControl, GlobalControl, SendTarget,
-    MasterChannel, MixerChannel, MixerState, SelectionFocus,
+    MasterChannel, MASTER_EQ_FREQUENCIES, MixerChannel, MixerState, SelectionFocus,
 };
 
 pub use sampler::{

@@ -209,12 +209,13 @@ pub enum ChannelControl {
 }
 
 impl ChannelControl {
+    /// Label for display in control select mode
     pub fn label(&self) -> &'static str {
         match self {
             ChannelControl::PlayPause => "PLAY",
             ChannelControl::Scrub => "SCRUB",
             ChannelControl::Bpm => "BPM",
-            ChannelControl::Fader => "FADER",
+            ChannelControl::Fader => "GAIN",
             ChannelControl::Pan => "PAN",
             ChannelControl::LowPassFilter => "LPF",
             ChannelControl::HighPassFilter => "HPF",
@@ -344,6 +345,11 @@ impl ChannelControl {
     }
 }
 
+/// Center frequencies for the 10-band master graphic EQ
+pub const MASTER_EQ_FREQUENCIES: [f32; 10] = [
+    32.0, 64.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+];
+
 /// Master channel with additional controls
 #[derive(Debug, Clone)]
 pub struct MasterChannel {
@@ -361,6 +367,13 @@ pub struct MasterChannel {
     pub rms_left: f32,
     /// Right RMS level (for meter fill)
     pub rms_right: f32,
+    /// 10-band master EQ gain per band (dB), range -12.0 to +12.0
+    /// Bands: 32Hz, 64Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz
+    pub master_eq: [f32; 10],
+    /// Live spectrum peak levels per band (0.0 to 1.0), updated each tick
+    pub spectrum_peaks: [f32; 10],
+    /// Spectrum peak decay values for smooth falloff
+    pub spectrum_decay: [f32; 10],
 }
 
 impl MasterChannel {
@@ -373,6 +386,9 @@ impl MasterChannel {
             peak_right: 0.0,
             rms_left: 0.0,
             rms_right: 0.0,
+            master_eq: [0.0; 10],
+            spectrum_peaks: [0.0; 10],
+            spectrum_decay: [0.0; 10],
         }
     }
 
@@ -400,18 +416,72 @@ pub enum GlobalControl {
     MasterFader,
     MasterMute,
     MasterOutputSelect,
+    MasterEq32,
+    MasterEq64,
+    MasterEq125,
+    MasterEq250,
+    MasterEq500,
+    MasterEq1k,
+    MasterEq2k,
+    MasterEq4k,
+    MasterEq8k,
+    MasterEq16k,
 }
 
 impl GlobalControl {
+    /// Label for display in control select mode
     pub fn label(&self) -> &'static str {
         match self {
             GlobalControl::MasterPlayPause => "PLAY",
             GlobalControl::Crossfader => "X-FADER",
             GlobalControl::HeadphoneVolume => "PHONES",
-            GlobalControl::MasterFader => "MASTER",
+            GlobalControl::MasterFader => "GAIN",
             GlobalControl::MasterMute => "MUTE",
             GlobalControl::MasterOutputSelect => "OUTPUT",
+            GlobalControl::MasterEq32 => "32",
+            GlobalControl::MasterEq64 => "64",
+            GlobalControl::MasterEq125 => "125",
+            GlobalControl::MasterEq250 => "250",
+            GlobalControl::MasterEq500 => "500",
+            GlobalControl::MasterEq1k => "1k",
+            GlobalControl::MasterEq2k => "2k",
+            GlobalControl::MasterEq4k => "4k",
+            GlobalControl::MasterEq8k => "8k",
+            GlobalControl::MasterEq16k => "16k",
         }
+    }
+
+    /// Returns the index into `master_eq` array if this is an EQ control
+    pub fn eq_band_index(&self) -> Option<usize> {
+        match self {
+            GlobalControl::MasterEq32 => Some(0),
+            GlobalControl::MasterEq64 => Some(1),
+            GlobalControl::MasterEq125 => Some(2),
+            GlobalControl::MasterEq250 => Some(3),
+            GlobalControl::MasterEq500 => Some(4),
+            GlobalControl::MasterEq1k => Some(5),
+            GlobalControl::MasterEq2k => Some(6),
+            GlobalControl::MasterEq4k => Some(7),
+            GlobalControl::MasterEq8k => Some(8),
+            GlobalControl::MasterEq16k => Some(9),
+            _ => None,
+        }
+    }
+
+    /// All EQ control variants in band order
+    pub fn all_eq_variants() -> [GlobalControl; 10] {
+        [
+            GlobalControl::MasterEq32,
+            GlobalControl::MasterEq64,
+            GlobalControl::MasterEq125,
+            GlobalControl::MasterEq250,
+            GlobalControl::MasterEq500,
+            GlobalControl::MasterEq1k,
+            GlobalControl::MasterEq2k,
+            GlobalControl::MasterEq4k,
+            GlobalControl::MasterEq8k,
+            GlobalControl::MasterEq16k,
+        ]
     }
 }
 
@@ -519,6 +589,29 @@ impl MixerState {
     /// Check if a channel index is a deck channel (has PlayPause/BPM controls)
     pub fn is_deck_channel(&self, ch_idx: usize) -> bool {
         ch_idx == self.dj.deck_a_channel || ch_idx == self.dj.deck_b_channel || ch_idx == self.dj.deck_c_channel
+    }
+
+    /// Check if the current control is in the EQ section (High/Mid/Low + kill switches)
+    pub fn is_in_eq_section(&self) -> bool {
+        matches!(
+            self.selected_control,
+            ChannelControl::EqHigh | ChannelControl::EqHighKill |
+            ChannelControl::EqMid | ChannelControl::EqMidKill |
+            ChannelControl::EqLow | ChannelControl::EqLowKill
+        )
+    }
+
+    /// Check if the current control is in the filter section (HPF/LPF)
+    pub fn is_in_filter_section(&self) -> bool {
+        matches!(
+            self.selected_control,
+            ChannelControl::HighPassFilter | ChannelControl::LowPassFilter
+        )
+    }
+
+    /// Check if the current control is in the EQ or filter section
+    pub fn is_in_eq_or_filter_section(&self) -> bool {
+        self.is_in_eq_section() || self.is_in_filter_section()
     }
 
     /// Send CUE channel to Deck A or B (transfers all settings, clears CUE)
@@ -685,8 +778,9 @@ impl MixerState {
                             channel.pan = (channel.pan + delta).clamp(-1.0, 1.0);
                         }
                         ChannelControl::LowPassFilter => {
+                            // Reverse delta for LPF so k/l increases knob position (decreases frequency)
                             let log_freq = channel.lpf_freq.log10();
-                            let new_log = (log_freq + delta * 4.0).clamp(1.3, 4.3); // 20Hz - 20000Hz
+                            let new_log = (log_freq - delta * 4.0).clamp(1.3, 4.3); // 20Hz - 20000Hz
                             channel.lpf_freq = 10f32.powf(new_log);
                         }
                         ChannelControl::HighPassFilter => {
@@ -720,6 +814,37 @@ impl MixerState {
                         let step = 1.0 / track_h;
                         self.master.fader = (self.master.fader + delta.signum() * step).clamp(0.0, 1.0);
                     }
+                    // Master EQ bands: +/- 6 dB per keypress, range -12 to +12
+                    GlobalControl::MasterEq32 => {
+                        self.master.master_eq[0] = (self.master.master_eq[0] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq64 => {
+                        self.master.master_eq[1] = (self.master.master_eq[1] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq125 => {
+                        self.master.master_eq[2] = (self.master.master_eq[2] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq250 => {
+                        self.master.master_eq[3] = (self.master.master_eq[3] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq500 => {
+                        self.master.master_eq[4] = (self.master.master_eq[4] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq1k => {
+                        self.master.master_eq[5] = (self.master.master_eq[5] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq2k => {
+                        self.master.master_eq[6] = (self.master.master_eq[6] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq4k => {
+                        self.master.master_eq[7] = (self.master.master_eq[7] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq8k => {
+                        self.master.master_eq[8] = (self.master.master_eq[8] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
+                    GlobalControl::MasterEq16k => {
+                        self.master.master_eq[9] = (self.master.master_eq[9] + delta * 6.0).clamp(-12.0, 12.0);
+                    }
                     // Output selection controls are handled by UI, not continuous
                     GlobalControl::MasterOutputSelect => {}
                     // Buttons/toggles don't need continuous adjustment
@@ -750,7 +875,7 @@ impl MixerState {
                 ChannelControl::EqLowKill => channel.eq_low_kill = !channel.eq_low_kill,
                 ChannelControl::EqMidKill => channel.eq_mid_kill = !channel.eq_mid_kill,
                 ChannelControl::EqHighKill => channel.eq_high_kill = !channel.eq_high_kill,
-                _ => {}
+                 _ => {}
             }
         }
     }
@@ -858,16 +983,19 @@ impl MixerState {
             // --- Compute effective gain for this channel ---
             let fader = channel.fader;
 
-            // EQ gain multiplier (dB to linear, kill = -inf)
-            let eq_mult = if channel.eq_low_kill && channel.eq_mid_kill && channel.eq_high_kill {
-                0.0
-            } else {
-                let low = if channel.eq_low_kill { -60.0 } else { channel.eq_low };
-                let mid = if channel.eq_mid_kill { -60.0 } else { channel.eq_mid };
-                let high = if channel.eq_high_kill { -60.0 } else { channel.eq_high };
-                let avg_db = (low + mid + high) / 3.0;
-                10f32.powf(avg_db / 20.0)
-            };
+            // EQ gain: apply each band separately, then combine
+            // Kill a band = -60dB (near silence for that frequency range)
+            let low = if channel.eq_low_kill { -60.0 } else { channel.eq_low };
+            let mid = if channel.eq_mid_kill { -60.0 } else { channel.eq_mid };
+            let high = if channel.eq_high_kill { -60.0 } else { channel.eq_high };
+            
+            // Convert each band to linear and combine
+            let low_lin = 10f32.powf(low / 20.0);
+            let mid_lin = 10f32.powf(mid / 20.0);
+            let high_lin = 10f32.powf(high / 20.0);
+            
+            // Weighted combination (each band covers ~1/3 of spectrum)
+            let eq_mult = (low_lin + mid_lin + high_lin) / 3.0;
 
             // Filter attenuation (simplified — full cutoff = near silence)
             let lpf_factor = if channel.lpf_freq < 200.0 { channel.lpf_freq / 200.0 } else { 1.0 };
@@ -1003,6 +1131,55 @@ impl MixerState {
             self.master.rms_right = self.master.rms_right.max(master_r);
             self.master.peak_left = self.master.peak_left.max(master_peak_l);
             self.master.peak_right = self.master.peak_right.max(master_peak_r);
+        }
+
+        // --- Spectrum analyzer ---
+        // Compute per-band peaks from master RMS with frequency-dependent weighting
+        let master_energy = (self.master.rms_left + self.master.rms_right) * 0.5;
+        let master_peak = self.master.peak_left.max(self.master.peak_right);
+
+        // Simulated frequency distribution: boost all bands so the analyzer is lively.
+        // Real FFT would give natural distribution; here we shape noise to look musical.
+        let spectrum_weights: [f32; 10] = [
+            6.0,  // 32Hz
+            7.0,  // 64Hz
+            5.5,  // 125Hz
+            4.5,  // 250Hz
+            3.8,  // 500Hz
+            4.0,  // 1kHz
+            4.8,  // 2kHz
+            5.0,  // 4kHz
+            4.2,  // 8kHz
+            3.0,  // 16kHz
+        ];
+
+        for (i, weight) in spectrum_weights.iter().enumerate() {
+            // Decay existing peaks
+            self.master.spectrum_decay[i] *= 0.88;
+
+            // Apply EQ gain: boost increases peak, cut decreases it
+            let eq_db = self.master.master_eq[i];
+            let eq_mult = 10f32.powf(eq_db / 20.0); // dB to linear
+
+            // Compute new peak from master energy + shaped noise + EQ
+            let noise = rand_simple() * 0.5;
+            let band_energy = (master_energy * weight * eq_mult).min(1.0);
+            let band_peak = (band_energy + noise * master_peak * 0.6 * eq_mult).min(1.0);
+
+            // Smooth envelope following
+            let attack = 0.5;
+            let release = 0.12;
+            let target = band_peak;
+            let current = self.master.spectrum_decay[i];
+            let new_val = if target > current {
+                current + (target - current) * attack
+            } else {
+                current + (target - current) * release
+            };
+
+            self.master.spectrum_decay[i] = new_val;
+            // Peak holds briefly then decays
+            self.master.spectrum_peaks[i] = self.master.spectrum_peaks[i].max(new_val) * 0.92;
         }
     }
 }

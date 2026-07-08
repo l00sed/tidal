@@ -430,15 +430,19 @@ fn apply_dsp_chain<S: Source<Item = f32> + Send + 'static>(
         boxed = Box::new(boxed.low_pass(cfg.low_pass as u32));
     }
 
-    // EQ bands (simple gain-based for now)
-    if (cfg.eq_low - 1.0).abs() > 0.01 {
-        boxed = Box::new(boxed.amplify(cfg.eq_low));
+    // EQ bands: L/H use filters when cutting, M stays as simple gain
+    if cfg.eq_low < 1.0 {
+        let normalized = (1.0 - cfg.eq_low).clamp(0.0, 1.0);
+        let freq = 20000.0 * (500.0f32 / 20000.0).powf(normalized);
+        boxed = Box::new(boxed.low_pass(freq as u32));
     }
     if (cfg.eq_mid - 1.0).abs() > 0.01 {
         boxed = Box::new(boxed.amplify(cfg.eq_mid));
     }
-    if (cfg.eq_high - 1.0).abs() > 0.01 {
-        boxed = Box::new(boxed.amplify(cfg.eq_high));
+    if cfg.eq_high < 1.0 {
+        let normalized = (1.0 - cfg.eq_high).clamp(0.0, 1.0);
+        let freq = 20.0 * (5000.0f32 / 20.0).powf(normalized);
+        boxed = Box::new(boxed.high_pass(freq as u32));
     }
 
     // Distortion (hard-clipping with filtering)
@@ -505,11 +509,17 @@ fn apply_dsp_to_buffer(samples: &[f32], cfg: &crate::state::PadConfig) -> Vec<f3
         }
     }
 
-    // EQ bands (simple gain-based)
-    if (cfg.eq_low - 1.0).abs() > 0.01 {
-        let gain = cfg.eq_low;
+    // EQ bands: L/H use filters when cutting, M stays as simple gain
+    if cfg.eq_low < 1.0 {
+        let normalized = (1.0 - cfg.eq_low).clamp(0.0, 1.0);
+        let freq = (20000.0 * (500.0f64 / 20000.0).powf(normalized as f64)) as f64;
+        let rc = 1.0 / (freq * std::f64::consts::TAU);
+        let dt = 1.0 / 44100.0;
+        let alpha = dt / (rc + dt);
+        let mut prev = result[0];
         for s in result.iter_mut() {
-            *s *= gain;
+            *s = ((1.0 - alpha) * (*s as f64) + alpha * (prev as f64)) as f32;
+            prev = *s;
         }
     }
     if (cfg.eq_mid - 1.0).abs() > 0.01 {
@@ -518,10 +528,16 @@ fn apply_dsp_to_buffer(samples: &[f32], cfg: &crate::state::PadConfig) -> Vec<f3
             *s *= gain;
         }
     }
-    if (cfg.eq_high - 1.0).abs() > 0.01 {
-        let gain = cfg.eq_high;
+    if cfg.eq_high < 1.0 {
+        let normalized = (1.0 - cfg.eq_high).clamp(0.0, 1.0);
+        let freq = (20.0 * (5000.0f64 / 20.0).powf(normalized as f64)) as f64;
+        let rc = 1.0 / (freq * std::f64::consts::TAU);
+        let dt = 1.0 / 44100.0;
+        let alpha = dt / (rc + dt);
+        let mut prev = result[0];
         for s in result.iter_mut() {
-            *s *= gain;
+            *s = (alpha * (*s as f64) + (1.0 - alpha) * (prev as f64)) as f32;
+            prev = *s;
         }
     }
 

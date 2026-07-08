@@ -234,13 +234,15 @@ MOUSE:
     );
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> where <B as Backend>::Error: Send + Sync + 'static {
     let mut frame_counter: u8 = 0;
     
     loop {
-        // Update terminal height for scroll calculations
-        app.terminal_height = terminal.size()?.height;
+        // Update terminal dimensions for scroll calculations
+        let terminal_size = terminal.size()?;
+        app.terminal_height = terminal_size.height;
         app.mixer.terminal_height = app.terminal_height;
+        app.term_width = terminal_size.width;
 
         // Draw
         terminal.draw(|frame| {
@@ -271,7 +273,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .selected_master_output_idx(app.selected_master_output_idx)
                 .selected_cue_output_idx(app.selected_cue_output_idx)
                 .debug_log(&app.debug_log)
-                .samples_dir(Some(&app.samples_dir));
+                .samples_dir(Some(&app.samples_dir))
+                .mixer_scroll_offset(app.mixer_scroll_offset);
             
             // Add source picker if active
             if let app::AppMode::SourcePicker(deck) = app.mode {
@@ -286,10 +289,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             frame.render_widget(view, frame.area());
 
             // Update areas for mouse hit testing
-            let (channel_areas, xfader_area, master_area, cue_area, loops_area, pad_areas) =
+            let (channel_areas, crossfader_area, master_area, cue_area, loops_area, pad_areas) =
                 calculate_all_areas(frame.area(), app.mixer.channels.len());
             app.update_channel_areas(channel_areas);
-            app.update_pane_areas(xfader_area, master_area, cue_area, loops_area, pad_areas);
+            app.update_pane_areas(crossfader_area, master_area, cue_area, loops_area, pad_areas);
         })?;
 
         // Handle events
@@ -331,7 +334,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 }
 
 /// Calculate screen areas for all panes for mouse hit testing.
-/// Returns (channel_areas, xfader_area, master_area, cue_area, loops_area, pad_areas).
+/// Returns (channel_areas, crossfader_area, master_area, cue_area, loops_area, pad_areas).
 fn calculate_all_areas(
     area: Rect,
     num_channels: usize,
@@ -378,15 +381,15 @@ fn calculate_all_areas(
     let chunk_b_x = chunk_dj_x + dj_center_width;
     let chunk_m_x = chunk_b_x + deck_width;
 
-    // DJ center vertical: [Pads] [Loops] [Xfader]
+    // DJ center vertical: [Pads] [Loops] [Crossfader]
     let loops_height = (mixer_area.height as f32 * 0.20) as u16;
     let loops_height = loops_height.max(3);
-    let xfader_height = 5u16;
+    let crossfader_height = 5u16;
 
     let pads_y = mixer_area.y;
-    let pads_h = mixer_area.height.saturating_sub(loops_height + xfader_height);
+    let pads_h = mixer_area.height.saturating_sub(loops_height + crossfader_height);
     let loops_y = pads_y + pads_h;
-    let xfader_y = loops_y + loops_height;
+    let crossfader_y = loops_y + loops_height;
 
     // Master column vertical: [CUE] [Master]
     let cue_h = (mixer_area.height as f32 * 0.66) as u16;
@@ -431,11 +434,11 @@ fn calculate_all_areas(
     }
 
     // ── Crossfader area ──
-    let xfader_area = app::PaneArea {
+    let crossfader_area = app::PaneArea {
         x: chunk_dj_x,
-        y: xfader_y,
+        y: crossfader_y,
         w: dj_center_width,
-        h: xfader_height,
+        h: crossfader_height,
     };
 
     // ── Master area ──
@@ -486,7 +489,7 @@ fn calculate_all_areas(
 
     (
         channel_areas,
-        Some(xfader_area),
+        Some(crossfader_area),
         Some(master_area),
         Some(cue_area),
         Some(loops_area),

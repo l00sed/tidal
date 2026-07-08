@@ -40,16 +40,16 @@ src/
 ### Pane Select (default mode)
 When no pane is actively selected, you're in **PaneSelect** mode. Navigation keys move the highlight between panes:
 
-- **h / Left** → horizontal left (DeckA↔Master↔DeckB↔Xfader)
-- **l / Right** → horizontal right (DeckA↔Xfader↔DeckB↔Master)
-- **j / Down** → vertical down (DeckA→DjCenter→Loops→Xfader→DeckB→Master→DjControls)
+- **h / Left** → horizontal left (DeckA↔Master↔DeckB↔Crossfader)
+- **l / Right** → horizontal right (DeckA↔Crossfader↔DeckB↔Master)
+- **j / Down** → vertical down (DeckA→DjCenter→Loops→Crossfader→DeckB→Master→DjControls)
 - **k / Up** → vertical up (reverse of j)
 - **Tab / Shift+Tab** → next/prev pane (round-robin)
-- **Enter / Space** → enter ControlSelect mode (or Edit for Xfader)
+- **Enter / Space** → enter ControlSelect mode (or Edit for Crossfader)
 - **p** → toggle Pads mode (DJ Center only)
 - **?** → show help
 
-Pane order: `Deck A | DjCenter | Loops | Xfader | Deck B | Master | DjControls`
+Pane order: `Deck A | DjCenter | Loops | Crossfader | Deck B | Master | DjControls`
 
 ### Control Select (sub-navigation mode)
 Pressing **Enter** on a pane enters **ControlSelect** mode. Navigation keys now move between controls *within* that pane:
@@ -66,7 +66,7 @@ Control behavior by pane:
 | Deck A/B | Fader, EQ, Filters, Pan | Adjust value |
 | DjCenter | Pad grid | Navigate pads |
 | Loops | Rack rows | Navigate racks, toggle playback |
-| Xfader | Crossfader | Adjust value |
+| Crossfader | Crossfader | Adjust value |
 | Master | Fader, Mute, Dim, Mono | Adjust or toggle |
 | DjControls | CUE, PH, BT sliders | Adjust value |
 

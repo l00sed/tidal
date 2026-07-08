@@ -416,20 +416,59 @@ impl MpvClient {
 
         let mut filters = Vec::new();
 
-        if low.abs() > 0.1 {
-            filters.push(format!("bass=g={:.1}:f=100", low));
+        // Low: lowpass filter sweeps from 20000Hz (no cut) to 500Hz (max cut)
+        // Only active when cutting (low < 0, bottom half of bar)
+        if low < 0.0 {
+            let normalized = (-low / 24.0).clamp(0.0, 1.0);
+            let low_freq: f32 = 20000.0 * (500.0f32 / 20000.0).powf(normalized);
+            if low_freq < 20000.0 {
+                filters.push(format!("lowpass=f={:.0}", low_freq));
+            }
         }
 
+        // Mid: equalizer with sweepable frequency and gain
         if mid.abs() > 0.1 {
-            filters.push(format!("equalizer=f=1000:t=h:w=500:g={:.1}", mid));
+            let normalized = mid.abs() / 24.0;
+            let mid_freq: f32 = 200.0 * (8000.0f32 / 200.0).powf(normalized);
+            let mid_gain: f32 = (mid / 2.0).clamp(-12.0, 12.0);
+            filters.push(format!("equalizer=f={:.0}:t=h:w=500:g={:.1}", mid_freq, mid_gain));
         }
 
-        if high.abs() > 0.1 {
-            filters.push(format!("treble=g={:.1}:f=3000", high));
+        // High: highpass filter sweeps from 20Hz (no cut) to 5000Hz (max cut)
+        // Only active when cutting (high < 0, bottom half of bar)
+        if high < 0.0 {
+            let normalized = (-high / 24.0).clamp(0.0, 1.0);
+            let high_freq: f32 = 20.0 * (5000.0f32 / 20.0).powf(normalized);
+            if high_freq > 20.0 {
+                filters.push(format!("highpass=f={:.0}", high_freq));
+            }
         }
 
         if !filters.is_empty() {
             let filter = format!("@eq:lavfi=[{}]", filters.join(","));
+            self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
+        }
+
+        Ok(())
+    }
+
+    /// Set 10-band master EQ (frequencies: 32, 64, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz)
+    pub fn set_master_eq(&mut self, bands: &[f32; 10], freqs: &[f32; 10]) -> Result<(), String> {
+        if self.has_filter("meq") {
+            self.send_command(vec!["af".into(), "remove".into(), "@meq".into()]).ok();
+        }
+
+        let filters: Vec<String> = bands.iter().zip(freqs.iter())
+            .filter(|(g, _)| g.abs() > 0.1)
+            .map(|(g, f)| {
+                // Width = half the center frequency for musical Q
+                let w = f * 0.5;
+                format!("equalizer=f={:.0}:t=h:w={:.0}:g={:.1}", f, w, g)
+            })
+            .collect();
+
+        if !filters.is_empty() {
+            let filter = format!("@meq:lavfi=[{}]", filters.join(","));
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
         }
 

@@ -31,6 +31,7 @@ pub struct MixerView<'a> {
     pad_config_editing: bool,
     racks: Option<&'a RackState>,
     scroll_offset: usize,
+    mixer_scroll_offset: usize,
     master_output_device: Option<&'a str>,
     cue_output_device: Option<&'a str>,
     output_picker_active: bool,
@@ -60,6 +61,7 @@ impl<'a> MixerView<'a> {
             pad_config_editing: false,
             racks: None,
             scroll_offset: 0,
+            mixer_scroll_offset: 0,
             master_output_device: None,
             cue_output_device: None,
             output_picker_active: false,
@@ -125,6 +127,11 @@ impl<'a> MixerView<'a> {
 
     pub fn scroll_offset(mut self, offset: usize) -> Self {
         self.scroll_offset = offset;
+        self
+    }
+
+    pub fn mixer_scroll_offset(mut self, offset: usize) -> Self {
+        self.mixer_scroll_offset = offset;
         self
     }
     
@@ -248,34 +255,42 @@ impl<'a> MixerView<'a> {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
         // Minimalist header - just mode indicator and status
         let mode_str = if self.editing { "[EDIT]" } else { "" };
-        let title = format!("TIDAL {}", mode_str);
+        let title = format!("TERMIXER {}", mode_str);
         
         let title_style = Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD);
         buf.set_string(area.x + 1, area.y, &title, title_style);
 
-        // Crossfader label
-
-        // Mode/status on the right
-        let status = match self.state.focus {
-            SelectionFocus::Channel(_) => format!(
-                "{}/{}  {}",
-                self.state.selected_channel + 1,
-                self.state.channels.len(),
-                self.state.selected_control.label()
-            ),
-            SelectionFocus::Global => {
-                let pane_label = match self.selected_pane {
-                    SelectedPane::DeckA => "DECK A",
-                    SelectedPane::DeckB => "DECK B",
-                    SelectedPane::DeckC => "DECK C",
-                    SelectedPane::Master => "MASTER",
-                    SelectedPane::DjCenter => "PADS",
-                    SelectedPane::Loops => "LOOPS",
-                    SelectedPane::Xfader => "XFADER",
-                };
-                format!("{}  {}", pane_label, self.state.selected_global.label())
-            }
+        // Status on the right: pane name, optionally with control name
+        let pane_label = match self.selected_pane {
+            SelectedPane::DeckA => "DECK A",
+            SelectedPane::DeckB => "DECK B",
+            SelectedPane::DeckC => "DECK C",
+            SelectedPane::Master => "MASTER",
+            SelectedPane::DjCenter => "PADS",
+            SelectedPane::Loops => "LOOPS",
+            SelectedPane::Crossfader => "CROSSFADE",
         };
+
+        let status = if self.control_select || self.editing {
+            // ControlSelect or Edit mode: show pane name | control name
+            // Skip the control name for Crossfader pane (it's redundant)
+            if matches!(self.selected_pane, SelectedPane::Crossfader) {
+                pane_label.to_string()
+            } else {
+                match self.state.focus {
+                    SelectionFocus::Channel(_) => {
+                        format!("{} | {}", pane_label, self.state.selected_control.label())
+                    }
+                    SelectionFocus::Global => {
+                        format!("{} | {}", pane_label, self.state.selected_global.label())
+                    }
+                }
+            }
+        } else {
+            // PaneSelect mode: just show the pane name
+            pane_label.to_string()
+        };
+
         let status_x = area.x + area.width.saturating_sub(status.len() as u16 + 1);
         buf.set_string(status_x, area.y, &status, Style::default().fg(METER_TRACK));
 
@@ -284,126 +299,144 @@ impl<'a> MixerView<'a> {
         buf.set_string(area.x, area.y + 1, &sep, Style::default().fg(SEPARATOR));
     }
 
-    /// Full-width mixer layout - DJ section centered, A/B decks on sides
+    /// Full-width mixer layout - DJ section centered, decks on sides
     fn render_mixer_full_width(&self, area: Rect, buf: &mut Buffer) {
         // Layout:
-        // [Deck A] [DJ Center (pads)] [Deck B] [CUE] [Master]
-        //                      [Loops]
-        //                      [Xfader]
+        // [Deck A] [DJ Center (pads)] [Deck B] [Deck C] [Master]
+        //                   [Loops]
+        //                   [Crossfader]
         let deck_max_width = 21u16;
-        let master_width = 21u16; // Match deck A/B width
+        let master_width = 21u16; // Match deck width
         
         // Calculate minimum DJ center width (enough for 4x4 pads + borders)
         let min_dj_width = 20u16;
         
         // Calculate deck widths - capped at max, but shrink if needed
-        let total_fixed = deck_max_width * 2 + master_width + min_dj_width;
+        let total_fixed = deck_max_width * 3 + master_width + min_dj_width;
         let deck_width = if area.width >= total_fixed {
             deck_max_width
         } else {
             // Shrink decks proportionally
-            ((area.width.saturating_sub(master_width + min_dj_width)) / 2).max(10)
+            ((area.width.saturating_sub(master_width + min_dj_width)) / 3).max(10)
         };
         
         // DJ center gets the remaining space (stretches)
-        let dj_center_width = area.width.saturating_sub(deck_width * 2 + master_width);
+        let dj_center_width = area.width.saturating_sub(deck_width * 3 + master_width);
 
-        // Split vertically: top (main mixer) and bottom (loops + cue)
         let loops_height = (area.height as f32 * 0.20) as u16;
-        let loops_height = loops_height.max(3); // minimum 3 rows for the pane
+        let loops_height = loops_height.max(3);
 
-        // Horizontal split: [Deck A] [DJ center column] [Deck B] [Master column]
+        // Horizontal split: [Deck A] [DJ center] [Deck B] [Deck C] [Master]
         let horizontal_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(deck_width),      // Deck A
-                Constraint::Length(dj_center_width), // DJ center column (pads + loops)
+                Constraint::Length(dj_center_width), // DJ center column (pads + loops + xfader)
                 Constraint::Length(deck_width),      // Deck B
-                Constraint::Length(master_width),    // Master column
+                Constraint::Length(deck_width),      // Deck C (full height)
+                Constraint::Length(master_width),    // Master
             ])
             .split(area);
 
-        // Within DJ center column, split vertically: [Pads] [Loops] [Xfader]
-        let xfader_height = 5u16; // Crossfader pane (3 content + 2 borders)
+        // Horizontal scroll: snap to pane boundaries.
+        // The scroll offset is always a pane's left-edge coordinate, so the
+        // first visible pane renders flush against the viewport left. Panes
+        // before the scroll point are skipped; panes past the right edge are
+        // naturally clipped by the Buffer.
+        let scroll = self.mixer_scroll_offset as u16;
+
+        // Within DJ center column, split vertically: [Pads] [Loops] [Crossfader]
+        let crossfader_height = 5u16;
         let dj_vertical = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(16),              // Pads area
-                Constraint::Length(loops_height), // Loops pane
-                Constraint::Length(xfader_height), // Xfader pane
+                Constraint::Min(16),                 // Pads area
+                Constraint::Length(loops_height),    // Loops pane
+                Constraint::Length(crossfader_height), // Crossfader pane
             ])
             .split(horizontal_chunks[1]);
 
         let dj_center_area = dj_vertical[0];
         let loops_area = dj_vertical[1];
-        let xfader_area = dj_vertical[2];
-
-        // Within Master column, split vertically: [CUE] [Master]
-        let master_vertical = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(66),  // CUE pane (top)
-                Constraint::Percentage(34),  // Master fader area (bottom)
-            ])
-            .split(horizontal_chunks[3]);
-
-        let cue_area = master_vertical[0];
-        let master_area = master_vertical[1];
+        let crossfader_area = dj_vertical[2];
 
         // Only show selected control when in control select mode (or editing)
         let show_control = self.control_select || self.editing;
 
+        // Helper: return scrolled rect only if pane is within viewport
+        let scrolled = |chunk: Rect| -> Option<Rect> {
+            if chunk.x >= scroll {
+                Some(Rect { x: chunk.x - scroll, y: chunk.y, width: chunk.width, height: chunk.height })
+            } else {
+                None
+            }
+        };
+
         // Deck A (channel 0)
-        if let Some(channel) = self.state.channels.get(self.state.dj.deck_a_channel) {
-            let pane_selected = self.selected_pane == SelectedPane::DeckA;
-            let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
-            ChannelStrip::new(channel)
-                .selected(pane_selected, control)
-                .deck_label(Some("A"))
-                .deck_color(DECK_A)
-                .editing(show_control && pane_selected)
-                .frame(self.frame)
-                .render(horizontal_chunks[0], buf);
+        if let Some(pane) = scrolled(horizontal_chunks[0]) {
+            if let Some(channel) = self.state.channels.get(self.state.dj.deck_a_channel) {
+                let pane_selected = self.selected_pane == SelectedPane::DeckA;
+                let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
+                ChannelStrip::new(channel)
+                    .selected(pane_selected, control)
+                    .deck_label(Some("A"))
+                    .deck_color(DECK_A)
+                    .editing(show_control && pane_selected)
+                    .frame(self.frame)
+                    .render(pane, buf);
+            }
         }
 
         // DJ Center Section (pads)
-        self.render_dj_center(dj_center_area, buf);
-
-        // Deck B (channel 1)
-        if let Some(channel) = self.state.channels.get(self.state.dj.deck_b_channel) {
-            let pane_selected = self.selected_pane == SelectedPane::DeckB;
-            let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
-            ChannelStrip::new(channel)
-                .selected(pane_selected, control)
-                .deck_label(Some("B"))
-                .deck_color(DECK_B)
-                .editing(show_control && pane_selected)
-                .frame(self.frame)
-                .render(horizontal_chunks[2], buf);
+        if let Some(pane) = scrolled(dj_center_area) {
+            self.render_dj_center(pane, buf);
         }
 
-        // CUE pane (top of right column)
-        self.render_cue_pane(cue_area, buf);
+        // Deck B (channel 1)
+        if let Some(pane) = scrolled(horizontal_chunks[2]) {
+            if let Some(channel) = self.state.channels.get(self.state.dj.deck_b_channel) {
+                let pane_selected = self.selected_pane == SelectedPane::DeckB;
+                let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
+                ChannelStrip::new(channel)
+                    .selected(pane_selected, control)
+                    .deck_label(Some("B"))
+                    .deck_color(DECK_B)
+                    .editing(show_control && pane_selected)
+                    .frame(self.frame)
+                    .render(pane, buf);
+            }
+        }
 
-        // Master - pane is selected if we're on Master pane, controls only in control_select mode
-        let master_pane_selected = self.selected_pane == SelectedPane::Master;
-        let master_control_selected = master_pane_selected && show_control;
-        let master_control = if master_control_selected { Some(self.state.selected_global) } else { None };
-        let any_playing = self.state.channels.iter().any(|c| c.playing)
-            || self.state.cue_channel.playing;
-        MasterStrip::new(&self.state.master)
-            .pane_selected(master_pane_selected)
-            .selected(master_control_selected, master_control)
-            .editing(show_control && master_pane_selected)
-            .frame(self.frame)
-            .any_channel_playing(any_playing)
-            .render(master_area, buf);
+        // Deck C (full height, right of Deck B)
+        if let Some(pane) = scrolled(horizontal_chunks[3]) {
+            self.render_cue_pane(pane, buf);
+        }
 
-        // Loops pane (below DJ center, between Deck A and Deck B)
-        self.render_loops(loops_area, buf);
+        // Master
+        if let Some(pane) = scrolled(horizontal_chunks[4]) {
+            let master_pane_selected = self.selected_pane == SelectedPane::Master;
+            let master_control_selected = master_pane_selected && show_control;
+            let master_control = if master_control_selected { Some(self.state.selected_global) } else { None };
+            let any_playing = self.state.channels.iter().any(|c| c.playing)
+                || self.state.cue_channel.playing;
+            MasterStrip::new(&self.state.master)
+                .pane_selected(master_pane_selected)
+                .selected(master_control_selected, master_control)
+                .editing(show_control && master_pane_selected)
+                .frame(self.frame)
+                .any_channel_playing(any_playing)
+                .render(pane, buf);
+        }
 
-        // Xfader pane (below loops)
-        self.render_xfader(xfader_area, buf);
+        // Loops pane
+        if let Some(pane) = scrolled(loops_area) {
+            self.render_loops(pane, buf);
+        }
+
+        // Crossfader pane
+        if let Some(pane) = scrolled(crossfader_area) {
+            self.render_crossfader(pane, buf);
+        }
     }
 
     /// Centered DJ section with pads
@@ -594,16 +627,16 @@ impl<'a> MixerView<'a> {
     }
 
     /// Render the crossfader pane (below loops)
-    fn render_xfader(&self, area: Rect, buf: &mut Buffer) {
+    fn render_crossfader(&self, area: Rect, buf: &mut Buffer) {
         let is_active = self.control_select || self.editing;
-        let border_color = if self.selected_pane == SelectedPane::Xfader {
+        let border_color = if self.selected_pane == SelectedPane::Crossfader {
             if is_active { BORDER_ACTIVE } else { BORDER_NAVIGATED }
         } else {
             BG_LIGHT
         };
 
         let block = Block::default()
-            .title(" XFADER ")
+            .title(" CROSSFADE ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 
@@ -625,12 +658,13 @@ impl<'a> MixerView<'a> {
             .split(inner);
 
         let show_control = self.control_select || self.editing;
-        let xfader_selected = show_control && self.selected_pane == SelectedPane::Xfader;
+        let crossfader_selected = show_control && self.selected_pane == SelectedPane::Crossfader;
         Crossfader::new(self.state.dj.crossfader)
-            .selected(xfader_selected)
+            .selected(crossfader_selected)
             .labels("A", "B")
             .render(padded[1], buf);
     }
+
 
     /// Render the CUE deck (Deck C) with channel strip and controls
     fn render_cue_pane(&self, area: Rect, buf: &mut Buffer) {
@@ -810,8 +844,8 @@ impl<'a> MixerView<'a> {
                     }
                 }
                 SelectionFocus::Global => {
-                    // Show crossfader slam shortcuts when Xfader pane is selected
-                    if self.selected_pane == SelectedPane::Xfader {
+                    // Show crossfader slam shortcuts when Crossfader pane is selected
+                    if self.selected_pane == SelectedPane::Crossfader {
                         "a:A  b:B  Enter:edit  Tab:deck  ?:help"
                     } else {
                         "hjkl:nav  Enter:edit  Tab:deck  ?:help"

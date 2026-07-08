@@ -232,7 +232,7 @@ pub enum SelectedPane {
     DeckA,
     DjCenter,
     Loops,
-    Xfader,
+    Crossfader,
     DeckB,
     DeckC,
     Master,
@@ -243,8 +243,8 @@ impl SelectedPane {
         match self {
             SelectedPane::DeckA => SelectedPane::DjCenter,
             SelectedPane::DjCenter => SelectedPane::Loops,
-            SelectedPane::Loops => SelectedPane::Xfader,
-            SelectedPane::Xfader => SelectedPane::DeckB,
+            SelectedPane::Loops => SelectedPane::Crossfader,
+            SelectedPane::Crossfader => SelectedPane::DeckB,
             SelectedPane::DeckB => SelectedPane::DeckC,
             SelectedPane::DeckC => SelectedPane::Master,
             SelectedPane::Master => SelectedPane::DeckA,
@@ -256,8 +256,8 @@ impl SelectedPane {
             SelectedPane::DeckA => SelectedPane::Master,
             SelectedPane::DjCenter => SelectedPane::DeckA,
             SelectedPane::Loops => SelectedPane::DjCenter,
-            SelectedPane::Xfader => SelectedPane::Loops,
-            SelectedPane::DeckB => SelectedPane::Xfader,
+            SelectedPane::Crossfader => SelectedPane::Loops,
+            SelectedPane::DeckB => SelectedPane::Crossfader,
             SelectedPane::DeckC => SelectedPane::DeckB,
             SelectedPane::Master => SelectedPane::DeckC,
         }
@@ -283,7 +283,7 @@ pub struct App {
     // Sample pad areas for mouse hit testing
     pad_areas: Vec<(usize, u16, u16, u16, u16)>, // (pad_idx, x, y, w, h)
     // Pane areas for mouse hit testing
-    xfader_area: Option<PaneArea>,
+    crossfader_area: Option<PaneArea>,
     master_area: Option<PaneArea>,
     cue_area: Option<PaneArea>,
     loops_area: Option<PaneArea>,
@@ -314,6 +314,10 @@ pub struct App {
     pub rack_scroll_offset: usize,
     // Terminal height for calculating visible rack rows
     pub terminal_height: u16,
+    // Terminal width for horizontal pane scrolling
+    pub term_width: u16,
+    // Horizontal scroll offset for mixer panes (pixels scrolled past on the left)
+    pub mixer_scroll_offset: usize,
     // Audio output devices
     pub master_output: AudioOutput,
     pub cue_output: AudioOutput,
@@ -350,7 +354,7 @@ pub struct ChannelArea {
     pub control_rows: Vec<(ChannelControl, u16, u16)>, // control, y_start, y_end
 }
 
-/// Generic rectangular area for a pane (xfader, master, CUE, etc.)
+/// Generic rectangular area for a pane (crossfader, master, CUE, etc.)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PaneArea {
     pub x: u16,
@@ -419,7 +423,7 @@ impl App {
             drag_start_value: None,
             channel_areas: Vec::new(),
             pad_areas: Vec::new(),
-            xfader_area: None,
+            crossfader_area: None,
             master_area: None,
             cue_area: None,
             loops_area: None,
@@ -440,6 +444,8 @@ impl App {
             elapsed_ms: 0,
             rack_scroll_offset: 0,
             terminal_height: 24,
+            term_width: 0,
+            mixer_scroll_offset: 0,
             master_output: AudioOutput::new(),
             cue_output: AudioOutput::new(),
             selected_master_output_idx: 0,
@@ -854,6 +860,7 @@ impl App {
                 self.selected_pad_idx = None;
                 self.selected_pane = self.selected_pane.next();
                 self.sync_pane_to_mixer();
+                self.ensure_mixer_pane_visible();
             }
 
             // Shift+Tab: previous pane (round-robin)
@@ -861,71 +868,77 @@ impl App {
                 self.selected_pad_idx = None;
                 self.selected_pane = self.selected_pane.prev();
                 self.sync_pane_to_mixer();
+                self.ensure_mixer_pane_visible();
             }
 
             // h/l: horizontal navigation across mixer layout
-            // DeckA ↔ Xfader ↔ DeckB ↔ CUE ↔ Master
+            // DeckA ↔ Crossfader ↔ DeckB ↔ DeckC ↔ Master
             KeyCode::Char('l') | KeyCode::Right => {
                 self.selected_pad_idx = None;
                 self.selected_pane = match self.selected_pane {
-                    SelectedPane::DeckA => SelectedPane::Xfader,
-                    SelectedPane::Xfader => SelectedPane::DeckB,
-                    SelectedPane::DeckB => SelectedPane::DeckC,
-                    SelectedPane::DeckC => SelectedPane::DeckA,
-                    SelectedPane::Master => SelectedPane::DeckA,
+                    SelectedPane::DeckA => SelectedPane::Crossfader,
                     SelectedPane::DjCenter | SelectedPane::Loops => SelectedPane::DeckB,
+                    SelectedPane::DeckB => SelectedPane::DeckC,
+                    SelectedPane::DeckC => SelectedPane::Master,
+                    SelectedPane::Master => SelectedPane::DeckA,
+                    SelectedPane::Crossfader => SelectedPane::DeckB,
                 };
                 self.sync_pane_to_mixer();
+                self.ensure_mixer_pane_visible();
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 self.selected_pad_idx = None;
                 self.selected_pane = match self.selected_pane {
-                    SelectedPane::DeckA => SelectedPane::DeckC,
-                    SelectedPane::Xfader => SelectedPane::DeckA,
-                    SelectedPane::DeckB => SelectedPane::Xfader,
-                    SelectedPane::DeckC => SelectedPane::DeckB,
-                    SelectedPane::Master => SelectedPane::DeckB,
+                    SelectedPane::DeckA => SelectedPane::Master,
                     SelectedPane::DjCenter | SelectedPane::Loops => SelectedPane::DeckA,
+                    SelectedPane::DeckB => SelectedPane::Crossfader,
+                    SelectedPane::DeckC => SelectedPane::DeckB,
+                    SelectedPane::Master => SelectedPane::DeckC,
+                    SelectedPane::Crossfader => SelectedPane::DeckA,
                 };
                 self.sync_pane_to_mixer();
+                self.ensure_mixer_pane_visible();
             }
 
             // j/k: vertical pane navigation
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selected_pad_idx = None;
                 self.selected_pane = match self.selected_pane {
-                    SelectedPane::DeckA | SelectedPane::DjCenter => SelectedPane::Loops,
-                    SelectedPane::Loops => SelectedPane::Xfader,
-                    SelectedPane::Xfader => SelectedPane::DeckB,
+                    SelectedPane::DjCenter => SelectedPane::Loops,
+                    SelectedPane::Loops => SelectedPane::Crossfader,
+                    SelectedPane::Crossfader => SelectedPane::DeckB,
                     SelectedPane::DeckB => SelectedPane::DeckC,
                     SelectedPane::DeckC => SelectedPane::Master,
                     SelectedPane::Master => SelectedPane::DeckA,
+                    SelectedPane::DeckA => SelectedPane::DjCenter,
                 };
                 self.sync_pane_to_mixer();
+                self.ensure_mixer_pane_visible();
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected_pad_idx = None;
                 self.selected_pane = match self.selected_pane {
-                    SelectedPane::DeckA => SelectedPane::Master,
                     SelectedPane::DjCenter => SelectedPane::DeckA,
                     SelectedPane::Loops => SelectedPane::DjCenter,
-                    SelectedPane::Xfader => SelectedPane::Loops,
-                    SelectedPane::DeckB => SelectedPane::Xfader,
+                    SelectedPane::Crossfader => SelectedPane::Loops,
+                    SelectedPane::DeckB => SelectedPane::Crossfader,
                     SelectedPane::DeckC => SelectedPane::DeckB,
                     SelectedPane::Master => SelectedPane::DeckC,
+                    SelectedPane::DeckA => SelectedPane::Master,
                 };
                 self.sync_pane_to_mixer();
+                self.ensure_mixer_pane_visible();
             }
 
-            // Crossfader slam shortcuts (when Xfader pane is selected)
+            // Crossfader slam shortcuts (when Crossfader pane is selected)
             KeyCode::Char('a') => {
-                if self.selected_pane == SelectedPane::Xfader {
+                if self.selected_pane == SelectedPane::Crossfader {
                     self.mixer.dj.crossfader = -1.0; // Slam to full A
                     self.sync_current_control_to_mpv();
                 }
             }
             KeyCode::Char('b') => {
-                if self.selected_pane == SelectedPane::Xfader {
+                if self.selected_pane == SelectedPane::Crossfader {
                     self.mixer.dj.crossfader = 1.0; // Slam to full B
                     self.sync_current_control_to_mpv();
                 }
@@ -933,8 +946,8 @@ impl App {
 
             // Enter: activate control select mode for this pane
             KeyCode::Enter | KeyCode::Char(' ') => {
-                if self.selected_pane == SelectedPane::Xfader {
-                    // Xfader has one control - go straight to edit
+                if self.selected_pane == SelectedPane::Crossfader {
+                    // Crossfader has one control - go straight to edit
                     self.mixer.focus = SelectionFocus::Global;
                     self.mixer.selected_global = GlobalControl::Crossfader;
                     self.mode = AppMode::Edit;
@@ -1044,7 +1057,7 @@ impl App {
                 // Loops pane uses its own rack selection, keep global focus
                 self.mixer.focus = SelectionFocus::Global;
             }
-            SelectedPane::Xfader => {
+            SelectedPane::Crossfader => {
                 self.mixer.focus = SelectionFocus::Global;
                 self.mixer.selected_global = GlobalControl::Crossfader;
             }
@@ -1057,6 +1070,60 @@ impl App {
                 self.mixer.selected_channel = 2;
                 self.mixer.selected_control = ChannelControl::Fader;
             }
+        }
+    }
+
+    /// Scroll mixer viewport so the currently selected pane snaps to the
+    /// left edge of the viewport. Mirrors the layout calculation from
+    /// `render_mixer_full_width` so the scroll offset matches actual rendered
+    /// pane positions at any terminal width.
+    fn ensure_mixer_pane_visible(&mut self) {
+        let viewport_w = self.term_width.max(1) as u16;
+
+        // Mirror layout calculation from MixerView::render_mixer_full_width
+        let deck_max_width = 21u16;
+        let master_width = 21u16;
+        let min_dj_width = 20u16;
+        let deck_width = if viewport_w >= deck_max_width * 3 + master_width + min_dj_width {
+            deck_max_width
+        } else {
+            ((viewport_w.saturating_sub(master_width + min_dj_width)) / 3).max(10)
+        };
+        let dj_center_width = viewport_w.saturating_sub(deck_width * 3 + master_width);
+
+        // Pane x-positions (absolute, matching renderer column arrangement)
+        let pane_xs: [u16; 7] = [
+            0,                                  // DeckA
+            deck_width,                         // DjCenter
+            deck_width,                         // Loops (same column)
+            deck_width,                         // Crossfader (same column)
+            deck_width + dj_center_width,       // DeckB
+            deck_width * 2 + dj_center_width,   // DeckC
+            deck_width * 3 + dj_center_width,   // Master
+        ];
+
+        let idx = match self.selected_pane {
+            SelectedPane::DeckA => 0,
+            SelectedPane::DjCenter => 1,
+            SelectedPane::Loops => 2,
+            SelectedPane::Crossfader => 3,
+            SelectedPane::DeckB => 4,
+            SelectedPane::DeckC => 5,
+            SelectedPane::Master => 6,
+        };
+
+        let pane_x = pane_xs[idx];
+
+        // If all panes fit in the viewport, no scrolling needed
+        let total_width = deck_width * 3 + dj_center_width + master_width;
+        if total_width <= viewport_w {
+            self.mixer_scroll_offset = 0;
+        } else {
+            // Snap selected pane to left edge of viewport
+            self.mixer_scroll_offset = pane_x as usize;
+            // Clamp so we don't scroll past the last pane
+            let max_scroll = total_width - viewport_w;
+            self.mixer_scroll_offset = self.mixer_scroll_offset.min(max_scroll as usize);
         }
     }
 
@@ -1351,7 +1418,34 @@ impl App {
     fn navigate_control_down(&mut self) {
         match self.selected_pane {
             SelectedPane::DeckA | SelectedPane::DeckB | SelectedPane::DeckC => {
-                self.mixer.select_next_control(self.selected_pane == SelectedPane::DeckC);
+                if self.mixer.is_in_eq_or_filter_section() {
+                    // EQ/Filter section
+                    match self.mixer.selected_control {
+                        // L/M/H bars: toggle between bar and kill switch
+                        ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
+                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
+                                self.mixer.selected_control = paired;
+                            }
+                        }
+                        // Kill switches: toggle back to bar
+                        ChannelControl::EqLowKill | ChannelControl::EqMidKill | ChannelControl::EqHighKill => {
+                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
+                                self.mixer.selected_control = paired;
+                            }
+                        }
+                        // HPF: move down to LPF
+                        ChannelControl::HighPassFilter => {
+                            self.mixer.selected_control = ChannelControl::LowPassFilter;
+                        }
+                        // LPF: move down to PAN (exit EQ section)
+                        ChannelControl::LowPassFilter => {
+                            self.mixer.selected_control = ChannelControl::Pan;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.mixer.select_next_control(self.selected_pane == SelectedPane::DeckC);
+                }
             }
             SelectedPane::DjCenter => {
                 if let Some(pad_idx) = self.selected_pad_idx {
@@ -1386,15 +1480,20 @@ impl App {
                     }
                 }
             }
-            SelectedPane::Xfader => {} // Single control, nothing to navigate
+            SelectedPane::Crossfader => {} // Single control, nothing to navigate
             SelectedPane::Master => {
-                self.mixer.selected_global = match self.mixer.selected_global {
-                    GlobalControl::MasterPlayPause => GlobalControl::MasterFader,
-                    GlobalControl::MasterFader => GlobalControl::MasterMute,
-                    GlobalControl::MasterMute => GlobalControl::MasterPlayPause,
-                    GlobalControl::MasterOutputSelect => GlobalControl::MasterPlayPause,
-                    other => other,
-                };
+                if self.mixer.selected_global.eq_band_index().is_some() {
+                    // From any EQ band: jump directly to master gain fader
+                    self.mixer.selected_global = GlobalControl::MasterFader;
+                } else {
+                    self.mixer.selected_global = match self.mixer.selected_global {
+                        GlobalControl::MasterPlayPause => GlobalControl::MasterEq32,
+                        GlobalControl::MasterFader => GlobalControl::MasterMute,
+                        GlobalControl::MasterMute => GlobalControl::MasterPlayPause,
+                        GlobalControl::MasterOutputSelect => GlobalControl::MasterPlayPause,
+                        other => other,
+                    };
+                }
             }
         }
     }
@@ -1403,7 +1502,34 @@ impl App {
     fn navigate_control_up(&mut self) {
         match self.selected_pane {
             SelectedPane::DeckA | SelectedPane::DeckB | SelectedPane::DeckC => {
-                self.mixer.select_prev_control(self.selected_pane == SelectedPane::DeckC);
+                if self.mixer.is_in_eq_or_filter_section() {
+                    // EQ/Filter section
+                    match self.mixer.selected_control {
+                        // L/M/H bars: toggle between bar and kill switch
+                        ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
+                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
+                                self.mixer.selected_control = paired;
+                            }
+                        }
+                        // Kill switches: toggle back to bar
+                        ChannelControl::EqLowKill | ChannelControl::EqMidKill | ChannelControl::EqHighKill => {
+                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
+                                self.mixer.selected_control = paired;
+                            }
+                        }
+                        // HPF: move up to BPM (exit EQ section)
+                        ChannelControl::HighPassFilter => {
+                            self.mixer.selected_control = ChannelControl::Bpm;
+                        }
+                        // LPF: move up to HPF
+                        ChannelControl::LowPassFilter => {
+                            self.mixer.selected_control = ChannelControl::HighPassFilter;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.mixer.select_prev_control(self.selected_pane == SelectedPane::DeckC);
+                }
             }
             SelectedPane::DjCenter => {
                 if let Some(pad_idx) = self.selected_pad_idx {
@@ -1442,15 +1568,20 @@ impl App {
                     }
                 }
             }
-            SelectedPane::Xfader => {} // Single control, nothing to navigate
+            SelectedPane::Crossfader => {} // Single control, nothing to navigate
             SelectedPane::Master => {
-                self.mixer.selected_global = match self.mixer.selected_global {
-                    GlobalControl::MasterPlayPause => GlobalControl::MasterOutputSelect,
-                    GlobalControl::MasterFader => GlobalControl::MasterPlayPause,
-                    GlobalControl::MasterMute => GlobalControl::MasterFader,
-                    GlobalControl::MasterOutputSelect => GlobalControl::MasterFader,
-                    other => other,
-                };
+                if self.mixer.selected_global.eq_band_index().is_some() {
+                    // From any EQ band: jump directly to master play/pause
+                    self.mixer.selected_global = GlobalControl::MasterPlayPause;
+                } else {
+                    self.mixer.selected_global = match self.mixer.selected_global {
+                        GlobalControl::MasterPlayPause => GlobalControl::MasterOutputSelect,
+                        GlobalControl::MasterFader => GlobalControl::MasterEq16k,
+                        GlobalControl::MasterMute => GlobalControl::MasterFader,
+                        GlobalControl::MasterOutputSelect => GlobalControl::MasterFader,
+                        other => other,
+                    };
+                }
             }
         }
     }
@@ -1463,7 +1594,30 @@ impl App {
                 return;
             }
         }
-        if self.selected_pane == SelectedPane::DjCenter {
+        if self.selected_pane == SelectedPane::Master {
+            if self.mixer.selected_global.eq_band_index().is_some() {
+                let eq_variants = GlobalControl::all_eq_variants();
+                let current_idx = eq_variants.iter()
+                    .position(|v| *v == self.mixer.selected_global)
+                    .unwrap_or(0);
+                let prev_idx = if current_idx == 0 { 9 } else { current_idx - 1 };
+                self.mixer.selected_global = eq_variants[prev_idx];
+                return;
+            }
+            match self.mixer.selected_global {
+                GlobalControl::MasterMute => {
+                    self.mixer.selected_global = GlobalControl::MasterOutputSelect;
+                }
+                GlobalControl::MasterOutputSelect => {
+                    self.mixer.selected_global = GlobalControl::MasterMute;
+                }
+                GlobalControl::MasterPlayPause => {
+                    self.mixer.master.playing = !self.mixer.master.playing;
+                    self.sync_all_playpause();
+                }
+                _ => {}
+            }
+        } else if self.selected_pane == SelectedPane::DjCenter {
             if let Some(pad_idx) = self.selected_pad_idx {
                 let row = pad_idx / 4;
                 let col = pad_idx % 4;
@@ -1479,47 +1633,92 @@ impl App {
             }
         } else if self.selected_pane == SelectedPane::DeckC {
             // CUE deck: special navigation for swapped layout
-            match self.mixer.selected_control {
-                ChannelControl::Mute => {
-                    // M → -> A (same visual row)
-                    self.mixer.selected_control = ChannelControl::CueSendToA;
-                }
-                ChannelControl::CueSendToA => {
-                    // -> A → M (same visual row)
-                    self.mixer.selected_control = ChannelControl::Mute;
-                }
-                ChannelControl::Solo => {
-                    // S → -> B (same visual row)
-                    self.mixer.selected_control = ChannelControl::CueSendToB;
-                }
-                ChannelControl::CueSendToB => {
-                    // -> B → S (same visual row)
-                    self.mixer.selected_control = ChannelControl::Solo;
-                }
-                _ => {
-                    // For other controls, use standard EQ kill pair logic
-                    if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                        self.mixer.selected_control = paired;
+            if self.mixer.is_in_eq_or_filter_section() {
+                // EQ/Filter section: move left
+                self.mixer.selected_control = match self.mixer.selected_control {
+                    // L/M/H: move left between bands
+                    ChannelControl::EqLow => ChannelControl::EqLow, // stay on L (leftmost)
+                    ChannelControl::EqLowKill => ChannelControl::EqLowKill,
+                    ChannelControl::EqMid => ChannelControl::EqLow,
+                    ChannelControl::EqMidKill => ChannelControl::EqLowKill,
+                    ChannelControl::EqHigh => ChannelControl::EqMid,
+                    ChannelControl::EqHighKill => ChannelControl::EqMidKill,
+                    // HPF/LPF: move left to H
+                    ChannelControl::HighPassFilter => ChannelControl::EqHigh,
+                    ChannelControl::LowPassFilter => ChannelControl::EqHigh,
+                    _ => self.mixer.selected_control,
+                };
+            } else {
+                match self.mixer.selected_control {
+                    ChannelControl::Mute => {
+                        // M → -> A (same visual row)
+                        self.mixer.selected_control = ChannelControl::CueSendToA;
                     }
+                    ChannelControl::CueSendToA => {
+                        // -> A → M (same visual row)
+                        self.mixer.selected_control = ChannelControl::Mute;
+                    }
+                    ChannelControl::Solo => {
+                        // S → -> B (same visual row)
+                        self.mixer.selected_control = ChannelControl::CueSendToB;
+                    }
+                    ChannelControl::CueSendToB => {
+                        // -> B → S (same visual row)
+                        self.mixer.selected_control = ChannelControl::Solo;
+                    }
+                    _ => {}
                 }
             }
         } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB {
-            match self.mixer.selected_control {
-                ChannelControl::Mute | ChannelControl::Solo => {
-                    // Toggle between Mute and Solo
-                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
-                        ChannelControl::Solo
-                    } else {
-                        ChannelControl::Mute
-                    };
-                }
-                _ => {
-                    if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                        self.mixer.selected_control = paired;
+            if self.mixer.is_in_eq_or_filter_section() {
+                // EQ/Filter section: move left
+                self.mixer.selected_control = match self.mixer.selected_control {
+                    // L/M/H: move left between bands
+                    ChannelControl::EqLow => ChannelControl::EqLow, // stay on L (leftmost)
+                    ChannelControl::EqLowKill => ChannelControl::EqLowKill,
+                    ChannelControl::EqMid => ChannelControl::EqLow,
+                    ChannelControl::EqMidKill => ChannelControl::EqLowKill,
+                    ChannelControl::EqHigh => ChannelControl::EqMid,
+                    ChannelControl::EqHighKill => ChannelControl::EqMidKill,
+                    // HPF/LPF: move left to H
+                    ChannelControl::HighPassFilter => ChannelControl::EqHigh,
+                    ChannelControl::LowPassFilter => ChannelControl::EqHigh,
+                    _ => self.mixer.selected_control,
+                };
+            } else {
+                match self.mixer.selected_control {
+                    ChannelControl::Mute | ChannelControl::Solo => {
+                        // Toggle between Mute and Solo
+                        self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
+                            ChannelControl::Solo
+                        } else {
+                            ChannelControl::Mute
+                        };
                     }
+                    _ => {}
                 }
             }
-        } else if self.selected_pane == SelectedPane::Master {
+        }
+    }
+
+    /// Navigate right within DJ center
+    fn navigate_control_right(&mut self) {
+        if self.selected_pane == SelectedPane::Loops {
+            if self.rack_state.selected_rack.is_some() {
+                self.rack_state.select_rack_control_down();
+                return;
+            }
+        }
+        if self.selected_pane == SelectedPane::Master {
+            if self.mixer.selected_global.eq_band_index().is_some() {
+                let eq_variants = GlobalControl::all_eq_variants();
+                let current_idx = eq_variants.iter()
+                    .position(|v| *v == self.mixer.selected_global)
+                    .unwrap_or(0);
+                let next_idx = (current_idx + 1) % 10;
+                self.mixer.selected_global = eq_variants[next_idx];
+                return;
+            }
             match self.mixer.selected_global {
                 GlobalControl::MasterMute => {
                     self.mixer.selected_global = GlobalControl::MasterOutputSelect;
@@ -1533,18 +1732,7 @@ impl App {
                 }
                 _ => {}
             }
-        }
-    }
-
-    /// Navigate right within DJ center
-    fn navigate_control_right(&mut self) {
-        if self.selected_pane == SelectedPane::Loops {
-            if self.rack_state.selected_rack.is_some() {
-                self.rack_state.select_rack_control_down();
-                return;
-            }
-        }
-        if self.selected_pane == SelectedPane::DjCenter {
+        } else if self.selected_pane == SelectedPane::DjCenter {
             if let Some(pad_idx) = self.selected_pad_idx {
                 let row = pad_idx / 4;
                 let col = pad_idx % 4;
@@ -1558,58 +1746,69 @@ impl App {
             }
         } else if self.selected_pane == SelectedPane::DeckC {
             // CUE deck: special navigation for swapped layout
-            match self.mixer.selected_control {
-                ChannelControl::Mute => {
-                    // M → -> A (same visual row)
-                    self.mixer.selected_control = ChannelControl::CueSendToA;
-                }
-                ChannelControl::CueSendToA => {
-                    // -> A → M (same visual row)
-                    self.mixer.selected_control = ChannelControl::Mute;
-                }
-                ChannelControl::Solo => {
-                    // S → -> B (same visual row)
-                    self.mixer.selected_control = ChannelControl::CueSendToB;
-                }
-                ChannelControl::CueSendToB => {
-                    // -> B → S (same visual row)
-                    self.mixer.selected_control = ChannelControl::Solo;
-                }
-                _ => {
-                    // For other controls, use standard EQ kill pair logic
-                    if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                        self.mixer.selected_control = paired;
+            if self.mixer.is_in_eq_or_filter_section() {
+                // EQ/Filter section: move right
+                self.mixer.selected_control = match self.mixer.selected_control {
+                    // L/M/H: move right between bands
+                    ChannelControl::EqLow => ChannelControl::EqMid,
+                    ChannelControl::EqLowKill => ChannelControl::EqMidKill,
+                    ChannelControl::EqMid => ChannelControl::EqHigh,
+                    ChannelControl::EqMidKill => ChannelControl::EqHighKill,
+                    ChannelControl::EqHigh => ChannelControl::EqHigh, // stay on H (rightmost)
+                    ChannelControl::EqHighKill => ChannelControl::EqHighKill,
+                    // HPF/LPF: move right to L
+                    ChannelControl::HighPassFilter => ChannelControl::EqLow,
+                    ChannelControl::LowPassFilter => ChannelControl::EqLow,
+                    _ => self.mixer.selected_control,
+                };
+            } else {
+                match self.mixer.selected_control {
+                    ChannelControl::Mute => {
+                        // M → -> A (same visual row)
+                        self.mixer.selected_control = ChannelControl::CueSendToA;
                     }
+                    ChannelControl::CueSendToA => {
+                        // -> A → M (same visual row)
+                        self.mixer.selected_control = ChannelControl::Mute;
+                    }
+                    ChannelControl::Solo => {
+                        // S → -> B (same visual row)
+                        self.mixer.selected_control = ChannelControl::CueSendToB;
+                    }
+                    ChannelControl::CueSendToB => {
+                        // -> B → S (same visual row)
+                        self.mixer.selected_control = ChannelControl::Solo;
+                    }
+                    _ => {}
                 }
             }
         } else if self.selected_pane == SelectedPane::DeckA || self.selected_pane == SelectedPane::DeckB {
-            match self.mixer.selected_control {
-                ChannelControl::Mute | ChannelControl::Solo => {
-                    self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
-                        ChannelControl::Solo
-                    } else {
-                        ChannelControl::Mute
-                    };
-                }
-                _ => {
-                    if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                        self.mixer.selected_control = paired;
+            if self.mixer.is_in_eq_or_filter_section() {
+                // EQ/Filter section: move right
+                self.mixer.selected_control = match self.mixer.selected_control {
+                    // L/M/H: move right between bands
+                    ChannelControl::EqLow => ChannelControl::EqMid,
+                    ChannelControl::EqLowKill => ChannelControl::EqMidKill,
+                    ChannelControl::EqMid => ChannelControl::EqHigh,
+                    ChannelControl::EqMidKill => ChannelControl::EqHighKill,
+                    ChannelControl::EqHigh => ChannelControl::EqHigh, // stay on H (rightmost)
+                    ChannelControl::EqHighKill => ChannelControl::EqHighKill,
+                    // HPF/LPF: move right to L
+                    ChannelControl::HighPassFilter => ChannelControl::EqLow,
+                    ChannelControl::LowPassFilter => ChannelControl::EqLow,
+                    _ => self.mixer.selected_control,
+                };
+            } else {
+                match self.mixer.selected_control {
+                    ChannelControl::Mute | ChannelControl::Solo => {
+                        self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
+                            ChannelControl::Solo
+                        } else {
+                            ChannelControl::Mute
+                        };
                     }
+                    _ => {}
                 }
-            }
-        } else if self.selected_pane == SelectedPane::Master {
-            match self.mixer.selected_global {
-                GlobalControl::MasterMute => {
-                    self.mixer.selected_global = GlobalControl::MasterOutputSelect;
-                }
-                GlobalControl::MasterOutputSelect => {
-                    self.mixer.selected_global = GlobalControl::MasterMute;
-                }
-                GlobalControl::MasterPlayPause => {
-                    self.mixer.master.playing = !self.mixer.master.playing;
-                    self.sync_all_playpause();
-                }
-                _ => {}
             }
         }
     }
@@ -1619,10 +1818,11 @@ impl App {
         match self.mixer.focus {
             SelectionFocus::Channel(_) => self.mixer.selected_control.is_continuous(),
             SelectionFocus::Global => {
-                matches!(self.mixer.selected_global,
-                    GlobalControl::Crossfader |
-                    GlobalControl::HeadphoneVolume |
-                    GlobalControl::MasterFader)
+                self.mixer.selected_global.eq_band_index().is_some()
+                    || matches!(self.mixer.selected_global,
+                        GlobalControl::Crossfader |
+                        GlobalControl::HeadphoneVolume |
+                        GlobalControl::MasterFader)
             }
         }
     }
@@ -1698,10 +1898,10 @@ impl App {
     /// Mode 3: Edit - hjkl adjusts values, Esc returns to ControlSelect
     fn handle_edit_key(&mut self, key: KeyEvent) {
         match key.code {
-            // Exit edit mode -> back to control select (or pane select for Xfader)
+            // Exit edit mode -> back to control select (or pane select for Crossfader)
             KeyCode::Esc | KeyCode::Enter => {
-                if self.selected_pane == SelectedPane::Xfader {
-                    // Xfader skipped ControlSelect on entry, skip it on exit too
+                if self.selected_pane == SelectedPane::Crossfader {
+                    // Crossfader skipped ControlSelect on entry, skip it on exit too
                     self.mode = AppMode::PaneSelect;
                 } else {
                     self.mode = AppMode::ControlSelect;
@@ -1960,6 +2160,10 @@ impl App {
                     GlobalControl::HeadphoneVolume => self.mixer.dj.headphone_volume = 1.0,
                     GlobalControl::MasterFader => self.mixer.master.fader = 0.5,
                     GlobalControl::Crossfader => self.mixer.dj.crossfader = 0.0,
+                    ctrl if ctrl.eq_band_index().is_some() => {
+                        let idx = ctrl.eq_band_index().unwrap();
+                        self.mixer.master.master_eq[idx] = 0.0;
+                    }
                     _ => {}
                 }
             }
@@ -2501,11 +2705,11 @@ impl App {
                             self.play_sample(pad_idx);
                         }
                         HitResult::Crossfader => {
-                            self.selected_pane = SelectedPane::Xfader;
+                            self.selected_pane = SelectedPane::Crossfader;
                             self.mixer.focus = SelectionFocus::Global;
                             self.mixer.selected_global = GlobalControl::Crossfader;
                             // Click-to-position: calculate crossfader value from x
-                            if let Some(area) = &self.xfader_area {
+                            if let Some(area) = &self.crossfader_area {
                                 let inner_x = mouse.column.saturating_sub(area.x);
                                 let pos = (inner_x as f32 / area.w as f32) * 2.0 - 1.0;
                                 self.mixer.dj.crossfader = pos.clamp(-1.0, 1.0);
@@ -2576,9 +2780,9 @@ impl App {
 
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Handle crossfader horizontal drag
-                if self.selected_pane == SelectedPane::Xfader {
+                if self.selected_pane == SelectedPane::Crossfader {
                     if let (Some(start_x), Some(start_value), Some(area)) =
-                        (self.drag_start_x, self.drag_start_value, &self.xfader_area)
+                        (self.drag_start_x, self.drag_start_value, &self.crossfader_area)
                     {
                         let delta = (mouse.column as i16 - start_x as i16) as f32;
                         let sensitivity = 2.0 / area.w as f32;
@@ -2718,13 +2922,13 @@ impl App {
     /// Update pane areas for mouse hit testing
     pub fn update_pane_areas(
         &mut self,
-        xfader: Option<PaneArea>,
+        crossfader: Option<PaneArea>,
         master: Option<PaneArea>,
         cue: Option<PaneArea>,
         loops: Option<PaneArea>,
         pads: Vec<(usize, u16, u16, u16, u16)>,
     ) {
-        self.xfader_area = xfader;
+        self.crossfader_area = crossfader;
         self.master_area = master;
         self.cue_area = cue;
         self.loops_area = loops;
@@ -2744,7 +2948,7 @@ impl App {
             }
         }
         // Check crossfader
-        if let Some(area) = &self.xfader_area {
+        if let Some(area) = &self.crossfader_area {
             if area.contains(x, y) {
                 return Some(HitResult::Crossfader);
             }
@@ -3517,7 +3721,11 @@ impl App {
                         let _ = client.set_volume(vol);
                         let _ = client.set_lpf(channel.lpf_freq);
                         let _ = client.set_hpf(channel.hpf_freq);
-                        let _ = client.set_eq(channel.eq_low, channel.eq_mid, channel.eq_high);
+                        // Apply kill switches: extreme cut values
+                        let effective_low = if channel.eq_low_kill { -24.0 } else { channel.eq_low };
+                        let effective_mid = if channel.eq_mid_kill { -24.0 } else { channel.eq_mid };
+                        let effective_high = if channel.eq_high_kill { -24.0 } else { channel.eq_high };
+                        let _ = client.set_eq(effective_low, effective_mid, effective_high);
                         let _ = client.set_pan(channel.pan);
                     }
                 }
@@ -3611,7 +3819,11 @@ impl App {
                 let _ = client.set_volume(vol);
                 let _ = client.set_lpf(self.mixer.cue_channel.lpf_freq);
                 let _ = client.set_hpf(self.mixer.cue_channel.hpf_freq);
-                let _ = client.set_eq(self.mixer.cue_channel.eq_low, self.mixer.cue_channel.eq_mid, self.mixer.cue_channel.eq_high);
+                // Apply kill switches: extreme cut values
+                let effective_low = if self.mixer.cue_channel.eq_low_kill { -24.0 } else { self.mixer.cue_channel.eq_low };
+                let effective_mid = if self.mixer.cue_channel.eq_mid_kill { -24.0 } else { self.mixer.cue_channel.eq_mid };
+                let effective_high = if self.mixer.cue_channel.eq_high_kill { -24.0 } else { self.mixer.cue_channel.eq_high };
+                let _ = client.set_eq(effective_low, effective_mid, effective_high);
                 let _ = client.set_pan(self.mixer.cue_channel.pan);
             }
 
@@ -4120,6 +4332,10 @@ impl App {
                     self.sync_deck_volume(true);
                     self.sync_deck_volume(false);
                 }
+                // Master EQ: sync to all decks
+                if self.mixer.selected_global.eq_band_index().is_some() {
+                    self.sync_master_eq_to_all_decks();
+                }
             }
         }
     }
@@ -4130,9 +4346,9 @@ impl App {
             .map(|c| (c.eq_low, c.eq_mid, c.eq_high, c.eq_low_kill, c.eq_mid_kill, c.eq_high_kill))
             .unwrap_or((0.0, 0.0, 0.0, false, false, false));
 
-        let effective_low = if low_kill { -96.0 } else { low };
-        let effective_mid = if mid_kill { -96.0 } else { mid };
-        let effective_high = if high_kill { -96.0 } else { high };
+        let effective_low = if low_kill { -24.0 } else { low };
+        let effective_mid = if mid_kill { -24.0 } else { mid };
+        let effective_high = if high_kill { -24.0 } else { high };
 
         if let Some(client) = self.mpv_for_channel(channel_idx) {
             let _ = client.set_eq(effective_low, effective_mid, effective_high);
@@ -4169,6 +4385,23 @@ impl App {
         }
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_hpf(freq);
+        }
+        self.sync_capture_dsp_params();
+    }
+
+    /// Sync master EQ to all active decks (MPV + SuperCollider)
+    fn sync_master_eq_to_all_decks(&mut self) {
+        use crate::state::MASTER_EQ_FREQUENCIES;
+        let bands = self.mixer.master.master_eq;
+
+        // Send to all 3 MPV decks
+        for ch_idx in 0..3 {
+            if let Some(client) = self.mpv_for_channel(ch_idx) {
+                let _ = client.set_master_eq(&bands, &MASTER_EQ_FREQUENCIES);
+            }
+            if let Some(client) = self.sc_for_channel(ch_idx) {
+                let _ = client.set_master_eq(&bands);
+            }
         }
         self.sync_capture_dsp_params();
     }

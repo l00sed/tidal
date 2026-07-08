@@ -230,26 +230,51 @@ impl SuperColliderClient {
         self.set_synth_param("hpf", freq.clamp(20.0, 20000.0))
     }
 
-    /// Set EQ low band gain (-12 to +12 dB)
-    pub fn set_eq_low(&self, db: f32) -> Result<(), String> {
-        self.set_synth_param("eqLow", db.clamp(-12.0, 12.0))
-    }
-
-    /// Set EQ mid band gain (-12 to +12 dB)
-    pub fn set_eq_mid(&self, db: f32) -> Result<(), String> {
-        self.set_synth_param("eqMid", db.clamp(-12.0, 12.0))
-    }
-
-    /// Set EQ high band gain (-12 to +12 dB)
-    pub fn set_eq_high(&self, db: f32) -> Result<(), String> {
-        self.set_synth_param("eqHigh", db.clamp(-12.0, 12.0))
-    }
 
     /// Set EQ (all three bands)
     pub fn set_eq(&self, low: f32, mid: f32, high: f32) -> Result<(), String> {
-        self.set_eq_low(low)?;
-        self.set_eq_mid(mid)?;
-        self.set_eq_high(high)
+        // Low: lowpass cutoff 20000->500Hz (only active when cutting)
+        if low < 0.0 {
+            let normalized = (-low / 24.0).clamp(0.0, 1.0);
+            let low_freq: f32 = 20000.0 * (500.0f32 / 20000.0).powf(normalized);
+            self.set_synth_param("eqLowFreq", low_freq.clamp(20.0, 20000.0))?;
+        } else {
+            self.set_synth_param("eqLowFreq", 20000.0)?;
+        }
+
+        // Mid: sweepable peak EQ frequency and gain
+        if mid.abs() > 0.1 {
+            let normalized = mid.abs() / 24.0;
+            let mid_freq: f32 = 200.0 * (8000.0f32 / 200.0).powf(normalized);
+            let mid_gain: f32 = (mid / 2.0).clamp(-12.0, 12.0);
+            self.set_synth_param("eqMidFreq", mid_freq.clamp(20.0, 20000.0))?;
+            self.set_synth_param("eqMidGain", mid_gain)?;
+        } else {
+            self.set_synth_param("eqMidFreq", 1000.0)?;
+            self.set_synth_param("eqMidGain", 0.0)?;
+        }
+
+        // High: highpass cutoff 20->5000Hz (only active when cutting)
+        if high < 0.0 {
+            let normalized = (-high / 24.0).clamp(0.0, 1.0);
+            let high_freq: f32 = 20.0 * (5000.0f32 / 20.0).powf(normalized);
+            self.set_synth_param("eqHighFreq", high_freq.clamp(20.0, 20000.0))
+        } else {
+            self.set_synth_param("eqHighFreq", 20.0)
+        }
+    }
+
+    /// Set 10-band master EQ gains (dB)
+    /// Bands: 32Hz, 64Hz, 125Hz, 250Hz, 500Hz, 1kHz, 2kHz, 4kHz, 8kHz, 16kHz
+    pub fn set_master_eq(&self, bands: &[f32; 10]) -> Result<(), String> {
+        let param_names = [
+            "mEq32", "mEq64", "mEq125", "mEq250", "mEq500",
+            "mEq1k", "mEq2k", "mEq4k", "mEq8k", "mEq16k",
+        ];
+        for (name, &gain) in param_names.iter().zip(bands.iter()) {
+            self.set_synth_param(name, gain.clamp(-12.0, 12.0))?;
+        }
+        Ok(())
     }
 
     /// Set pan (-1.0 = left, 0.0 = center, 1.0 = right)
