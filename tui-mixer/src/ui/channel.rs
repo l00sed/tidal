@@ -84,17 +84,6 @@ impl<'a> ChannelStrip<'a> {
         self.editing && self.is_control_selected(control)
     }
 
-    fn freq_to_normalized(freq: f32) -> f32 {
-        let log_min = 20f32.log10();
-        let log_max = 20000f32.log10();
-        let log_freq = freq.clamp(20.0, 20000.0).log10();
-        (log_freq - log_min) / (log_max - log_min)
-    }
-
-    /// Convert LPF frequency to normalized value (reversed: 20000Hz=0%, 200Hz=100%)
-    fn lpf_to_normalized(freq: f32) -> f32 {
-        1.0 - Self::freq_to_normalized(freq)
-    }
 }
 
 impl<'a> Widget for ChannelStrip<'a> {
@@ -465,22 +454,22 @@ impl<'a> ChannelStrip<'a> {
             buf.set_string(sep_x, area.y - 1, "┬", sep_style);
         }
 
-        // Render filters stacked vertically (HPF on top, LPF on bottom)
+        // Render filter controls stacked vertically (Cutoff on top, Freq on bottom)
         let filter_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(50),  // HPF
-                Constraint::Percentage(50),  // LPF
+                Constraint::Percentage(50),  // Filter Cutoff
+                Constraint::Percentage(50),  // Filter Freq
             ])
             .split(sections[4]);
 
-        self.render_filter_bar(filter_chunks[0], buf, "HPF",
-            Self::freq_to_normalized(self.channel.hpf_freq),
-            self.is_control_selected(ChannelControl::HighPassFilter));
+        self.render_filter_bar(filter_chunks[0], buf,
+            self.channel.filter_cutoff,
+            self.is_control_selected(ChannelControl::FilterCutoff));
 
-        self.render_filter_bar(filter_chunks[1], buf, "LPF",
-            Self::lpf_to_normalized(self.channel.lpf_freq),
-            self.is_control_selected(ChannelControl::LowPassFilter));
+        self.render_filter_bar(filter_chunks[1], buf,
+            self.channel.filter_freq,
+            self.is_control_selected(ChannelControl::FilterFreq));
 
         Some(sep_x)
     }
@@ -623,27 +612,16 @@ impl<'a> ChannelStrip<'a> {
 
     /// Render a compact vertical filter bar (HPF/LPF)
     fn render_filter_bar(&self, area: Rect, buf: &mut Buffer,
-                         label: &str, normalized_value: f32, selected: bool) {
-        if area.width < 1 || area.height < 4 {
+                         value: f32, selected: bool) {
+        if area.width < 1 || area.height < 3 {
             return;
         }
 
         let editing = selected && self.editing;
 
-        // Top label (centered)
-        let label_style = if editing {
-            Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
-        } else if selected {
-            Style::default().fg(TEXT_EDITING)
-        } else {
-            Style::default().fg(TEXT_GHOST)
-        };
-        let label_x = area.x + (area.width.saturating_sub(label.len() as u16)) / 2;
-        buf.set_string(label_x, area.y, label, label_style);
-
         // Knob icon progression (0.0 to 1.0)
         let knob_icons = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"];
-        let icon_index = (normalized_value * (knob_icons.len() - 1) as f32).round() as usize;
+        let icon_index = (value * (knob_icons.len() - 1) as f32).round() as usize;
         let knob_char = knob_icons[icon_index];
 
         // Knob style
@@ -655,9 +633,9 @@ impl<'a> ChannelStrip<'a> {
             Style::default().fg(Color::Rgb(100, 100, 100))
         };
 
-        // Draw the knob below the label (centered)
-        let knob_y = area.y + 1;
-        let knob_x = area.x + (area.width - 1) / 2;
+        // Draw the knob centered in the area
+        let knob_y = area.y + area.height / 2;
+        let knob_x = area.x + (area.width.saturating_sub(1)) / 2;
         buf.set_string(knob_x, knob_y, knob_char, knob_style);
     }
     
@@ -858,7 +836,7 @@ impl<'a> MasterStrip<'a> {
         let bar_step = 2u16;
         let total_width = num_bands * bar_step;
         let start_x = if area.width > total_width {
-            (area.width - total_width) / 2
+            (area.width - total_width + 1) / 2
         } else {
             0
         };
@@ -1069,7 +1047,7 @@ impl<'a> Widget for MasterStrip<'a> {
         let bar_step = 2u16;
         let total_width = num_bands * bar_step;
         let start_x = if eq_area.width > total_width {
-            (eq_area.width - total_width) / 2
+            (eq_area.width - total_width + 1) / 2
         } else {
             0
         };

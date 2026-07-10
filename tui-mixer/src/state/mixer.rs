@@ -52,10 +52,10 @@ pub struct MixerChannel {
     pub solo: bool,
     /// Pan position (-1.0 left, 0.0 center, 1.0 right)
     pub pan: f32,
-    /// Low-pass filter frequency (20-20000 Hz, slam shortcuts: 200Hz-20kHz)
-    pub lpf_freq: f32,
-    /// High-pass filter frequency (20-20000 Hz, slam shortcuts: 20Hz-3kHz)
-    pub hpf_freq: f32,
+    /// Filter cutoff amount (0.0 = off, 1.0 = full intensity)
+    pub filter_cutoff: f32,
+    /// Filter frequency position (0.0 = low/20Hz, 0.5 = center/1kHz, 1.0 = high/20kHz)
+    pub filter_freq: f32,
     /// Low shelf EQ gain (-15 to +15 dB)
     pub eq_low: f32,
     /// Mid EQ gain (-15 to +15 dB)
@@ -142,8 +142,8 @@ impl MixerChannel {
             muted: false,
             solo: false,
             pan: 0.0,
-            lpf_freq: 20000.0, // Wide open
-            hpf_freq: 20.0,    // Wide open
+            filter_cutoff: 0.0,   // Off
+            filter_freq: 0.5,     // Center (1kHz)
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,
@@ -192,8 +192,8 @@ pub enum ChannelControl {
     Bpm,
     Fader,
     Pan,
-    LowPassFilter,
-    HighPassFilter,
+    FilterCutoff,
+    FilterFreq,
     EqLow,
     EqLowKill,
     EqMid,
@@ -217,8 +217,8 @@ impl ChannelControl {
             ChannelControl::Bpm => "BPM",
             ChannelControl::Fader => "GAIN",
             ChannelControl::Pan => "PAN",
-            ChannelControl::LowPassFilter => "LPF",
-            ChannelControl::HighPassFilter => "HPF",
+            ChannelControl::FilterCutoff => "CUT",
+            ChannelControl::FilterFreq => "FREQ",
             ChannelControl::EqLow => "LOW",
             ChannelControl::EqLowKill => "L×",
             ChannelControl::EqMid => "MID",
@@ -241,8 +241,8 @@ impl ChannelControl {
                 | ChannelControl::Pan
                 | ChannelControl::Scrub
                 | ChannelControl::Bpm
-                | ChannelControl::LowPassFilter
-                | ChannelControl::HighPassFilter
+                | ChannelControl::FilterCutoff
+                | ChannelControl::FilterFreq
                 | ChannelControl::EqLow
                 | ChannelControl::EqMid
                 | ChannelControl::EqHigh
@@ -261,8 +261,8 @@ impl ChannelControl {
             ChannelControl::EqHigh | ChannelControl::EqHighKill => 3,
             ChannelControl::EqMid | ChannelControl::EqMidKill => 4,
             ChannelControl::EqLow | ChannelControl::EqLowKill => 5,
-            ChannelControl::HighPassFilter => 6,
-            ChannelControl::LowPassFilter => 7,
+            ChannelControl::FilterCutoff => 6,
+            ChannelControl::FilterFreq => 7,
             ChannelControl::Pan => 8,
             ChannelControl::Fader => 9,
             ChannelControl::Mute => 10,
@@ -281,8 +281,8 @@ impl ChannelControl {
             3 => Some(ChannelControl::EqHigh),
             4 => Some(ChannelControl::EqMid),
             5 => Some(ChannelControl::EqLow),
-            6 => Some(ChannelControl::HighPassFilter),
-            7 => Some(ChannelControl::LowPassFilter),
+            6 => Some(ChannelControl::FilterCutoff),
+            7 => Some(ChannelControl::FilterFreq),
             8 => Some(ChannelControl::Pan),
             9 => Some(ChannelControl::Fader),
             10 => Some(ChannelControl::Mute),
@@ -303,8 +303,8 @@ impl ChannelControl {
             ChannelControl::EqHigh | ChannelControl::EqHighKill => 0,
             ChannelControl::EqMid | ChannelControl::EqMidKill => 1,
             ChannelControl::EqLow | ChannelControl::EqLowKill => 2,
-            ChannelControl::HighPassFilter => 3,
-            ChannelControl::LowPassFilter => 4,
+            ChannelControl::FilterCutoff => 3,
+            ChannelControl::FilterFreq => 4,
             ChannelControl::Pan => 5,
             ChannelControl::Fader => 6,
             ChannelControl::Mute => 7,
@@ -321,8 +321,8 @@ impl ChannelControl {
             0 => Some(ChannelControl::EqHigh),
             1 => Some(ChannelControl::EqMid),
             2 => Some(ChannelControl::EqLow),
-            3 => Some(ChannelControl::HighPassFilter),
-            4 => Some(ChannelControl::LowPassFilter),
+            3 => Some(ChannelControl::FilterCutoff),
+            4 => Some(ChannelControl::FilterFreq),
             5 => Some(ChannelControl::Pan),
             6 => Some(ChannelControl::Fader),
             7 => Some(ChannelControl::Mute),
@@ -601,11 +601,11 @@ impl MixerState {
         )
     }
 
-    /// Check if the current control is in the filter section (HPF/LPF)
+    /// Check if the current control is in the filter section
     pub fn is_in_filter_section(&self) -> bool {
         matches!(
             self.selected_control,
-            ChannelControl::HighPassFilter | ChannelControl::LowPassFilter
+            ChannelControl::FilterCutoff | ChannelControl::FilterFreq
         )
     }
 
@@ -628,8 +628,8 @@ impl MixerState {
             target_channel.muted = self.cue_channel.muted;
             target_channel.solo = self.cue_channel.solo;
             target_channel.pan = self.cue_channel.pan;
-            target_channel.lpf_freq = self.cue_channel.lpf_freq;
-            target_channel.hpf_freq = self.cue_channel.hpf_freq;
+            target_channel.filter_cutoff = self.cue_channel.filter_cutoff;
+            target_channel.filter_freq = self.cue_channel.filter_freq;
             target_channel.eq_low = self.cue_channel.eq_low;
             target_channel.eq_mid = self.cue_channel.eq_mid;
             target_channel.eq_high = self.cue_channel.eq_high;
@@ -777,16 +777,11 @@ impl MixerState {
                         ChannelControl::Pan => {
                             channel.pan = (channel.pan + delta).clamp(-1.0, 1.0);
                         }
-                        ChannelControl::LowPassFilter => {
-                            // Reverse delta for LPF so k/l increases knob position (decreases frequency)
-                            let log_freq = channel.lpf_freq.log10();
-                            let new_log = (log_freq - delta * 4.0).clamp(1.3, 4.3); // 20Hz - 20000Hz
-                            channel.lpf_freq = 10f32.powf(new_log);
+                        ChannelControl::FilterCutoff => {
+                            channel.filter_cutoff = (channel.filter_cutoff + delta).clamp(0.0, 1.0);
                         }
-                        ChannelControl::HighPassFilter => {
-                            let log_freq = channel.hpf_freq.log10();
-                            let new_log = (log_freq + delta * 4.0).clamp(1.3, 4.3); // 20Hz - 20000Hz
-                            channel.hpf_freq = 10f32.powf(new_log);
+                        ChannelControl::FilterFreq => {
+                            channel.filter_freq = (channel.filter_freq + delta).clamp(0.0, 1.0);
                         }
                         ChannelControl::EqLow => {
                             channel.eq_low = (channel.eq_low + delta * 6.0).clamp(-24.0, 24.0);
@@ -998,9 +993,11 @@ impl MixerState {
             let eq_mult = (low_lin + mid_lin + high_lin) / 3.0;
 
             // Filter attenuation (simplified — full cutoff = near silence)
-            let lpf_factor = if channel.lpf_freq < 200.0 { channel.lpf_freq / 200.0 } else { 1.0 };
-            let hpf_factor = if channel.hpf_freq > 5000.0 { 1.0 - (channel.hpf_freq - 5000.0) / 15000.0 } else { 1.0 };
-            let filter_mult = lpf_factor * hpf_factor.max(0.05);
+            let filter_mult = if channel.filter_cutoff > 0.01 {
+                1.0 - channel.filter_cutoff * 0.9  // Up to 90% attenuation at full cutoff
+            } else {
+                1.0
+            };
 
             // Crossfader gain
             let xf_gain = if i == self.dj.deck_a_channel {

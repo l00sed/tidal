@@ -264,6 +264,172 @@ impl SelectedPane {
     }
 }
 
+/// Horizontal layout for the mixer row.
+///
+/// The 5 columns, left to right, are: Deck A, DJ Center (PADS), Deck B,
+/// Deck C, Master. When the viewport is too narrow for everything, Master
+/// drops into an overflow region to the right. Navigation reveals it by
+/// scrolling the viewport left, dropping the fewest leftmost columns needed
+/// so the selected column (and as many neighbours as fit) stay visible.
+#[derive(Debug, Clone, Copy)]
+pub struct MixerLayout {
+    pub deck_a: u16,
+    pub dj: u16,
+    pub deck_b: u16,
+    pub deck_c: u16,
+    pub master: u16,
+    /// First visible column index (0=DeckA, 1=DJ, 2=DeckB, 3=DeckC, 4=Master).
+    pub start: u8,
+    /// Last visible column index (inclusive).
+    pub end: u8,
+}
+
+impl MixerLayout {
+    pub fn compute(
+        viewport_w: u16,
+        selected: SelectedPane,
+        cur_start: Option<usize>,
+        cur_end: Option<usize>,
+    ) -> Self {
+        const DECK_MAX: u16 = 21;
+        const DECK_MIN: u16 = 13;
+        const MASTER: u16 = 21;
+        const DJ_MIN: u16 = 25;
+        const MIN_CORE: u16 = DECK_MIN * 3 + DJ_MIN; // 64
+
+        // Minimum widths of the 5 columns, left to right.
+        let mins = [DECK_MIN, DJ_MIN, DECK_MIN, DECK_MIN, MASTER];
+
+        // Case 1: all 5 columns fit -> full layout, no scrolling.
+        if viewport_w >= MIN_CORE + MASTER {
+            let w = ((viewport_w - MASTER - DJ_MIN) / 3).clamp(DECK_MIN, DECK_MAX);
+            return Self {
+                deck_a: w,
+                dj: viewport_w - w * 3 - MASTER,
+                deck_b: w,
+                deck_c: w,
+                master: MASTER,
+                start: 0,
+                end: 4,
+            };
+        }
+
+        // Case 2: overflow. Master is not in the normal 5-column layout.
+        // Build the window of visible columns. Master always anchors the right
+        // edge when selected. For other panes, center the window around the
+        // selected column so it's always visible.
+        let selected_col = match selected {
+            SelectedPane::DeckA => 0usize,
+            SelectedPane::DjCenter | SelectedPane::Loops | SelectedPane::Crossfader => 1,
+            SelectedPane::DeckB => 2,
+            SelectedPane::DeckC => 3,
+            SelectedPane::Master => 4,
+        };
+
+        let (start, end) = if selected == SelectedPane::Master {
+            // Master selected: anchor right edge at Master, grow left.
+            let mut s = 4usize;
+            let mut used = mins[4];
+            while s > 0 {
+                let cand = mins[s - 1];
+                if used + cand <= viewport_w {
+                    used += cand;
+                    s -= 1;
+                } else {
+                    break;
+                }
+            }
+            (s, 4usize)
+        } else if let (Some(cs), Some(ce)) = (cur_start, cur_end) {
+            // We have a current window — only shift it if selected_col
+            // is outside.  This keeps the window stable when navigating
+            // between already-visible panes.
+            let mut s = cs;
+            let mut e = ce;
+            if selected_col < s {
+                // Selected is left of window — shift left until visible.
+                s = selected_col;
+                e = s + (ce - cs);
+            } else if selected_col > e {
+                // Selected is right of window — shift right until visible.
+                e = selected_col;
+                s = e - (ce - cs);
+            }
+            // Clamp to valid range.
+            s = s.min(3);
+            e = e.max(s).min(3);
+            (s, e)
+        } else {
+            // No current window — find largest window around selected_col.
+            let mut s = selected_col;
+            let mut e = selected_col;
+            let mut used = mins[selected_col];
+
+            loop {
+                let fit_left = s > 0 && used + mins[s - 1] <= viewport_w;
+                let fit_right = e < 3 && used + mins[e + 1] <= viewport_w;
+
+                if fit_left && fit_right {
+                    if mins[s - 1] <= mins[e + 1] {
+                        used += mins[s - 1];
+                        s -= 1;
+                    } else {
+                        used += mins[e + 1];
+                        e += 1;
+                    }
+                } else if fit_left {
+                    used += mins[s - 1];
+                    s -= 1;
+                } else if fit_right {
+                    used += mins[e + 1];
+                    e += 1;
+                } else {
+                    break;
+                }
+            }
+            (s, e)
+        };
+
+        let min_total: u16 = (start..=end).map(|i| mins[i]).sum();
+        let extra = viewport_w.saturating_sub(min_total);
+
+        let mut widths = [0u16; 5];
+        if start == 4 && end == 4 {
+            // Master is the only visible column — give it all the space.
+            widths[4] = viewport_w;
+        } else {
+            // Master stays at its minimum (fits the full EQ); distribute the
+            // extra space across the other visible columns.
+            let non_master_visible: u16 = (start..=end).filter(|&i| i != 4).count() as u16;
+            let per = extra / non_master_visible;
+            let rem = extra % non_master_visible;
+
+            let mut assigned = 0u16;
+            for i in start..=end {
+                widths[i] = if i == 4 {
+                    MASTER
+                } else {
+                    let add = per + if assigned < rem { 1 } else { 0 };
+                    assigned += 1;
+                    mins[i] + add
+                };
+            }
+        }
+        // Dropped columns keep their minimum width (they sit off-screen left).
+        widths[..start].copy_from_slice(&mins[..start]);
+
+        Self {
+            deck_a: widths[0],
+            dj: widths[1],
+            deck_b: widths[2],
+            deck_c: widths[3],
+            master: widths[4],
+            start: start as u8,
+            end: end as u8,
+        }
+    }
+}
+
 /// Main application state
 pub struct App {
     pub mixer: MixerState,
@@ -316,8 +482,10 @@ pub struct App {
     pub terminal_height: u16,
     // Terminal width for horizontal pane scrolling
     pub term_width: u16,
-    // Horizontal scroll offset for mixer panes (pixels scrolled past on the left)
-    pub mixer_scroll_offset: usize,
+    // Current mixer window bounds (column indices) — used to avoid
+    // unnecessary window shifts when navigating between visible panes.
+    pub mixer_window_start: usize,
+    pub mixer_window_end: usize,
     // Audio output devices
     pub master_output: AudioOutput,
     pub cue_output: AudioOutput,
@@ -445,7 +613,8 @@ impl App {
             rack_scroll_offset: 0,
             terminal_height: 24,
             term_width: 0,
-            mixer_scroll_offset: 0,
+            mixer_window_start: 0,
+            mixer_window_end: 4,
             master_output: AudioOutput::new(),
             cue_output: AudioOutput::new(),
             selected_master_output_idx: 0,
@@ -1079,52 +1248,14 @@ impl App {
     /// pane positions at any terminal width.
     fn ensure_mixer_pane_visible(&mut self) {
         let viewport_w = self.term_width.max(1) as u16;
-
-        // Mirror layout calculation from MixerView::render_mixer_full_width
-        let deck_max_width = 21u16;
-        let master_width = 21u16;
-        let min_dj_width = 20u16;
-        let deck_width = if viewport_w >= deck_max_width * 3 + master_width + min_dj_width {
-            deck_max_width
-        } else {
-            ((viewport_w.saturating_sub(master_width + min_dj_width)) / 3).max(10)
-        };
-        let dj_center_width = viewport_w.saturating_sub(deck_width * 3 + master_width);
-
-        // Pane x-positions (absolute, matching renderer column arrangement)
-        let pane_xs: [u16; 7] = [
-            0,                                  // DeckA
-            deck_width,                         // DjCenter
-            deck_width,                         // Loops (same column)
-            deck_width,                         // Crossfader (same column)
-            deck_width + dj_center_width,       // DeckB
-            deck_width * 2 + dj_center_width,   // DeckC
-            deck_width * 3 + dj_center_width,   // Master
-        ];
-
-        let idx = match self.selected_pane {
-            SelectedPane::DeckA => 0,
-            SelectedPane::DjCenter => 1,
-            SelectedPane::Loops => 2,
-            SelectedPane::Crossfader => 3,
-            SelectedPane::DeckB => 4,
-            SelectedPane::DeckC => 5,
-            SelectedPane::Master => 6,
-        };
-
-        let pane_x = pane_xs[idx];
-
-        // If all panes fit in the viewport, no scrolling needed
-        let total_width = deck_width * 3 + dj_center_width + master_width;
-        if total_width <= viewport_w {
-            self.mixer_scroll_offset = 0;
-        } else {
-            // Snap selected pane to left edge of viewport
-            self.mixer_scroll_offset = pane_x as usize;
-            // Clamp so we don't scroll past the last pane
-            let max_scroll = total_width - viewport_w;
-            self.mixer_scroll_offset = self.mixer_scroll_offset.min(max_scroll as usize);
-        }
+        let layout = MixerLayout::compute(
+            viewport_w,
+            self.selected_pane,
+            Some(self.mixer_window_start),
+            Some(self.mixer_window_end),
+        );
+        self.mixer_window_start = layout.start as usize;
+        self.mixer_window_end = layout.end as usize;
     }
 
     /// Mode 2: Control Select - navigate controls within pane
@@ -1433,13 +1564,12 @@ impl App {
                                 self.mixer.selected_control = paired;
                             }
                         }
-                        // HPF: move down to LPF
-                        ChannelControl::HighPassFilter => {
-                            self.mixer.selected_control = ChannelControl::LowPassFilter;
+                        // Filter knobs: swap between cutoff and freq
+                        ChannelControl::FilterCutoff => {
+                            self.mixer.selected_control = ChannelControl::FilterFreq;
                         }
-                        // LPF: move down to PAN (exit EQ section)
-                        ChannelControl::LowPassFilter => {
-                            self.mixer.selected_control = ChannelControl::Pan;
+                        ChannelControl::FilterFreq => {
+                            self.mixer.selected_control = ChannelControl::FilterCutoff;
                         }
                         _ => {}
                     }
@@ -1517,13 +1647,12 @@ impl App {
                                 self.mixer.selected_control = paired;
                             }
                         }
-                        // HPF: move up to BPM (exit EQ section)
-                        ChannelControl::HighPassFilter => {
-                            self.mixer.selected_control = ChannelControl::Bpm;
+                        // Filter knobs: swap between cutoff and freq
+                        ChannelControl::FilterCutoff => {
+                            self.mixer.selected_control = ChannelControl::FilterFreq;
                         }
-                        // LPF: move up to HPF
-                        ChannelControl::LowPassFilter => {
-                            self.mixer.selected_control = ChannelControl::HighPassFilter;
+                        ChannelControl::FilterFreq => {
+                            self.mixer.selected_control = ChannelControl::FilterCutoff;
                         }
                         _ => {}
                     }
@@ -1644,8 +1773,8 @@ impl App {
                     ChannelControl::EqHigh => ChannelControl::EqMid,
                     ChannelControl::EqHighKill => ChannelControl::EqMidKill,
                     // HPF/LPF: move left to H
-                    ChannelControl::HighPassFilter => ChannelControl::EqHigh,
-                    ChannelControl::LowPassFilter => ChannelControl::EqHigh,
+                    ChannelControl::FilterCutoff => ChannelControl::EqHigh,
+                    ChannelControl::FilterFreq => ChannelControl::EqHigh,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1680,9 +1809,9 @@ impl App {
                     ChannelControl::EqMidKill => ChannelControl::EqLowKill,
                     ChannelControl::EqHigh => ChannelControl::EqMid,
                     ChannelControl::EqHighKill => ChannelControl::EqMidKill,
-                    // HPF/LPF: move left to H
-                    ChannelControl::HighPassFilter => ChannelControl::EqHigh,
-                    ChannelControl::LowPassFilter => ChannelControl::EqHigh,
+                    // Filter: move left to H
+                    ChannelControl::FilterCutoff => ChannelControl::EqHigh,
+                    ChannelControl::FilterFreq => ChannelControl::EqHigh,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1756,9 +1885,9 @@ impl App {
                     ChannelControl::EqMidKill => ChannelControl::EqHighKill,
                     ChannelControl::EqHigh => ChannelControl::EqHigh, // stay on H (rightmost)
                     ChannelControl::EqHighKill => ChannelControl::EqHighKill,
-                    // HPF/LPF: move right to L
-                    ChannelControl::HighPassFilter => ChannelControl::EqLow,
-                    ChannelControl::LowPassFilter => ChannelControl::EqLow,
+                    // Filter: move right to L
+                    ChannelControl::FilterCutoff => ChannelControl::EqLow,
+                    ChannelControl::FilterFreq => ChannelControl::EqLow,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1793,9 +1922,9 @@ impl App {
                     ChannelControl::EqMidKill => ChannelControl::EqHighKill,
                     ChannelControl::EqHigh => ChannelControl::EqHigh, // stay on H (rightmost)
                     ChannelControl::EqHighKill => ChannelControl::EqHighKill,
-                    // HPF/LPF: move right to L
-                    ChannelControl::HighPassFilter => ChannelControl::EqLow,
-                    ChannelControl::LowPassFilter => ChannelControl::EqLow,
+                    // Filter: move right to L
+                    ChannelControl::FilterCutoff => ChannelControl::EqLow,
+                    ChannelControl::FilterFreq => ChannelControl::EqLow,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1972,14 +2101,14 @@ impl App {
                     self.start_scrub(-1.0, true);
                 } else if self.is_filter_selected() {
                     match self.mixer.selected_control {
-                        ChannelControl::LowPassFilter => {
+                        ChannelControl::FilterCutoff => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
-                                channel.lpf_freq = 200.0;
+                                channel.filter_cutoff = 0.0;
                             }
                         }
-                        ChannelControl::HighPassFilter => {
+                        ChannelControl::FilterFreq => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
-                                channel.hpf_freq = 20.0;
+                                channel.filter_freq = 0.0;
                             }
                         }
                         _ => {}
@@ -2002,14 +2131,14 @@ impl App {
                     self.start_scrub(1.0, true);
                 } else if self.is_filter_selected() {
                     match self.mixer.selected_control {
-                        ChannelControl::LowPassFilter => {
+                        ChannelControl::FilterCutoff => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
-                                channel.lpf_freq = 20000.0;
+                                channel.filter_cutoff = 1.0;
                             }
                         }
-                        ChannelControl::HighPassFilter => {
+                        ChannelControl::FilterFreq => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
-                                channel.hpf_freq = 3000.0;
+                                channel.filter_freq = 1.0;
                             }
                         }
                         _ => {}
@@ -2146,8 +2275,8 @@ impl App {
                             // Reset to x1.00: target_bpm = base BPM from first detection
                             channel.target_bpm = if channel.base_bpm > 0.0 { channel.base_bpm } else { 120.0 };
                         }
-                        ChannelControl::LowPassFilter => channel.lpf_freq = 20000.0,
-                        ChannelControl::HighPassFilter => channel.hpf_freq = 20.0,
+                        ChannelControl::FilterCutoff => channel.filter_cutoff = 0.0,
+                        ChannelControl::FilterFreq => channel.filter_freq = 0.5,
                         ChannelControl::EqLow => channel.eq_low = 0.0,
                         ChannelControl::EqMid => channel.eq_mid = 0.0,
                         ChannelControl::EqHigh => channel.eq_high = 0.0,
@@ -2185,8 +2314,8 @@ impl App {
             channel.eq_low_kill = false;
             channel.eq_mid_kill = false;
             channel.eq_high_kill = false;
-            channel.lpf_freq = 20000.0;
-            channel.hpf_freq = 20.0;
+            channel.filter_cutoff = 0.0;
+            channel.filter_freq = 0.5;
             channel.muted = false;
             channel.solo = false;
             channel.target_bpm = if channel.base_bpm > 0.0 { channel.base_bpm } else { 120.0 };
@@ -2199,8 +2328,7 @@ impl App {
         self.sync_volume_to_mpv(ch_idx);
         self.sync_pan_to_mpv(ch_idx);
         self.sync_eq_to_mpv(ch_idx);
-        self.sync_lpf_to_mpv(ch_idx);
-        self.sync_hpf_to_mpv(ch_idx);
+        self.sync_filter_to_mpv(ch_idx);
         self.sync_mute_to_mpv(ch_idx);
         self.sync_bpm_to_mpv(ch_idx);
         self.mixer.solo_active = false;
@@ -2223,7 +2351,7 @@ impl App {
         matches!(self.mixer.focus, SelectionFocus::Channel(_))
             && matches!(
                 self.mixer.selected_control,
-                ChannelControl::LowPassFilter | ChannelControl::HighPassFilter
+                ChannelControl::FilterCutoff | ChannelControl::FilterFreq
             )
     }
 
@@ -2838,15 +2966,11 @@ impl App {
                             ChannelControl::Pan => {
                                 channel.pan = (start_value + delta * sensitivity * 0.5).clamp(-1.0, 1.0);
                             }
-                            ChannelControl::LowPassFilter => {
-                                let log_start = start_value.log10();
-                                let new_log = (log_start + delta * 0.02).clamp(1.3, 4.3);
-                                channel.lpf_freq = 10f32.powf(new_log);
+                            ChannelControl::FilterCutoff => {
+                                channel.filter_cutoff = (start_value + delta * sensitivity * 0.5).clamp(0.0, 1.0);
                             }
-                            ChannelControl::HighPassFilter => {
-                                let log_start = start_value.log10();
-                                let new_log = (log_start + delta * 0.02).clamp(1.3, 4.3);
-                                channel.hpf_freq = 10f32.powf(new_log);
+                            ChannelControl::FilterFreq => {
+                                channel.filter_freq = (start_value + delta * sensitivity * 0.5).clamp(0.0, 1.0);
                             }
                             ChannelControl::EqLow => {
                                 channel.eq_low = (start_value + delta * 0.5).clamp(-15.0, 15.0);
@@ -2900,7 +3024,7 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                // Release gate-mode pads
+                // Release gate-mode pads (areas are in screen coordinates)
                 for &(pad_idx, x, y, w, h) in &self.pad_areas {
                     if mouse.column >= x && mouse.column < x + w
                         && mouse.row >= y && mouse.row < y + h
@@ -2937,6 +3061,8 @@ impl App {
 
     /// General hit-test across all panes
     pub fn hit_test_all(&self, x: u16, y: u16) -> Option<HitResult> {
+        // Areas are in screen coordinates (matching the renderer), so use
+        // mouse position directly — no scroll offset needed.
         // Check channel strips first
         if let Some((idx, ctrl)) = self.hit_test(x, y) {
             return Some(HitResult::Channel(idx, ctrl));
@@ -2995,8 +3121,8 @@ impl App {
         self.mixer.selected_channel().map(|ch| match self.mixer.selected_control {
             ChannelControl::Fader => ch.fader,
             ChannelControl::Pan => ch.pan,
-            ChannelControl::LowPassFilter => ch.lpf_freq,
-            ChannelControl::HighPassFilter => ch.hpf_freq,
+            ChannelControl::FilterCutoff => ch.filter_cutoff,
+            ChannelControl::FilterFreq => ch.filter_freq,
             ChannelControl::EqLow => ch.eq_low,
             ChannelControl::EqMid => ch.eq_mid,
             ChannelControl::EqHigh => ch.eq_high,
@@ -3719,8 +3845,38 @@ impl App {
                         };
                         let vol = (channel.fader * xf_gain * self.mixer.master.fader).clamp(0.0, 1.0);
                         let _ = client.set_volume(vol);
-                        let _ = client.set_lpf(channel.lpf_freq);
-                        let _ = client.set_hpf(channel.hpf_freq);
+                        // Apply unified filter
+                        let cutoff = channel.filter_cutoff;
+                        let freq_pos = channel.filter_freq;
+                        if cutoff > 0.01 {
+                            let intensity = cutoff.powf(1.5);
+                            let log_min = 20f32.log10();
+                            let log_max = 20000f32.log10();
+                            let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
+                            let center = 1000.0;
+                            let cross_low = 500.0;
+                            let cross_high = 2000.0;
+
+                            let (lpf_freq, hpf_freq) = if actual_freq <= cross_low {
+                                (actual_freq, 0.0)
+                            } else if actual_freq >= cross_high {
+                                (0.0, actual_freq)
+                            } else {
+                                let t = (actual_freq - cross_low) / (cross_high - cross_low);
+                                let lp = cross_low + (actual_freq - cross_low) * (1.0 - t);
+                                let hp = cross_high + (actual_freq - cross_high) * t;
+                                (lp, hp)
+                            };
+
+                            if lpf_freq > 0.0 {
+                                let effective_lpf = center - (center - lpf_freq) * intensity;
+                                let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
+                            }
+                            if hpf_freq > 0.0 {
+                                let effective_hpf = center + (hpf_freq - center) * intensity;
+                                let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
+                            }
+                        }
                         // Apply kill switches: extreme cut values
                         let effective_low = if channel.eq_low_kill { -24.0 } else { channel.eq_low };
                         let effective_mid = if channel.eq_mid_kill { -24.0 } else { channel.eq_mid };
@@ -3817,8 +3973,38 @@ impl App {
 
                 let vol = self.mixer.cue_channel.fader;
                 let _ = client.set_volume(vol);
-                let _ = client.set_lpf(self.mixer.cue_channel.lpf_freq);
-                let _ = client.set_hpf(self.mixer.cue_channel.hpf_freq);
+                // Apply unified filter for CUE channel
+                let cutoff = self.mixer.cue_channel.filter_cutoff;
+                let freq_pos = self.mixer.cue_channel.filter_freq;
+                if cutoff > 0.01 {
+                    let intensity = cutoff.powf(1.5);
+                    let log_min = 20f32.log10();
+                    let log_max = 20000f32.log10();
+                    let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
+                    let center = 1000.0;
+                    let cross_low = 500.0;
+                    let cross_high = 2000.0;
+
+                    let (lpf_freq, hpf_freq) = if actual_freq <= cross_low {
+                        (actual_freq, 0.0)
+                    } else if actual_freq >= cross_high {
+                        (0.0, actual_freq)
+                    } else {
+                        let t = (actual_freq - cross_low) / (cross_high - cross_low);
+                        let lp = cross_low + (actual_freq - cross_low) * (1.0 - t);
+                        let hp = cross_high + (actual_freq - cross_high) * t;
+                        (lp, hp)
+                    };
+
+                    if lpf_freq > 0.0 {
+                        let effective_lpf = center - (center - lpf_freq) * intensity;
+                        let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
+                    }
+                    if hpf_freq > 0.0 {
+                        let effective_hpf = center + (hpf_freq - center) * intensity;
+                        let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
+                    }
+                }
                 // Apply kill switches: extreme cut values
                 let effective_low = if self.mixer.cue_channel.eq_low_kill { -24.0 } else { self.mixer.cue_channel.eq_low };
                 let effective_mid = if self.mixer.cue_channel.eq_mid_kill { -24.0 } else { self.mixer.cue_channel.eq_mid };
@@ -4313,11 +4499,8 @@ impl App {
                     ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
                         self.sync_eq_to_mpv(ch_idx);
                     }
-                    ChannelControl::LowPassFilter => {
-                        self.sync_lpf_to_mpv(ch_idx);
-                    }
-                    ChannelControl::HighPassFilter => {
-                        self.sync_hpf_to_mpv(ch_idx);
+                    ChannelControl::FilterCutoff | ChannelControl::FilterFreq => {
+                        self.sync_filter_to_mpv(ch_idx);
                     }
                     _ => {}
                 }
@@ -4359,33 +4542,94 @@ impl App {
         self.sync_capture_dsp_params();
     }
 
-    /// Sync LPF to MPV for a channel
-    fn sync_lpf_to_mpv(&mut self, channel_idx: usize) {
-        let freq = self.mixer.get_channel(channel_idx)
-            .map(|c| c.lpf_freq)
-            .unwrap_or(20000.0);
+    /// Sync unified filter to MPV for a channel
+    ///
+    /// The filter has two controls:
+    /// - `filter_cutoff` (0.0–1.0): intensity of the filter effect
+    /// - `filter_freq` (0.0–1.0): center frequency position
+    ///   - 0.0 = 20 Hz (full lowpass)
+    ///   - 0.5 = 1000 Hz (center / neutral)
+    ///   - 1.0 = 20000 Hz (full highpass)
+    ///
+    /// The frequency knob sweeps smoothly through the range.
+    /// A crossover region (500Hz–2kHz) blends between lowpass and highpass
+    /// so there's no hard switch at the center point.
+    /// The cutoff has a dead zone (0–0.2) then uses a power curve (exponent 3.0).
+    fn sync_filter_to_mpv(&mut self, channel_idx: usize) {
+        let (cutoff, freq_pos) = self.mixer.get_channel(channel_idx)
+            .map(|c| (c.filter_cutoff, c.filter_freq))
+            .unwrap_or((0.0, 0.5));
 
+        // Remove any existing filters first
         if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_lpf(freq);
+            let _ = client.set_lpf(20000.0);
+            let _ = client.set_hpf(20.0);
         }
         if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_lpf(freq);
+            let _ = client.set_lpf(20000.0);
+            let _ = client.set_hpf(20.0);
         }
-        self.sync_capture_dsp_params();
-    }
 
-    /// Sync HPF to MPV/SC for a channel
-    fn sync_hpf_to_mpv(&mut self, channel_idx: usize) {
-        let freq = self.mixer.get_channel(channel_idx)
-            .map(|c| c.hpf_freq)
-            .unwrap_or(20.0);
+        // Apply filter if cutoff > 0
+        if cutoff > 0.01 {
+            // Dead zone for first 2 ticks (0–0.2), then smooth ramp
+            let intensity = if cutoff < 0.2 { 0.0 } else { cutoff.powf(3.0) };
 
-        if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_hpf(freq);
+            // Map freq_pos (0–1) to actual frequency (20–20000 Hz, log scale)
+            let log_min = 20f32.log10();
+            let log_max = 20000f32.log10();
+            let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
+
+            // Crossover region: 500Hz–2kHz
+            // Below 500Hz: pure lowpass
+            // Above 2kHz: pure highpass
+            // Between: blend both filters with complementary intensities
+            let center = 1000.0;
+            let cross_low = 500.0;
+            let cross_high = 2000.0;
+
+            let (lpf_freq, hpf_freq) = if actual_freq <= cross_low {
+                // Pure lowpass region
+                (actual_freq, 0.0)
+            } else if actual_freq >= cross_high {
+                // Pure highpass region
+                (0.0, actual_freq)
+            } else {
+                // Crossover region: blend between lowpass and highpass
+                // t goes from 0.0 (at cross_low) to 1.0 (at cross_high)
+                let t = (actual_freq - cross_low) / (cross_high - cross_low);
+                // Lowpass frequency: sweeps from actual_freq down to cross_low
+                // Highpass frequency: sweeps from cross_high up to actual_freq
+                let lp = cross_low + (actual_freq - cross_low) * (1.0 - t);
+                let hp = cross_high + (actual_freq - cross_high) * t;
+                (lp, hp)
+            };
+
+            // Apply lowpass if active
+            if lpf_freq > 0.0 {
+                // Scale by intensity: at intensity=1 use lpf_freq, at intensity=0 approach center
+                let effective_lpf = center - (center - lpf_freq) * intensity;
+                if let Some(client) = self.mpv_for_channel(channel_idx) {
+                    let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
+                }
+                if let Some(client) = self.sc_for_channel(channel_idx) {
+                    let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
+                }
+            }
+
+            // Apply highpass if active
+            if hpf_freq > 0.0 {
+                // Scale by intensity: at intensity=1 use hpf_freq, at intensity=0 approach center
+                let effective_hpf = center + (hpf_freq - center) * intensity;
+                if let Some(client) = self.mpv_for_channel(channel_idx) {
+                    let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
+                }
+                if let Some(client) = self.sc_for_channel(channel_idx) {
+                    let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
+                }
+            }
         }
-        if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_hpf(freq);
-        }
+
         self.sync_capture_dsp_params();
     }
 

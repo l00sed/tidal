@@ -13,7 +13,7 @@ use crate::ui::channel::{ChannelStrip, MasterStrip};
 use crate::ui::colors::*;
 use crate::ui::sampler::{CountInOverlay, PadConfigPane, RackRow};
 use crate::ui::widgets::Crossfader;
-use crate::app::{Deck, SelectedPane, SourcePickerState, SourcePickerTab, PickerInputMode, OutputPickerTarget};
+use crate::app::{Deck, MixerLayout, SelectedPane, SourcePickerState, SourcePickerTab, PickerInputMode, OutputPickerTarget};
 
 /// The main mixer view
 pub struct MixerView<'a> {
@@ -31,7 +31,6 @@ pub struct MixerView<'a> {
     pad_config_editing: bool,
     racks: Option<&'a RackState>,
     scroll_offset: usize,
-    mixer_scroll_offset: usize,
     master_output_device: Option<&'a str>,
     cue_output_device: Option<&'a str>,
     output_picker_active: bool,
@@ -61,7 +60,6 @@ impl<'a> MixerView<'a> {
             pad_config_editing: false,
             racks: None,
             scroll_offset: 0,
-            mixer_scroll_offset: 0,
             master_output_device: None,
             cue_output_device: None,
             output_picker_active: false,
@@ -127,11 +125,6 @@ impl<'a> MixerView<'a> {
 
     pub fn scroll_offset(mut self, offset: usize) -> Self {
         self.scroll_offset = offset;
-        self
-    }
-
-    pub fn mixer_scroll_offset(mut self, offset: usize) -> Self {
-        self.mixer_scroll_offset = offset;
         self
     }
     
@@ -305,115 +298,103 @@ impl<'a> MixerView<'a> {
         // [Deck A] [DJ Center (pads)] [Deck B] [Deck C] [Master]
         //                   [Loops]
         //                   [Crossfader]
-        let deck_max_width = 21u16;
-        let master_width = 21u16; // Match deck width
-        
-        // Calculate minimum DJ center width (enough for 4x4 pads + borders)
-        let min_dj_width = 20u16;
-        
-        // Calculate deck widths - capped at max, but shrink if needed
-        let total_fixed = deck_max_width * 3 + master_width + min_dj_width;
-        let deck_width = if area.width >= total_fixed {
-            deck_max_width
-        } else {
-            // Shrink decks proportionally
-            ((area.width.saturating_sub(master_width + min_dj_width)) / 3).max(10)
-        };
-        
-        // DJ center gets the remaining space (stretches)
-        let dj_center_width = area.width.saturating_sub(deck_width * 3 + master_width);
+        //
+        // DJ Center must stay ≥20 for the 4×4 pad grid. If there isn't room
+        // for Master at minimum widths, Master is pushed to overflow (right
+        // of viewport, reachable via horizontal scrolling).
+        // Compute the horizontal layout (columns + scroll) from the viewport
+        // width and which pane is selected. Centralised so the renderer,
+        // scroll logic, and mouse hit-testing all agree.
+        let layout = MixerLayout::compute(area.width, self.selected_pane, None, None);
 
         let loops_height = (area.height as f32 * 0.20) as u16;
         let loops_height = loops_height.max(3);
 
-        // Horizontal split: [Deck A] [DJ center] [Deck B] [Deck C] [Master]
+        // Build constraints ONLY for visible columns (start..=end).
+        // This prevents ratatui from squeezing when off-screen columns
+        // inflate the constraint sum beyond the viewport width.
+        let mut constraints = vec![];
+        for i in layout.start..=layout.end {
+            let w = match i {
+                0 => layout.deck_a,
+                1 => layout.dj,
+                2 => layout.deck_b,
+                3 => layout.deck_c,
+                4 => layout.master,
+                _ => unreachable!(),
+            };
+            constraints.push(Constraint::Length(w));
+        }
         let horizontal_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(deck_width),      // Deck A
-                Constraint::Length(dj_center_width), // DJ center column (pads + loops + xfader)
-                Constraint::Length(deck_width),      // Deck B
-                Constraint::Length(deck_width),      // Deck C (full height)
-                Constraint::Length(master_width),    // Master
-            ])
+            .constraints(constraints)
             .split(area);
 
-        // Horizontal scroll: snap to pane boundaries.
-        // The scroll offset is always a pane's left-edge coordinate, so the
-        // first visible pane renders flush against the viewport left. Panes
-        // before the scroll point are skipped; panes past the right edge are
-        // naturally clipped by the Buffer.
-        let scroll = self.mixer_scroll_offset as u16;
-
-        // Within DJ center column, split vertically: [Pads] [Loops] [Crossfader]
-        let crossfader_height = 5u16;
-        let dj_vertical = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(16),                 // Pads area
-                Constraint::Length(loops_height),    // Loops pane
-                Constraint::Length(crossfader_height), // Crossfader pane
-            ])
-            .split(horizontal_chunks[1]);
-
-        let dj_center_area = dj_vertical[0];
-        let loops_area = dj_vertical[1];
-        let crossfader_area = dj_vertical[2];
+        // Map logical column index to chunk index: chunk_idx = col_idx - start
+        let start = layout.start as usize;
+        let chunk = |col: usize| -> Rect { horizontal_chunks[col - start] };
 
         // Only show selected control when in control select mode (or editing)
         let show_control = self.control_select || self.editing;
 
-        // Helper: return scrolled rect only if pane is within viewport
-        let scrolled = |chunk: Rect| -> Option<Rect> {
-            if chunk.x >= scroll {
-                Some(Rect { x: chunk.x - scroll, y: chunk.y, width: chunk.width, height: chunk.height })
-            } else {
-                None
-            }
-        };
-
-        // Deck A (channel 0)
-        if let Some(pane) = scrolled(horizontal_chunks[0]) {
-            if let Some(channel) = self.state.channels.get(self.state.dj.deck_a_channel) {
-                let pane_selected = self.selected_pane == SelectedPane::DeckA;
-                let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
-                ChannelStrip::new(channel)
-                    .selected(pane_selected, control)
-                    .deck_label(Some("A"))
-                    .deck_color(DECK_A)
-                    .editing(show_control && pane_selected)
-                    .frame(self.frame)
-                    .render(pane, buf);
-            }
+        // ── Deck A (column 0) ──
+        if layout.start == 0
+            && let Some(channel) = self.state.channels.get(self.state.dj.deck_a_channel)
+        {
+            let pane_selected = self.selected_pane == SelectedPane::DeckA;
+            let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
+            ChannelStrip::new(channel)
+                .selected(pane_selected, control)
+                .deck_label(Some("A"))
+                .deck_color(DECK_A)
+                .editing(show_control && pane_selected)
+                .frame(self.frame)
+                .render(chunk(0), buf);
         }
 
-        // DJ Center Section (pads)
-        if let Some(pane) = scrolled(dj_center_area) {
-            self.render_dj_center(pane, buf);
+        // ── DJ Center (column 1) — split vertically into Pads, Loops, Crossfader ──
+        if layout.start <= 1 && 1 <= layout.end {
+            let crossfader_height = 5u16;
+            let dj_vertical = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(16),                 // Pads area
+                    Constraint::Length(loops_height),    // Loops pane
+                    Constraint::Length(crossfader_height), // Crossfader pane
+                ])
+                .split(chunk(1));
+
+            let dj_center_area = dj_vertical[0];
+            let loops_area = dj_vertical[1];
+            let crossfader_area = dj_vertical[2];
+
+            self.render_dj_center(dj_center_area, buf);
+            self.render_loops(loops_area, buf);
+            self.render_crossfader(crossfader_area, buf);
         }
 
-        // Deck B (channel 1)
-        if let Some(pane) = scrolled(horizontal_chunks[2]) {
-            if let Some(channel) = self.state.channels.get(self.state.dj.deck_b_channel) {
-                let pane_selected = self.selected_pane == SelectedPane::DeckB;
-                let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
-                ChannelStrip::new(channel)
-                    .selected(pane_selected, control)
-                    .deck_label(Some("B"))
-                    .deck_color(DECK_B)
-                    .editing(show_control && pane_selected)
-                    .frame(self.frame)
-                    .render(pane, buf);
-            }
+        // ── Deck B (column 2) ──
+        if layout.start <= 2 && 2 <= layout.end
+            && let Some(channel) = self.state.channels.get(self.state.dj.deck_b_channel)
+        {
+            let pane_selected = self.selected_pane == SelectedPane::DeckB;
+            let control = if show_control && pane_selected { Some(self.state.selected_control) } else { None };
+            ChannelStrip::new(channel)
+                .selected(pane_selected, control)
+                .deck_label(Some("B"))
+                .deck_color(DECK_B)
+                .editing(show_control && pane_selected)
+                .frame(self.frame)
+                .render(chunk(2), buf);
         }
 
-        // Deck C (full height, right of Deck B)
-        if let Some(pane) = scrolled(horizontal_chunks[3]) {
-            self.render_cue_pane(pane, buf);
+        // ── Deck C (column 3) ──
+        if layout.start <= 3 && 3 <= layout.end {
+            self.render_cue_pane(chunk(3), buf);
         }
 
-        // Master
-        if let Some(pane) = scrolled(horizontal_chunks[4]) {
+        // ── Master (column 4) ──
+        if layout.start <= 4 && 4 <= layout.end {
             let master_pane_selected = self.selected_pane == SelectedPane::Master;
             let master_control_selected = master_pane_selected && show_control;
             let master_control = if master_control_selected { Some(self.state.selected_global) } else { None };
@@ -425,17 +406,7 @@ impl<'a> MixerView<'a> {
                 .editing(show_control && master_pane_selected)
                 .frame(self.frame)
                 .any_channel_playing(any_playing)
-                .render(pane, buf);
-        }
-
-        // Loops pane
-        if let Some(pane) = scrolled(loops_area) {
-            self.render_loops(pane, buf);
-        }
-
-        // Crossfader pane
-        if let Some(pane) = scrolled(crossfader_area) {
-            self.render_crossfader(pane, buf);
+                .render(chunk(4), buf);
         }
     }
 
@@ -814,8 +785,8 @@ impl<'a> MixerView<'a> {
                 match self.state.focus {
                     SelectionFocus::Channel(_) => {
                         match self.state.selected_control {
-                            ChannelControl::LowPassFilter | ChannelControl::HighPassFilter => {
-                                "hjkl:adjust  H:close  L:open  0:reset  Enter/Esc:done"
+                            ChannelControl::FilterCutoff | ChannelControl::FilterFreq => {
+                                "hjkl:adjust  H:min  L:max  0:reset  Enter/Esc:done"
                             }
                             ChannelControl::Pan => {
                                 "hjkl:adjust  H:left  L:right  0/c:center  Enter/Esc:done"
