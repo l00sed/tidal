@@ -1,8 +1,9 @@
-//! Audio module
-
 pub mod bpm;
+mod decoder;
 mod discovery;
+pub mod dsp;
 pub mod effects;
+pub mod engine;
 mod mpv;
 pub mod output;
 pub mod sample_cache;

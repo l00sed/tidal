@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, MpvClient, RackPlayer, SampleEngine, SuperColliderClient};
+use crate::audio::engine::AudioEngine;
 use crate::state::{ChannelControl, GlobalControl, MixerState, PadControl, RackState, SamplePadGrid, SendTarget, SelectionFocus};
 
 /// Which deck is being configured
@@ -469,6 +470,8 @@ pub struct App {
     sc_deck_c: Option<SuperColliderClient>,
     // Sample playback engine (cached samples for instant playback)
     sample_engine: Option<SampleEngine>,
+    // Rust-native audio engine (replaces MPV/SC for DSP)
+    pub audio_engine: Option<AudioEngine>,
     // Rack state and audio player
     pub rack_state: RackState,
     rack_player: Option<RackPlayer>,
@@ -500,8 +503,6 @@ pub struct App {
     // Counter for MPV state polling (poll every N ticks)
     mpv_poll_counter: u8,
     source_refresh_counter: u8,
-    // Counter for LFO filter sync (sync every 4 ticks to avoid MPV click artifacts)
-    lfo_sync_counter: u8,
     // Timestamp (elapsed_ms) of last TUI-initiated volume push per deck (0,1,2)
     last_volume_push_ms: [u64; 3],
     // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
@@ -608,6 +609,7 @@ impl App {
             sc_deck_b: None,
             sc_deck_c: None,
             sample_engine,
+            audio_engine: None,
             rack_state: RackState::new(),
             rack_player,
             frame_counter: 0,
@@ -626,7 +628,6 @@ impl App {
             debug_log: Vec::new(),
             mpv_poll_counter: 0,
             source_refresh_counter: 0,
-            lfo_sync_counter: 0,
             last_volume_push_ms: [0; 3],
             consecutive_poll_failures: [0; 3],
             pending_bpm: Arc::new(Mutex::new(Vec::new())),
@@ -643,15 +644,38 @@ impl App {
 
     /// Configure audio sources from socket paths
     pub fn configure_sources(&mut self, sources: Vec<(String, String)>) {
-        for (name, socket_path) in sources {
-            let source = AudioSource::new(name, socket_path);
+        // First pass: add all sources to manager
+        for (name, socket_path) in &sources {
+            let source = AudioSource::new(name.clone(), socket_path.clone());
             self.audio_manager.add_source(source);
         }
 
-        // Match channel names to source names
-        for (i, source) in self.audio_manager.sources().iter().enumerate() {
+        // Second pass: connect to MPV and load files into engine decoders
+        for (i, (name, socket_path)) in sources.iter().enumerate() {
             if let Some(channel) = self.mixer.channels.get_mut(i) {
-                channel.name = source.name().to_string();
+                channel.name = name.clone();
+            }
+            if i < 3 {
+                let mut client = crate::audio::MpvClient::new(socket_path);
+                if client.connect().is_ok() {
+                    match client.get_path() {
+                        Ok(path) => {
+                            if let Some(ref engine) = self.audio_engine {
+                                engine.load_file(i, path);
+                            }
+                        }
+                        Err(e) => eprintln!("Audio: get_path failed for {}: {}", name, e),
+                    }
+                    match i {
+                        0 => self.mpv_deck_a = Some(client),
+                        1 => self.mpv_deck_b = Some(client),
+                        2 => self.mpv_deck_c = Some(client),
+                        _ => {}
+                    }
+                    if let Some(channel) = self.mixer.channels.get_mut(i) {
+                        channel.connected = true;
+                    }
+                }
             }
         }
     }
@@ -673,6 +697,25 @@ impl App {
                 if peak_l > 0.0 || peak_r > 0.0 {
                     real_channels.push((i, peak_l, peak_r, rms_l, rms_r));
                 }
+            }
+        }
+
+        // Also read meters from Rust audio engine (preferred when available)
+        if let Some(ref engine) = self.audio_engine {
+            for i in 0..3 {
+                if i < self.mixer.channels.len() {
+                    let (pl, pr, rl, rr) = engine.meters[i].load();
+                    if pl > 0.0 || pr > 0.0 {
+                        real_channels.push((i, pl, pr, rl, rr));
+                    }
+                }
+            }
+            // Poll LFO debug from audio callback
+            let lfo_line: Option<String> = engine.lfo_debug.lock().ok()
+                .map(|mut s| if s.is_empty() { None } else { Some(std::mem::take(&mut *s)) })
+                .unwrap_or(None);
+            if let Some(line) = lfo_line {
+                self.log_debug(line);
             }
         }
 
@@ -722,39 +765,19 @@ impl App {
         // Read real-time onset-detected BPM from MPV metering thread
         self.poll_onset_bpm();
 
-        // Advance LFO phase for all channels (50ms per tick)
-        let dt = 0.05;
+        // Advance LFO phase and count sync ticks for all channels
+        for ch in &mut self.mixer.channels {
+            if ch.lfo_speed > 0.001 {
+                let freq_hz = 0.05 + ch.lfo_speed.powf(3.0) * 9.95;
+                ch.lfo_phase = (ch.lfo_phase + freq_hz / 20.0) % 1.0;
+            } else {
+                ch.lfo_phase = 0.0;
+            }
+            ch.lfo_sync_tick = ch.lfo_sync_tick.wrapping_add(1);
+        }
+        // Sync filters every tick — af-command updates are cheap (no graph rebuild)
         for ch_idx in 0..self.mixer.channels.len() {
-            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
-                let lfo_speed = ch.lfo_speed;
-                if lfo_speed > 0.001 {
-                    let lfo_freq = 0.05 + lfo_speed.powf(3.0) * 9.95;  // 0.05–10 Hz (cubic curve)
-                    ch.lfo_phase = (ch.lfo_phase + dt * lfo_freq) % 1.0;
-                } else {
-                    ch.lfo_phase = 0.0;
-                }
-            }
-        }
-        // Also advance CUE channel LFO phase
-        if self.mixer.cue_channel.lfo_speed > 0.001 {
-            let lfo_freq = 0.05 + self.mixer.cue_channel.lfo_speed.powf(3.0) * 9.95;
-            self.mixer.cue_channel.lfo_phase = (self.mixer.cue_channel.lfo_phase + dt * lfo_freq) % 1.0;
-        } else {
-            self.mixer.cue_channel.lfo_phase = 0.0;
-        }
-
-        // Throttled LFO filter sync: every 4 ticks (200ms @ 20fps)
-        // to avoid MPV click artifacts from rapid filter re-initialization
-        self.lfo_sync_counter = self.lfo_sync_counter.wrapping_add(1);
-        if self.lfo_sync_counter % 4 == 0 {
-            for ch_idx in 0..self.mixer.channels.len() {
-                if self.mixer.get_channel(ch_idx).map(|c| c.lfo_speed > 0.001).unwrap_or(false) {
-                    self.sync_filter_to_mpv(ch_idx);
-                }
-            }
-            if self.mixer.cue_channel.lfo_speed > 0.001 {
-                self.sync_filter_to_mpv(self.mixer.dj.deck_c_channel);
-            }
+            self.sync_filter_to_mpv(ch_idx);
         }
     }
 
@@ -3767,6 +3790,10 @@ impl App {
             }
         }
 
+        // Stop Rust audio engine decoder
+        if let Some(ref engine) = self.audio_engine {
+            engine.stop_decoder(ch_idx);
+        }
         // Reset channel to defaults (preserves name and index)
         if let Some(ch) = self.mixer.channels.get_mut(ch_idx) {
             let name = ch.name.clone();
@@ -3872,8 +3899,16 @@ impl App {
                 let source = AudioSource::new(item.name, socket_path);
                 self.audio_manager.add_source(source);
 
+                // Load file into Rust audio engine decoder (always want engine processing)
+                if let Some(ref engine) = self.audio_engine {
+                    if let Some(ref path) = file_path {
+                        let path_str = path.to_string_lossy().to_string();
+                        engine.load_file(channel_idx, path_str);
+                    }
+                }
+
                 // Trigger BPM analysis if we have a file path
-                if let Some(path) = file_path {
+                if let Some(ref path) = file_path {
                     let pending = self.pending_bpm.clone();
                     let on_result = Arc::new(Mutex::new(move |result: crate::audio::BpmResult| {
                         tracing::debug!("BPM detected for channel {}: {:.1} (conf: {:.2})", channel_idx, result.bpm, result.confidence);
@@ -3881,7 +3916,7 @@ impl App {
                             queue.push((channel_idx, result.bpm));
                         }
                     }));
-                    BpmAnalyzer::analyze_file(&path, on_result);
+                    BpmAnalyzer::analyze_file(path, on_result);
                 }
             } else if item.is_udp {
                 // UDP source (e.g., SuperCollider) - create client and connect
@@ -4192,17 +4227,27 @@ impl App {
         let solo = ch.map(|c| c.solo).unwrap_or(false);
         let effective_muted = self.mixer.master.muted || muted || (solo_active && !solo);
 
-        let vol = if effective_muted { 0.0 } else {
+        // Mute MPV when engine has a decoder loaded (avoid double-audio)
+        let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
+        let vol = if engine_active || effective_muted { 0.0 } else {
             (fader * gain * master * 2.0 * 200.0).clamp(0.0, 200.0)
         };
         if let Some(client) = self.mpv_for_channel(channel_idx) {
             let _ = client.set_volume(vol);
         }
-        let sc_vol = if effective_muted { 0.0 } else {
+        let sc_vol = if engine_active || effective_muted { 0.0 } else {
             (fader * gain * master * 2.0).clamp(0.0, 2.0)
         };
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_volume(sc_vol);
+        }
+        // Send to Rust audio engine (direct state write — no command channel)
+        if let Some(ref engine) = self.audio_engine {
+            engine.state.set_volume(channel_idx, fader);
+            engine.state.set_muted(channel_idx, effective_muted);
+            engine.state.set_solo_active(self.mixer.solo_active);
+            engine.state.set_master_fader(self.mixer.master.fader);
+            engine.state.set_crossfader(self.mixer.dj.crossfader);
         }
         if channel_idx < 3 {
             self.last_volume_push_ms[channel_idx] = self.elapsed_ms;
@@ -4293,6 +4338,14 @@ impl App {
         if let Some(ref client) = self.sc_deck_b {
             let sc_vol = if b_muted { 0.0 } else { (b_fader * gain_b * master * 2.0).clamp(0.0, 2.0) };
             let _ = client.set_volume(sc_vol);
+        }
+
+        // Update Rust audio engine solo state
+        if let Some(ref engine) = self.audio_engine {
+            engine.state.set_solo(deck_a_ch, a_solo);
+            engine.state.set_solo(deck_b_ch, b_solo);
+            engine.state.set_solo(2, c_solo);
+            engine.state.set_solo_active(solo_active);
         }
 
         for msg in msgs { self.log_debug(msg); }
@@ -4601,11 +4654,19 @@ impl App {
         let effective_mid = if mid_kill { -24.0 } else { mid };
         let effective_high = if high_kill { -24.0 } else { high };
 
-        if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_eq(effective_low, effective_mid, effective_high);
+        let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
+        if !engine_active {
+            if let Some(client) = self.mpv_for_channel(channel_idx) {
+                let _ = client.set_eq(effective_low, effective_mid, effective_high);
+            }
+            if let Some(client) = self.sc_for_channel(channel_idx) {
+                let _ = client.set_eq(effective_low, effective_mid, effective_high);
+            }
         }
-        if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_eq(effective_low, effective_mid, effective_high);
+        // Send to Rust audio engine
+        if let Some(ref engine) = self.audio_engine {
+            engine.state.set_eq(channel_idx, low, mid, high);
+            engine.state.set_eq_kill(channel_idx, low_kill, mid_kill, high_kill);
         }
         self.sync_capture_dsp_params();
     }
@@ -4694,13 +4755,26 @@ impl App {
 
         let effective_hpf = 20.0 + (hpf_target - 20.0) * intensity;
 
-        if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
-            let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
+        // Skip MPV/SC lavfi filter calls when the engine has a decoder for this channel
+        let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
+        if !engine_active {
+            if let Some(client) = self.mpv_for_channel(channel_idx) {
+                let le = client.set_lpf(soft_lpf.clamp(200.0, 20000.0)).err();
+                let he = client.set_hpf(effective_hpf.clamp(20.0, 8000.0)).err();
+                if let Some(e) = le { self.debug_log.push(format!("lpf: {}", e)); }
+                if let Some(e) = he { self.debug_log.push(format!("hpf: {}", e)); }
+            }
+            if let Some(client) = self.sc_for_channel(channel_idx) {
+                let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
+                let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
+            }
         }
-        if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
-            let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
+
+        // Send to Rust audio engine
+        if let Some(ref engine) = self.audio_engine {
+            engine.state.set_filter_cutoff(channel_idx, cutoff);
+            engine.state.set_filter_freq(channel_idx, freq_pos);
+            engine.state.set_lfo(channel_idx, lfo_speed, lfo_shape);
         }
 
         self.sync_capture_dsp_params();
@@ -4729,11 +4803,18 @@ impl App {
             .map(|c| c.pan)
             .unwrap_or(0.0);
 
-        if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_pan(pan);
+        let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
+        if !engine_active {
+            if let Some(client) = self.mpv_for_channel(channel_idx) {
+                let _ = client.set_pan(pan);
+            }
+            if let Some(client) = self.sc_for_channel(channel_idx) {
+                let _ = client.set_pan(pan);
+            }
         }
-        if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_pan(pan);
+        // Send to Rust audio engine
+        if let Some(ref engine) = self.audio_engine {
+            engine.state.set_pan(channel_idx, pan);
         }
         self.sync_capture_dsp_params();
     }

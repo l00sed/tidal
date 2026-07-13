@@ -55,6 +55,16 @@ fn main() -> Result<()> {
 
     // Setup terminal
     enable_raw_mode()?;
+
+    // Initialize Rust-native audio engine
+    match crate::audio::engine::AudioEngine::new() {
+        Ok(engine) => {
+            app.audio_engine = Some(engine);
+        }
+        Err(e) => {
+            eprintln!("Audio engine unavailable (falling back to MPV/SC): {}", e);
+        }
+    }
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);

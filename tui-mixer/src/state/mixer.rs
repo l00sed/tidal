@@ -63,6 +63,9 @@ pub struct MixerChannel {
     /// LFO phase accumulator (in radians)
     #[serde(skip)]
     pub lfo_phase: f32,
+    /// Counter to throttle lavfi sync calls (0 = sync now)
+    #[serde(skip)]
+    pub lfo_sync_tick: u32,
     /// Low shelf EQ gain (-15 to +15 dB)
     pub eq_low: f32,
     /// Mid EQ gain (-15 to +15 dB)
@@ -154,6 +157,7 @@ impl MixerChannel {
             lfo_shape: 0.0,       // Square
             lfo_speed: 0.0,       // Slow
             lfo_phase: 0.0,
+            lfo_sync_tick: 0,
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,

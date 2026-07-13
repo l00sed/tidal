@@ -379,32 +379,49 @@ impl MpvClient {
         false
     }
 
+    /// Send a command to an existing audio filter without removing/re-adding it.
+    /// lavfi filters (lowpass, highpass, etc.) support parameter changes via commands,
+    /// avoiding the crackling that comes from rebuilding the filter graph.
+    pub fn af_command(&mut self, label: &str, cmd: &str, arg: &str) -> Result<(), String> {
+        // NOTE: No @ prefix — MPV stores labels without it internally.
+        // af add @lpf:... creates label "lpf", so af-command uses "lpf".
+        self.send_command(vec![
+            "af-command".into(),
+            label.into(),
+            cmd.into(),
+            arg.into(),
+        ])?;
+        Ok(())
+    }
+
     pub fn set_lpf(&mut self, freq: f32) -> Result<(), String> {
         if freq >= 19000.0 {
+            // Bypass: push cutoff to Nyquist — no audible filtering, no graph rebuild
             if self.has_filter("lpf") {
-                self.send_command(vec!["af".into(), "remove".into(), "@lpf".into()]).ok();
+                self.af_command("lpf", "frequency", "20000")?;
             }
-        } else {
+        } else if !self.has_filter("lpf") {
+            // First use: create the filter graph entry once
             let filter = format!("@lpf:lavfi=[lowpass=f={:.0}]", freq);
-            if self.has_filter("lpf") {
-                self.send_command(vec!["af".into(), "remove".into(), "@lpf".into()]).ok();
-            }
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
+        } else {
+            // Subsequent updates: send parameter command — NO graph rebuild
+            self.af_command("lpf", "frequency", &format!("{:.0}", freq))?;
         }
         Ok(())
     }
 
     pub fn set_hpf(&mut self, freq: f32) -> Result<(), String> {
         if freq <= 25.0 {
+            // Bypass: push cutoff to DC level — no audible filtering, no graph rebuild
             if self.has_filter("hpf") {
-                self.send_command(vec!["af".into(), "remove".into(), "@hpf".into()]).ok();
+                self.af_command("hpf", "frequency", "20")?;
             }
-        } else {
+        } else if !self.has_filter("hpf") {
             let filter = format!("@hpf:lavfi=[highpass=f={:.0}]", freq);
-            if self.has_filter("hpf") {
-                self.send_command(vec!["af".into(), "remove".into(), "@hpf".into()]).ok();
-            }
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
+        } else {
+            self.af_command("hpf", "frequency", &format!("{:.0}", freq))?;
         }
         Ok(())
     }
