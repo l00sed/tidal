@@ -410,7 +410,7 @@ fn calculate_all_areas(
             let w = channel_width.min(mixer_area.width.saturating_sub(x - mixer_area.x));
             let inner_y = mixer_area.y + 1;
             let inner_h = mixer_area.height.saturating_sub(2);
-            let row_heights = [4, 4, 4, 3, 3, 4, 8, 3, 3, 3];
+            let row_heights = [4, 4, 4, 3, 3, 3, 3, 4, 8, 3, 3, 3];
             let total: u16 = row_heights.iter().sum();
             let scale = inner_h as f32 / total as f32;
             let controls = [
@@ -419,6 +419,8 @@ fn calculate_all_areas(
                 ChannelControl::EqLow,
                 ChannelControl::FilterCutoff,
                 ChannelControl::FilterFreq,
+                ChannelControl::LfoShape,
+                ChannelControl::LfoSpeed,
                 ChannelControl::Pan,
                 ChannelControl::Fader,
                 ChannelControl::Mute,

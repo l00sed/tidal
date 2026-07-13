@@ -500,6 +500,8 @@ pub struct App {
     // Counter for MPV state polling (poll every N ticks)
     mpv_poll_counter: u8,
     source_refresh_counter: u8,
+    // Counter for LFO filter sync (sync every 4 ticks to avoid MPV click artifacts)
+    lfo_sync_counter: u8,
     // Timestamp (elapsed_ms) of last TUI-initiated volume push per deck (0,1,2)
     last_volume_push_ms: [u64; 3],
     // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
@@ -624,6 +626,7 @@ impl App {
             debug_log: Vec::new(),
             mpv_poll_counter: 0,
             source_refresh_counter: 0,
+            lfo_sync_counter: 0,
             last_volume_push_ms: [0; 3],
             consecutive_poll_failures: [0; 3],
             pending_bpm: Arc::new(Mutex::new(Vec::new())),
@@ -718,6 +721,41 @@ impl App {
 
         // Read real-time onset-detected BPM from MPV metering thread
         self.poll_onset_bpm();
+
+        // Advance LFO phase for all channels (50ms per tick)
+        let dt = 0.05;
+        for ch_idx in 0..self.mixer.channels.len() {
+            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                let lfo_speed = ch.lfo_speed;
+                if lfo_speed > 0.001 {
+                    let lfo_freq = 0.05 + lfo_speed.powf(3.0) * 9.95;  // 0.05–10 Hz (cubic curve)
+                    ch.lfo_phase = (ch.lfo_phase + dt * lfo_freq) % 1.0;
+                } else {
+                    ch.lfo_phase = 0.0;
+                }
+            }
+        }
+        // Also advance CUE channel LFO phase
+        if self.mixer.cue_channel.lfo_speed > 0.001 {
+            let lfo_freq = 0.05 + self.mixer.cue_channel.lfo_speed.powf(3.0) * 9.95;
+            self.mixer.cue_channel.lfo_phase = (self.mixer.cue_channel.lfo_phase + dt * lfo_freq) % 1.0;
+        } else {
+            self.mixer.cue_channel.lfo_phase = 0.0;
+        }
+
+        // Throttled LFO filter sync: every 4 ticks (200ms @ 20fps)
+        // to avoid MPV click artifacts from rapid filter re-initialization
+        self.lfo_sync_counter = self.lfo_sync_counter.wrapping_add(1);
+        if self.lfo_sync_counter % 4 == 0 {
+            for ch_idx in 0..self.mixer.channels.len() {
+                if self.mixer.get_channel(ch_idx).map(|c| c.lfo_speed > 0.001).unwrap_or(false) {
+                    self.sync_filter_to_mpv(ch_idx);
+                }
+            }
+            if self.mixer.cue_channel.lfo_speed > 0.001 {
+                self.sync_filter_to_mpv(self.mixer.dj.deck_c_channel);
+            }
+        }
     }
 
     /// Poll each connected MPV deck for state changes and sync back to mixer.
@@ -1564,11 +1602,17 @@ impl App {
                                 self.mixer.selected_control = paired;
                             }
                         }
-                        // Filter knobs: swap between cutoff and freq
+                        // Filter/LFO knobs: cycle down through 4 controls
                         ChannelControl::FilterCutoff => {
                             self.mixer.selected_control = ChannelControl::FilterFreq;
                         }
                         ChannelControl::FilterFreq => {
+                            self.mixer.selected_control = ChannelControl::LfoShape;
+                        }
+                        ChannelControl::LfoShape => {
+                            self.mixer.selected_control = ChannelControl::LfoSpeed;
+                        }
+                        ChannelControl::LfoSpeed => {
                             self.mixer.selected_control = ChannelControl::FilterCutoff;
                         }
                         _ => {}
@@ -1647,12 +1691,18 @@ impl App {
                                 self.mixer.selected_control = paired;
                             }
                         }
-                        // Filter knobs: swap between cutoff and freq
+                        // Filter/LFO knobs: cycle up through 4 controls (reverse)
                         ChannelControl::FilterCutoff => {
-                            self.mixer.selected_control = ChannelControl::FilterFreq;
+                            self.mixer.selected_control = ChannelControl::LfoSpeed;
                         }
                         ChannelControl::FilterFreq => {
                             self.mixer.selected_control = ChannelControl::FilterCutoff;
+                        }
+                        ChannelControl::LfoShape => {
+                            self.mixer.selected_control = ChannelControl::FilterFreq;
+                        }
+                        ChannelControl::LfoSpeed => {
+                            self.mixer.selected_control = ChannelControl::LfoShape;
                         }
                         _ => {}
                     }
@@ -2111,6 +2161,16 @@ impl App {
                                 channel.filter_freq = 0.0;
                             }
                         }
+                        ChannelControl::LfoShape => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.lfo_shape = 0.0;
+                            }
+                        }
+                        ChannelControl::LfoSpeed => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.lfo_speed = 0.0;
+                            }
+                        }
                         _ => {}
                     }
                     self.sync_current_control_to_mpv();
@@ -2139,6 +2199,16 @@ impl App {
                         ChannelControl::FilterFreq => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
                                 channel.filter_freq = 1.0;
+                            }
+                        }
+                        ChannelControl::LfoShape => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.lfo_shape = 1.0;
+                            }
+                        }
+                        ChannelControl::LfoSpeed => {
+                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                                channel.lfo_speed = 1.0;
                             }
                         }
                         _ => {}
@@ -2277,6 +2347,8 @@ impl App {
                         }
                         ChannelControl::FilterCutoff => channel.filter_cutoff = 0.0,
                         ChannelControl::FilterFreq => channel.filter_freq = 0.5,
+                        ChannelControl::LfoShape => channel.lfo_shape = 0.0,
+                        ChannelControl::LfoSpeed => channel.lfo_speed = 0.0,
                         ChannelControl::EqLow => channel.eq_low = 0.0,
                         ChannelControl::EqMid => channel.eq_mid = 0.0,
                         ChannelControl::EqHigh => channel.eq_high = 0.0,
@@ -2346,12 +2418,13 @@ impl App {
         }
     }
 
-    /// Check if the currently selected control is a filter (LPF or HPF)
+    /// Check if the currently selected control is a filter or LFO
     fn is_filter_selected(&self) -> bool {
         matches!(self.mixer.focus, SelectionFocus::Channel(_))
             && matches!(
                 self.mixer.selected_control,
-                ChannelControl::FilterCutoff | ChannelControl::FilterFreq
+                ChannelControl::FilterCutoff | ChannelControl::FilterFreq |
+                ChannelControl::LfoShape | ChannelControl::LfoSpeed
             )
     }
 
@@ -3845,38 +3918,35 @@ impl App {
                         };
                         let vol = (channel.fader * xf_gain * self.mixer.master.fader).clamp(0.0, 1.0);
                         let _ = client.set_volume(vol);
-                        // Apply unified filter
+                        // Apply unified filter (crossfade between LPF and HPF)
                         let cutoff = channel.filter_cutoff;
                         let freq_pos = channel.filter_freq;
-                        if cutoff > 0.01 {
-                            let intensity = cutoff.powf(1.5);
-                            let log_min = 20f32.log10();
-                            let log_max = 20000f32.log10();
-                            let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
-                            let center = 1000.0;
-                            let cross_low = 500.0;
-                            let cross_high = 2000.0;
+                        let intensity = cutoff.powf(2.5);
+                        let log_min = 20f32.log10();
+                        let log_max = 20000f32.log10();
+                        let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
 
-                            let (lpf_freq, hpf_freq) = if actual_freq <= cross_low {
-                                (actual_freq, 0.0)
-                            } else if actual_freq >= cross_high {
-                                (0.0, actual_freq)
-                            } else {
-                                let t = (actual_freq - cross_low) / (cross_high - cross_low);
-                                let lp = cross_low + (actual_freq - cross_low) * (1.0 - t);
-                                let hp = cross_high + (actual_freq - cross_high) * t;
-                                (lp, hp)
-                            };
+                        let blend = if actual_freq <= 300.0 {
+                            0.0
+                        } else if actual_freq >= 3000.0 {
+                            1.0
+                        } else {
+                            let t = (actual_freq - 300.0) / (3000.0 - 300.0);
+                            t * t * (3.0 - 2.0 * t)
+                        };
 
-                            if lpf_freq > 0.0 {
-                                let effective_lpf = center - (center - lpf_freq) * intensity;
-                                let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
-                            }
-                            if hpf_freq > 0.0 {
-                                let effective_hpf = center + (hpf_freq - center) * intensity;
-                                let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
-                            }
-                        }
+                        let lpf_target = actual_freq + (20000.0 - actual_freq) * blend;
+                        let hpf_target = 20.0 + (actual_freq - 20.0) * blend;
+                        let effective_lpf = 20000.0 - (20000.0 - lpf_target) * intensity;
+                        let soft_lpf = if effective_lpf < 1000.0 {
+                            let norm = ((effective_lpf - 200.0) / 800.0).clamp(0.0, 1.0);
+                            200.0 + 800.0 * norm.sqrt()
+                        } else {
+                            effective_lpf
+                        };
+                        let effective_hpf = 20.0 + (hpf_target - 20.0) * intensity;
+                        let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
+                        let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
                         // Apply kill switches: extreme cut values
                         let effective_low = if channel.eq_low_kill { -24.0 } else { channel.eq_low };
                         let effective_mid = if channel.eq_mid_kill { -24.0 } else { channel.eq_mid };
@@ -3973,38 +4043,35 @@ impl App {
 
                 let vol = self.mixer.cue_channel.fader;
                 let _ = client.set_volume(vol);
-                // Apply unified filter for CUE channel
+                // Apply unified filter for CUE channel (crossfade between LPF and HPF)
                 let cutoff = self.mixer.cue_channel.filter_cutoff;
                 let freq_pos = self.mixer.cue_channel.filter_freq;
-                if cutoff > 0.01 {
-                    let intensity = cutoff.powf(1.5);
-                    let log_min = 20f32.log10();
-                    let log_max = 20000f32.log10();
-                    let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
-                    let center = 1000.0;
-                    let cross_low = 500.0;
-                    let cross_high = 2000.0;
+                let intensity = cutoff.powf(2.5);
+                let log_min = 20f32.log10();
+                let log_max = 20000f32.log10();
+                let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
 
-                    let (lpf_freq, hpf_freq) = if actual_freq <= cross_low {
-                        (actual_freq, 0.0)
-                    } else if actual_freq >= cross_high {
-                        (0.0, actual_freq)
-                    } else {
-                        let t = (actual_freq - cross_low) / (cross_high - cross_low);
-                        let lp = cross_low + (actual_freq - cross_low) * (1.0 - t);
-                        let hp = cross_high + (actual_freq - cross_high) * t;
-                        (lp, hp)
-                    };
+                let blend = if actual_freq <= 300.0 {
+                    0.0
+                } else if actual_freq >= 3000.0 {
+                    1.0
+                } else {
+                    let t = (actual_freq - 300.0) / (3000.0 - 300.0);
+                    t * t * (3.0 - 2.0 * t)
+                };
 
-                    if lpf_freq > 0.0 {
-                        let effective_lpf = center - (center - lpf_freq) * intensity;
-                        let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
-                    }
-                    if hpf_freq > 0.0 {
-                        let effective_hpf = center + (hpf_freq - center) * intensity;
-                        let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
-                    }
-                }
+                let lpf_target = actual_freq + (20000.0 - actual_freq) * blend;
+                let hpf_target = 20.0 + (actual_freq - 20.0) * blend;
+                let effective_lpf = 20000.0 - (20000.0 - lpf_target) * intensity;
+                let soft_lpf = if effective_lpf < 1000.0 {
+                    let norm = ((effective_lpf - 200.0) / 800.0).clamp(0.0, 1.0);
+                    200.0 + 800.0 * norm.sqrt()
+                } else {
+                    effective_lpf
+                };
+                let effective_hpf = 20.0 + (hpf_target - 20.0) * intensity;
+                let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
+                let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
                 // Apply kill switches: extreme cut values
                 let effective_low = if self.mixer.cue_channel.eq_low_kill { -24.0 } else { self.mixer.cue_channel.eq_low };
                 let effective_mid = if self.mixer.cue_channel.eq_mid_kill { -24.0 } else { self.mixer.cue_channel.eq_mid };
@@ -4499,7 +4566,8 @@ impl App {
                     ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
                         self.sync_eq_to_mpv(ch_idx);
                     }
-                    ChannelControl::FilterCutoff | ChannelControl::FilterFreq => {
+                    ChannelControl::FilterCutoff | ChannelControl::FilterFreq
+                    | ChannelControl::LfoShape | ChannelControl::LfoSpeed => {
                         self.sync_filter_to_mpv(ch_idx);
                     }
                     _ => {}
@@ -4546,88 +4614,93 @@ impl App {
     ///
     /// The filter has two controls:
     /// - `filter_cutoff` (0.0–1.0): intensity of the filter effect
-    /// - `filter_freq` (0.0–1.0): center frequency position
-    ///   - 0.0 = 20 Hz (full lowpass)
-    ///   - 0.5 = 1000 Hz (center / neutral)
-    ///   - 1.0 = 20000 Hz (full highpass)
+    /// - `filter_freq` (0.0–1.0): filter position
+    ///   - 0.0 = 20 Hz (lowpass)
+    ///   - 0.5 = 1000 Hz (center / no effect)
+    ///   - 1.0 = 20000 Hz (highpass)
     ///
-    /// The frequency knob sweeps smoothly through the range.
-    /// A crossover region (500Hz–2kHz) blends between lowpass and highpass
-    /// so there's no hard switch at the center point.
-    /// The cutoff has a dead zone (0–0.2) then uses a power curve (exponent 3.0).
+    /// Plus LFO controls that modulate the cutoff intensity:
+    /// - `lfo_shape` (0.0 = square, 1.0 = sine): waveform morph
+    /// - `lfo_speed` (0.0 = slow ~0.05Hz, 1.0 = fast ~10Hz): modulation rate (cubic curve)
+    ///
+    /// A crossfade zone (300Hz–3kHz) smoothly transitions between LPF and HPF
+    /// so sweeping through center is continuous with no dead zone.
+    /// Each filter sweeps from "fully open" to target as cutoff increases,
+    /// so at zero cutoff there is zero effect regardless of frequency position.
     fn sync_filter_to_mpv(&mut self, channel_idx: usize) {
-        let (cutoff, freq_pos) = self.mixer.get_channel(channel_idx)
-            .map(|c| (c.filter_cutoff, c.filter_freq))
-            .unwrap_or((0.0, 0.5));
+        let (cutoff, freq_pos, lfo_shape, lfo_speed) = self.mixer.get_channel(channel_idx)
+            .map(|c| (c.filter_cutoff, c.filter_freq, c.lfo_shape, c.lfo_speed))
+            .unwrap_or((0.0, 0.5, 0.0, 0.0));
 
-        // Remove any existing filters first
+        // Power curve for smooth intensity ramp (exponent 2.5)
+        let raw_cutoff = cutoff.powf(2.5);
+
+        // When LFO speed is 0, bypass LFO entirely — shape has no effect
+        let modulated = if lfo_speed <= 0.001 {
+            raw_cutoff
+        } else {
+            // LFO modulates the user's cutoff intensity
+            // Shape: 0.0 → square (toggles between 0 and 1 every half cycle)
+            // Shape: 1.0 → sine (smoothly sweeps between 0 and 1)
+            let phase = self.mixer.get_channel(channel_idx)
+                .map(|c| c.lfo_phase)
+                .unwrap_or(0.0);
+            let raw_lfo = (phase * std::f32::consts::TAU).sin();
+            let sq = if raw_lfo > 0.0 { 1.0 } else { 0.0 };
+            let sine = raw_lfo * 0.5 + 0.5;
+            let lfo_out = sq * (1.0 - lfo_shape) + sine * lfo_shape;
+            raw_cutoff * lfo_out
+        };
+
+        // Ease-out the last 10% for a gentle approach to max
+        let intensity = if modulated > 0.9 {
+            let t = (modulated - 0.9) / 0.1;
+            0.9 + 0.1 * (1.0 - (1.0 - t).powf(3.0))
+        } else {
+            modulated
+        };
+
+        // Map freq_pos (0–1) to actual frequency (20–20000 Hz, log scale)
+        let log_min = 20f32.log10();
+        let log_max = 20000f32.log10();
+        let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
+
+        // Crossfade zone: 300Hz–3kHz
+        // blend=0 at 300Hz (pure LPF), blend=1 at 3000Hz (pure HPF)
+        let blend = if actual_freq <= 300.0 {
+            0.0
+        } else if actual_freq >= 3000.0 {
+            1.0
+        } else {
+            let t = (actual_freq - 300.0) / (3000.0 - 300.0);
+            t * t * (3.0 - 2.0 * t) // smoothstep
+        };
+
+        // LPF target: actual_freq at blend=0, 20000 (open) at blend=1
+        let lpf_target = actual_freq + (20000.0 - actual_freq) * blend;
+        // HPF target: 20 (open) at blend=0, actual_freq at blend=1
+        let hpf_target = 20.0 + (actual_freq - 20.0) * blend;
+
+        // Both sweep from open to target as intensity increases
+        let effective_lpf = 20000.0 - (20000.0 - lpf_target) * intensity;
+        // Soft approach to 200Hz floor: spread 200-1000Hz with sqrt
+        // so descent slows as it nears the clamp
+        let soft_lpf = if effective_lpf < 1000.0 {
+            let norm = ((effective_lpf - 200.0) / 800.0).clamp(0.0, 1.0);
+            200.0 + 800.0 * norm.sqrt()
+        } else {
+            effective_lpf
+        };
+
+        let effective_hpf = 20.0 + (hpf_target - 20.0) * intensity;
+
         if let Some(client) = self.mpv_for_channel(channel_idx) {
-            let _ = client.set_lpf(20000.0);
-            let _ = client.set_hpf(20.0);
+            let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
+            let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
         }
         if let Some(client) = self.sc_for_channel(channel_idx) {
-            let _ = client.set_lpf(20000.0);
-            let _ = client.set_hpf(20.0);
-        }
-
-        // Apply filter if cutoff > 0
-        if cutoff > 0.01 {
-            // Dead zone for first 2 ticks (0–0.2), then smooth ramp
-            let intensity = if cutoff < 0.2 { 0.0 } else { cutoff.powf(3.0) };
-
-            // Map freq_pos (0–1) to actual frequency (20–20000 Hz, log scale)
-            let log_min = 20f32.log10();
-            let log_max = 20000f32.log10();
-            let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
-
-            // Crossover region: 500Hz–2kHz
-            // Below 500Hz: pure lowpass
-            // Above 2kHz: pure highpass
-            // Between: blend both filters with complementary intensities
-            let center = 1000.0;
-            let cross_low = 500.0;
-            let cross_high = 2000.0;
-
-            let (lpf_freq, hpf_freq) = if actual_freq <= cross_low {
-                // Pure lowpass region
-                (actual_freq, 0.0)
-            } else if actual_freq >= cross_high {
-                // Pure highpass region
-                (0.0, actual_freq)
-            } else {
-                // Crossover region: blend between lowpass and highpass
-                // t goes from 0.0 (at cross_low) to 1.0 (at cross_high)
-                let t = (actual_freq - cross_low) / (cross_high - cross_low);
-                // Lowpass frequency: sweeps from actual_freq down to cross_low
-                // Highpass frequency: sweeps from cross_high up to actual_freq
-                let lp = cross_low + (actual_freq - cross_low) * (1.0 - t);
-                let hp = cross_high + (actual_freq - cross_high) * t;
-                (lp, hp)
-            };
-
-            // Apply lowpass if active
-            if lpf_freq > 0.0 {
-                // Scale by intensity: at intensity=1 use lpf_freq, at intensity=0 approach center
-                let effective_lpf = center - (center - lpf_freq) * intensity;
-                if let Some(client) = self.mpv_for_channel(channel_idx) {
-                    let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
-                }
-                if let Some(client) = self.sc_for_channel(channel_idx) {
-                    let _ = client.set_lpf(effective_lpf.clamp(20.0, center));
-                }
-            }
-
-            // Apply highpass if active
-            if hpf_freq > 0.0 {
-                // Scale by intensity: at intensity=1 use hpf_freq, at intensity=0 approach center
-                let effective_hpf = center + (hpf_freq - center) * intensity;
-                if let Some(client) = self.mpv_for_channel(channel_idx) {
-                    let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
-                }
-                if let Some(client) = self.sc_for_channel(channel_idx) {
-                    let _ = client.set_hpf(effective_hpf.clamp(center, 20000.0));
-                }
-            }
+            let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
+            let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
         }
 
         self.sync_capture_dsp_params();

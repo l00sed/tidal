@@ -155,7 +155,7 @@ impl<'a> Widget for ChannelStrip<'a> {
                 Constraint::Length(1),  // Separator
                 Constraint::Length(1),  // BPM display
                 Constraint::Length(1),  // Separator
-                Constraint::Length(10),  // EQ section (vertical bars + kill buttons + padding)
+                Constraint::Length(12),  // EQ section (vertical bars + kill buttons + filter/LFO)
                 Constraint::Length(1),  // Separator
                 Constraint::Length(1),  // Pan
                 Constraint::Length(1),  // Separator
@@ -165,7 +165,7 @@ impl<'a> Widget for ChannelStrip<'a> {
             ]
         } else {
             vec![
-                Constraint::Length(10),  // EQ section (vertical bars + kill buttons + padding)
+                Constraint::Length(12),  // EQ section (vertical bars + kill buttons + filter/LFO)
                 Constraint::Length(2),  // Pan
                 Constraint::Min(7),     // Fader + Meter
                 Constraint::Length(1),  // Separator before buttons
@@ -404,14 +404,14 @@ impl<'a> ChannelStrip<'a> {
         buf.set_string(area.x + area.width - 1, y, "R", label_style);
     }
     
-    /// Render the EQ section with vertical bars (H/M/L) and filters (HPF/LPF)
+    /// Render the EQ section with vertical bars (H/M/L) and filter/LFO controls
     /// Returns the x-position of the vertical separator for junction drawing
     fn render_eq_section(&self, area: Rect, buf: &mut Buffer) -> Option<u16> {
-        if area.width < 10 || area.height < 8 {
+        if area.width < 10 || area.height < 10 {
             return None;
         }
 
-        // Layout: [H bar + kill] [M bar + kill] [L bar + kill] [separator] [HPF bar] [LPF bar]
+        // Layout: [H bar + kill] [M bar + kill] [L bar + kill] [separator] [CUT+LFO]
         // Each EQ bar gets ~20% width, separator 1 char, filters share remaining space
         let eq_width = area.width / 5;
         let filter_width = area.width - eq_width * 3 - 1;
@@ -423,7 +423,7 @@ impl<'a> ChannelStrip<'a> {
                 Constraint::Length(eq_width),         // Mid
                 Constraint::Length(eq_width),         // High
                 Constraint::Length(1),                // Separator
-                Constraint::Length(filter_width),     // Filters (HPF/LPF stacked)
+                Constraint::Length(filter_width),     // Filters + LFO (stacked)
             ])
             .split(area);
 
@@ -454,22 +454,44 @@ impl<'a> ChannelStrip<'a> {
             buf.set_string(sep_x, area.y - 1, "┬", sep_style);
         }
 
-        // Render filter controls stacked vertically (Cutoff on top, Freq on bottom)
+        // Filter column: "CUT" label + 4 knobs stacked vertically
+        let label_h = 1u16;
+        let knob_h = (sections[4].height.saturating_sub(label_h)) / 4;
         let filter_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(50),  // Filter Cutoff
-                Constraint::Percentage(50),  // Filter Freq
+                Constraint::Length(label_h),  // "CUT" label row
+                Constraint::Length(knob_h),   // Filter Cutoff
+                Constraint::Length(knob_h),   // Filter Freq
+                Constraint::Length(knob_h),   // LFO Shape
+                Constraint::Length(knob_h),   // LFO Speed
             ])
             .split(sections[4]);
 
-        self.render_filter_bar(filter_chunks[0], buf,
-            self.channel.filter_cutoff,
-            self.is_control_selected(ChannelControl::FilterCutoff));
+        // "CUT" label at top of filter column
+        let label_style = Style::default().fg(TEXT_GHOST);
+        let label_x = filter_chunks[0].x + (filter_chunks[0].width.saturating_sub(3)) / 2;
+        buf.set_string(label_x, filter_chunks[0].y, "CUT", label_style);
 
         self.render_filter_bar(filter_chunks[1], buf,
+            self.channel.filter_cutoff,
+            Some("CUT"),
+            self.is_control_selected(ChannelControl::FilterCutoff));
+
+        self.render_filter_bar(filter_chunks[2], buf,
             self.channel.filter_freq,
+            Some("FRQ"),
             self.is_control_selected(ChannelControl::FilterFreq));
+
+        self.render_filter_bar(filter_chunks[3], buf,
+            self.channel.lfo_shape,
+            Some("SHP"),
+            self.is_control_selected(ChannelControl::LfoShape));
+
+        self.render_filter_bar(filter_chunks[4], buf,
+            self.channel.lfo_speed,
+            Some("SPD"),
+            self.is_control_selected(ChannelControl::LfoSpeed));
 
         Some(sep_x)
     }
@@ -610,14 +632,21 @@ impl<'a> ChannelStrip<'a> {
         buf.set_string(kill_x, kill_y, kill_char, kill_style);
     }
 
-    /// Render a compact vertical filter bar (HPF/LPF)
+    /// Render a compact vertical filter/LFO bar with optional label
     fn render_filter_bar(&self, area: Rect, buf: &mut Buffer,
-                         value: f32, selected: bool) {
-        if area.width < 1 || area.height < 3 {
+                         value: f32, label: Option<&str>, selected: bool) {
+        if area.width < 1 || area.height < 2 {
             return;
         }
 
         let editing = selected && self.editing;
+
+        // Draw label at top of bar if provided
+        if let Some(lbl) = label {
+            let lbl_style = Style::default().fg(TEXT_GHOST);
+            let lbl_x = area.x + (area.width.saturating_sub(lbl.len() as u16)) / 2;
+            buf.set_string(lbl_x, area.y, lbl, lbl_style);
+        }
 
         // Knob icon progression (0.0 to 1.0)
         let knob_icons = ["󰄰", "󰪞", "󰪟", "󰪠", "󰪡", "󰪢", "󰪣", "󰪤", "󰪥"];
@@ -633,8 +662,10 @@ impl<'a> ChannelStrip<'a> {
             Style::default().fg(Color::Rgb(100, 100, 100))
         };
 
-        // Draw the knob centered in the area
-        let knob_y = area.y + area.height / 2;
+        // Draw the knob centered in the area (below label if present)
+        let knob_area_top = area.y + if label.is_some() { 1 } else { 0 };
+        let knob_area_h = area.height.saturating_sub(if label.is_some() { 1 } else { 0 });
+        let knob_y = knob_area_top + knob_area_h / 2;
         let knob_x = area.x + (area.width.saturating_sub(1)) / 2;
         buf.set_string(knob_x, knob_y, knob_char, knob_style);
     }

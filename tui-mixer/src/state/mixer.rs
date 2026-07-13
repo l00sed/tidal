@@ -56,6 +56,13 @@ pub struct MixerChannel {
     pub filter_cutoff: f32,
     /// Filter frequency position (0.0 = low/20Hz, 0.5 = center/1kHz, 1.0 = high/20kHz)
     pub filter_freq: f32,
+    /// LFO shape (0.0 = square, 1.0 = sine)
+    pub lfo_shape: f32,
+    /// LFO speed (0.0 = slow, 1.0 = fast)
+    pub lfo_speed: f32,
+    /// LFO phase accumulator (in radians)
+    #[serde(skip)]
+    pub lfo_phase: f32,
     /// Low shelf EQ gain (-15 to +15 dB)
     pub eq_low: f32,
     /// Mid EQ gain (-15 to +15 dB)
@@ -144,6 +151,9 @@ impl MixerChannel {
             pan: 0.0,
             filter_cutoff: 0.0,   // Off
             filter_freq: 0.5,     // Center (1kHz)
+            lfo_shape: 0.0,       // Square
+            lfo_speed: 0.0,       // Slow
+            lfo_phase: 0.0,
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,
@@ -194,6 +204,8 @@ pub enum ChannelControl {
     Pan,
     FilterCutoff,
     FilterFreq,
+    LfoShape,
+    LfoSpeed,
     EqLow,
     EqLowKill,
     EqMid,
@@ -219,6 +231,8 @@ impl ChannelControl {
             ChannelControl::Pan => "PAN",
             ChannelControl::FilterCutoff => "CUT",
             ChannelControl::FilterFreq => "FREQ",
+            ChannelControl::LfoShape => "SHP",
+            ChannelControl::LfoSpeed => "SPD",
             ChannelControl::EqLow => "LOW",
             ChannelControl::EqLowKill => "L×",
             ChannelControl::EqMid => "MID",
@@ -243,6 +257,8 @@ impl ChannelControl {
                 | ChannelControl::Bpm
                 | ChannelControl::FilterCutoff
                 | ChannelControl::FilterFreq
+                | ChannelControl::LfoShape
+                | ChannelControl::LfoSpeed
                 | ChannelControl::EqLow
                 | ChannelControl::EqMid
                 | ChannelControl::EqHigh
@@ -263,13 +279,15 @@ impl ChannelControl {
             ChannelControl::EqLow | ChannelControl::EqLowKill => 5,
             ChannelControl::FilterCutoff => 6,
             ChannelControl::FilterFreq => 7,
-            ChannelControl::Pan => 8,
-            ChannelControl::Fader => 9,
-            ChannelControl::Mute => 10,
-            ChannelControl::Solo => 11,
-            ChannelControl::CueSendToA => 12,
-            ChannelControl::CueSendToB => 13,
-            ChannelControl::CueOutputSelect => 14,
+            ChannelControl::LfoShape => 8,
+            ChannelControl::LfoSpeed => 9,
+            ChannelControl::Pan => 10,
+            ChannelControl::Fader => 11,
+            ChannelControl::Mute => 12,
+            ChannelControl::Solo => 13,
+            ChannelControl::CueSendToA => 14,
+            ChannelControl::CueSendToB => 15,
+            ChannelControl::CueOutputSelect => 16,
         }
     }
 
@@ -283,13 +301,15 @@ impl ChannelControl {
             5 => Some(ChannelControl::EqLow),
             6 => Some(ChannelControl::FilterCutoff),
             7 => Some(ChannelControl::FilterFreq),
-            8 => Some(ChannelControl::Pan),
-            9 => Some(ChannelControl::Fader),
-            10 => Some(ChannelControl::Mute),
-            11 => Some(ChannelControl::Solo),
-            12 => Some(ChannelControl::CueSendToA),
-            13 => Some(ChannelControl::CueSendToB),
-            14 => Some(ChannelControl::CueOutputSelect),
+            8 => Some(ChannelControl::LfoShape),
+            9 => Some(ChannelControl::LfoSpeed),
+            10 => Some(ChannelControl::Pan),
+            11 => Some(ChannelControl::Fader),
+            12 => Some(ChannelControl::Mute),
+            13 => Some(ChannelControl::Solo),
+            14 => Some(ChannelControl::CueSendToA),
+            15 => Some(ChannelControl::CueSendToB),
+            16 => Some(ChannelControl::CueOutputSelect),
             _ => None,
         }
     }
@@ -305,14 +325,16 @@ impl ChannelControl {
             ChannelControl::EqLow | ChannelControl::EqLowKill => 2,
             ChannelControl::FilterCutoff => 3,
             ChannelControl::FilterFreq => 4,
-            ChannelControl::Pan => 5,
-            ChannelControl::Fader => 6,
-            ChannelControl::Mute => 7,
-            ChannelControl::Solo => 8,
+            ChannelControl::LfoShape => 5,
+            ChannelControl::LfoSpeed => 6,
+            ChannelControl::Pan => 7,
+            ChannelControl::Fader => 8,
+            ChannelControl::Mute => 9,
+            ChannelControl::Solo => 10,
             // CUE controls don't apply to non-deck channels
-            ChannelControl::CueSendToA => 9,
-            ChannelControl::CueSendToB => 10,
-            ChannelControl::CueOutputSelect => 11,
+            ChannelControl::CueSendToA => 11,
+            ChannelControl::CueSendToB => 12,
+            ChannelControl::CueOutputSelect => 13,
         }
     }
     
@@ -323,10 +345,12 @@ impl ChannelControl {
             2 => Some(ChannelControl::EqLow),
             3 => Some(ChannelControl::FilterCutoff),
             4 => Some(ChannelControl::FilterFreq),
-            5 => Some(ChannelControl::Pan),
-            6 => Some(ChannelControl::Fader),
-            7 => Some(ChannelControl::Mute),
-            8 => Some(ChannelControl::Solo),
+            5 => Some(ChannelControl::LfoShape),
+            6 => Some(ChannelControl::LfoSpeed),
+            7 => Some(ChannelControl::Pan),
+            8 => Some(ChannelControl::Fader),
+            9 => Some(ChannelControl::Mute),
+            10 => Some(ChannelControl::Solo),
             _ => None,
         }
     }
@@ -601,11 +625,12 @@ impl MixerState {
         )
     }
 
-    /// Check if the current control is in the filter section
+    /// Check if the current control is in the filter section (including LFO)
     pub fn is_in_filter_section(&self) -> bool {
         matches!(
             self.selected_control,
-            ChannelControl::FilterCutoff | ChannelControl::FilterFreq
+            ChannelControl::FilterCutoff | ChannelControl::FilterFreq |
+            ChannelControl::LfoShape | ChannelControl::LfoSpeed
         )
     }
 
@@ -630,6 +655,8 @@ impl MixerState {
             target_channel.pan = self.cue_channel.pan;
             target_channel.filter_cutoff = self.cue_channel.filter_cutoff;
             target_channel.filter_freq = self.cue_channel.filter_freq;
+            target_channel.lfo_shape = self.cue_channel.lfo_shape;
+            target_channel.lfo_speed = self.cue_channel.lfo_speed;
             target_channel.eq_low = self.cue_channel.eq_low;
             target_channel.eq_mid = self.cue_channel.eq_mid;
             target_channel.eq_high = self.cue_channel.eq_high;
@@ -662,28 +689,33 @@ impl MixerState {
             .map(|ch| ch.connected && ch.duration > 0.0)
             .unwrap_or(false);
         
-        // Max row indices: CUE=14 (CueOutputSelect), Deck A/B=10 (Solo), Non-deck=8 (Solo)
-        let max_row = if is_cue_pane { 14 } else if is_deck { 10 } else { 8 };
+        // Max row indices: CUE=16 (CueOutputSelect), Deck A/B=13 (Solo), Non-deck=10 (Solo)
+        let max_row = if is_cue_pane { 16 } else if is_deck { 13 } else { 10 };
         // Min row: skip Scrub (0) if no track loaded
         let min_row = if has_track { 0 } else { 1 };
         let mut new_row = if current_row <= min_row { max_row } else { current_row - 1 };
         
-        // CUE deck visual layout (3 rows):
-        //   Row 1: M(10) | ->A(12)
-        //   Row 2: S(11) | ->B(13)
-        //   Row 3: OUTPUT(14)
+        // CUE deck visual layout:
+        //   Row 1: CUT(6) | FREQ(7) | SHP(8) | SPD(9)
+        //   Row 2: PAN(10)
+        //   Row 3: Fader(11)
+        //   Row 4: M(12) | ->A(14)
+        //   Row 5: S(13) | ->B(15)
+        //   Row 6: OUTPUT(16)
         if is_cue_pane {
             new_row = match current_row {
-                14 => 13,  // OUTPUT → ->B
-                13 => 12,  // ->B → ->A (up one row, same side)
-                12 => 9,   // →A → Fader (up to volume slider)
-                11 => 10,  // S → M (up one row, same side)
-                10 => 9,   // M → Fader
+                16 => 15,  // OUTPUT → ->B
+                15 => 14,  // ->B → ->A (up one row, same side)
+                14 => 12,  // →A → M (up, same side)
+                13 => 12,  // S → M (up, same side)
+                12 => 11,  // M → Fader
+                11 => 10,  // Fader → Pan
+                10 => 9,   // Pan → SPD
                 _ => if new_row <= min_row { max_row } else { new_row },
             };
-        } else if is_deck && current_row == 11 {
+        } else if is_deck && current_row == 13 {
             // Decks A/B: S → Fader (skip M)
-            new_row = 9;
+            new_row = 11;
         }
         
         // Skip Scrub when no track loaded
@@ -713,8 +745,8 @@ impl MixerState {
             .map(|ch| ch.connected && ch.duration > 0.0)
             .unwrap_or(false);
         
-        // Max row indices: CUE=14 (CueOutputSelect), Deck A/B=10 (Solo), Non-deck=8 (Solo)
-        let max_row = if is_cue_pane { 14 } else if is_deck { 10 } else { 8 };
+        // Max row indices: CUE=16 (CueOutputSelect), Deck A/B=13 (Solo), Non-deck=10 (Solo)
+        let max_row = if is_cue_pane { 16 } else if is_deck { 13 } else { 10 };
         // Min row: skip Scrub (0) if no track loaded
         let min_row = if has_track { 0 } else { 1 };
         let mut new_row = if current_row >= max_row { min_row } else { current_row + 1 };
@@ -724,18 +756,21 @@ impl MixerState {
             new_row = 1;
         }
         
-        // CUE deck visual layout (3 rows):
-        //   Row 1: M(10) | ->A(12)
-        //   Row 2: S(11) | ->B(13)
-        //   Row 3: OUTPUT(14)
+        // CUE deck visual layout:
+        //   Row 1: CUT(6) | FREQ(7) | SHP(8) | SPD(9)
+        //   Row 2: PAN(10)
+        //   Row 3: Fader(11)
+        //   Row 4: M(12) | ->A(14)
+        //   Row 5: S(13) | ->B(15)
+        //   Row 6: OUTPUT(16)
         if is_cue_pane {
             new_row = match current_row {
-                9 => 10,   // Fader → M
-                10 => 11,  // M → S (down one row, same side)
-                11 => 14,  // S → OUTPUT (down to row 3)
-                12 => 13,  // ->A → ->B (down one row, same side)
-                13 => 14,  // ->B → OUTPUT (down to row 3)
-                14 => min_row,  // OUTPUT → wrap to top (skip Scrub if no track)
+                11 => 12,  // Fader → M
+                12 => 14,  // M → ->A (down to right side)
+                14 => 15,  // ->A → ->B (down one row)
+                15 => 16,  // ->B → OUTPUT (down to row 6)
+                13 => 16,  // S → OUTPUT (down)
+                16 => min_row,  // OUTPUT → wrap to top (skip Scrub if no track)
                 _ => if new_row >= max_row { min_row } else { new_row },
             };
         }
@@ -778,10 +813,16 @@ impl MixerState {
                             channel.pan = (channel.pan + delta).clamp(-1.0, 1.0);
                         }
                         ChannelControl::FilterCutoff => {
-                            channel.filter_cutoff = (channel.filter_cutoff + delta).clamp(0.0, 1.0);
+                            channel.filter_cutoff = (channel.filter_cutoff + delta * 0.5).clamp(0.0, 1.0);
                         }
                         ChannelControl::FilterFreq => {
                             channel.filter_freq = (channel.filter_freq + delta).clamp(0.0, 1.0);
+                        }
+                        ChannelControl::LfoShape => {
+                            channel.lfo_shape = (channel.lfo_shape + delta * 0.5).clamp(0.0, 1.0);
+                        }
+                        ChannelControl::LfoSpeed => {
+                            channel.lfo_speed = (channel.lfo_speed + delta * 0.5).clamp(0.0, 1.0);
                         }
                         ChannelControl::EqLow => {
                             channel.eq_low = (channel.eq_low + delta * 6.0).clamp(-24.0, 24.0);
