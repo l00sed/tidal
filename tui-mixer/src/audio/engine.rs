@@ -38,6 +38,7 @@ struct DspFilters {
     eq_hi: StereoBiquad,
     lfo: LfoOsc,
     lfo_active: bool,
+    lfo_mix: f32,
     prev_l: f32,
     prev_r: f32,
 }
@@ -52,6 +53,7 @@ impl DspFilters {
             eq_hi: StereoBiquad::new(sr),
             lfo: LfoOsc::new(sr),
             lfo_active: false,
+            lfo_mix: 0.0,
             prev_l: 0.0,
             prev_r: 0.0,
         };
@@ -104,7 +106,7 @@ impl DspFilters {
     }
 
     /// Process stereo sample through the DSP chain.
-    /// When LFO is active, amplitude-modulate the signal.
+    /// When LFO is active, amplitude-modulate the filtered signal with a crossfade.
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         let (l_filt, r_filt) = {
             let (l, r) = self.hpf.tick(l, r);
@@ -114,9 +116,22 @@ impl DspFilters {
             self.eq_hi.tick(l, r)
         };
 
-        if self.lfo_active {
+        // Crossfade: ramp mix toward 1.0 when active, 0.0 when inactive
+        let target = if self.lfo_active { 1.0 } else { 0.0 };
+        let attack = 0.002;
+        let release = 0.001;
+        let rate = if target > self.lfo_mix { attack } else { release };
+        self.lfo_mix += (target - self.lfo_mix).clamp(-rate, rate);
+
+        if self.lfo_mix > 0.001 {
             if let Some(lfo_val) = self.lfo.tick() {
-                (l * lfo_val, r * lfo_val)
+                let mix = self.lfo_mix;
+                // Modulate the filtered signal, not raw input
+                let lfo_l = l_filt * lfo_val;
+                let lfo_r = r_filt * lfo_val;
+                let dry_l = l_filt * (1.0 - mix) + lfo_l * mix;
+                let dry_r = r_filt * (1.0 - mix) + lfo_r * mix;
+                (dry_l, dry_r)
             } else {
                 (l_filt, r_filt)
             }
@@ -147,6 +162,7 @@ impl SharedBuf {
 }
 
 /// The audio engine: opens cpal output and processes audio in a callback.
+#[allow(dead_code)]
 pub struct AudioEngine {
     pub state: Arc<ControlState>,
     pub meters: [Arc<AtomicMeter>; 3],
@@ -207,8 +223,6 @@ impl AudioEngine {
 
         let mut last_err = String::new();
         let mut stream: Option<cpal::Stream> = None;
-        let mut sample_rate: u32 = 48000;
-        let mut dev_name = String::new();
 
         for device in &candidates {
             let name = device.description().ok().map(|d| d.to_string()).unwrap_or_default();
@@ -314,10 +328,8 @@ impl AudioEngine {
                 Ok(s) => {
                     match s.play() {
                         Ok(_) => {
-                            dev_name = name;
-                            sample_rate = sr;
                             stream = Some(s);
-                            eprintln!("Audio: {} at {}Hz ch={}", dev_name, sample_rate, cfg.channels);
+                            eprintln!("Audio: {} at {}Hz ch={}", name, sr, cfg.channels);
                             break;
                         }
                         Err(e) => {
@@ -341,8 +353,6 @@ impl AudioEngine {
             decoders, bufs, dsp,
         })
     }
-
-    pub fn send(&self, cmd: AudioCommand) { let _ = self.cmd_tx.send(cmd); }
 
     /// Load a file for a deck: creates a decoder thread and wires the ring buffer.
     /// I/O happens on the calling thread (UI thread) — do not call from audio callback.
@@ -392,7 +402,6 @@ fn audio_callback(
                     if ch < MAX_DECKS { bufs[ch].clear(); }
                 }
                 AudioCommand::Quit => return,
-                _ => {}
             }
         }
     }

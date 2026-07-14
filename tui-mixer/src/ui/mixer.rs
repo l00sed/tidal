@@ -41,6 +41,7 @@ pub struct MixerView<'a> {
     selected_cue_output_idx: usize,
     debug_log: Option<&'a [String]>,
     samples_dir: Option<&'a std::path::Path>,
+    layout_start_end: Option<(usize, usize)>,
 }
 
 impl<'a> MixerView<'a> {
@@ -70,6 +71,7 @@ impl<'a> MixerView<'a> {
             selected_cue_output_idx: 0,
             debug_log: None,
             samples_dir: None,
+            layout_start_end: None,
         }
     }
 
@@ -125,6 +127,11 @@ impl<'a> MixerView<'a> {
 
     pub fn scroll_offset(mut self, offset: usize) -> Self {
         self.scroll_offset = offset;
+        self
+    }
+
+    pub fn layout_start_end(mut self, start_end: Option<(usize, usize)>) -> Self {
+        self.layout_start_end = start_end;
         self
     }
     
@@ -305,7 +312,8 @@ impl<'a> MixerView<'a> {
         // Compute the horizontal layout (columns + scroll) from the viewport
         // width and which pane is selected. Centralised so the renderer,
         // scroll logic, and mouse hit-testing all agree.
-        let layout = MixerLayout::compute(area.width, self.selected_pane, None, None);
+        let (cur_start, cur_end) = self.layout_start_end.map(|(s, e)| (Some(s), Some(e))).unwrap_or((None, None));
+        let layout = MixerLayout::compute(area.width, self.selected_pane, cur_start, cur_end);
 
         let loops_height = (area.height as f32 * 0.20) as u16;
         let loops_height = loops_height.max(3);
@@ -347,7 +355,7 @@ impl<'a> MixerView<'a> {
                 .selected(pane_selected, control)
                 .deck_label(Some("A"))
                 .deck_color(DECK_A)
-                .editing(show_control && pane_selected)
+                .editing(self.editing && pane_selected)
                 .frame(self.frame)
                 .render(chunk(0), buf);
         }
@@ -383,7 +391,7 @@ impl<'a> MixerView<'a> {
                 .selected(pane_selected, control)
                 .deck_label(Some("B"))
                 .deck_color(DECK_B)
-                .editing(show_control && pane_selected)
+                .editing(self.editing && pane_selected)
                 .frame(self.frame)
                 .render(chunk(2), buf);
         }
@@ -403,7 +411,7 @@ impl<'a> MixerView<'a> {
             MasterStrip::new(&self.state.master)
                 .pane_selected(master_pane_selected)
                 .selected(master_control_selected, master_control)
-                .editing(show_control && master_pane_selected)
+                .editing(self.editing && master_pane_selected)
                 .frame(self.frame)
                 .any_channel_playing(any_playing)
                 .render(chunk(4), buf);
@@ -419,8 +427,15 @@ impl<'a> MixerView<'a> {
             BG_LIGHT
         };
         
+        let pane_selected = self.selected_pane == SelectedPane::DjCenter;
+        let title_style = if pane_selected {
+            Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(border_color)
+        };
+
         let block = Block::default()
-            .title(" PADS ")
+            .title(Span::styled(" PADS ", title_style))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 
@@ -533,8 +548,15 @@ impl<'a> MixerView<'a> {
             BG_LIGHT
         };
 
+        let pane_selected = self.selected_pane == SelectedPane::Loops;
+        let title_style = if pane_selected {
+            Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(border_color)
+        };
+
         let block = Block::default()
-            .title(" LOOPS ")
+            .title(Span::styled(" LOOPS ", title_style))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 
@@ -606,8 +628,15 @@ impl<'a> MixerView<'a> {
             BG_LIGHT
         };
 
+        let pane_selected = self.selected_pane == SelectedPane::Crossfader;
+        let title_style = if pane_selected {
+            Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(border_color)
+        };
+
         let block = Block::default()
-            .title(" CROSSFADE ")
+            .title(Span::styled(" CROSSFADE ", title_style))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 
@@ -688,7 +717,7 @@ impl<'a> MixerView<'a> {
             .selected(pane_selected, control)
             .deck_label(Some("C"))
             .deck_color(DECK_C)
-            .editing(show_control && pane_selected)
+            .editing(self.editing && pane_selected)
             .frame(self.frame)
             .show_border(false)
             .render(chunks[0], buf);

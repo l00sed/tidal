@@ -4,12 +4,9 @@ use std::sync::RwLock;
 /// State changes (volume, EQ, filters, etc.) go directly through ControlState.
 /// These commands are for thread-bound actions only.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AudioCommand {
-    LoadFile(usize, String),
-    Play(usize),
-    Pause(usize),
     Stop(usize),
-    Seek(usize, f64),
     Quit,
 }
 
@@ -36,7 +33,7 @@ impl Default for DeckState {
     fn default() -> Self {
         Self {
             volume: 0.8, filter_cutoff: 0.0, filter_freq: 0.5,
-            lfo_speed: 0.0, lfo_shape: 0.0,
+            lfo_speed: 0.0, lfo_shape: 0.5,
             eq_low: 0.0, eq_mid: 0.0, eq_high: 0.0,
             eq_low_kill: false, eq_mid_kill: false, eq_high_kill: false,
             pan: 0.0, muted: false, solo: false,
@@ -201,14 +198,9 @@ impl ControlState {
         }
         if let Ok(mut inner) = self.inner.write() { inner.master.fader = clamped; }
     }
-    pub fn set_master_muted(&self, m: bool) {
-        if let Ok(inner) = self.inner.read() {
-            if inner.master.muted == m { return; }
-        }
-        if let Ok(mut inner) = self.inner.write() { inner.master.muted = m; }
-    }
     pub fn set_crossfader(&self, v: f32) {
-        let clamped = v.clamp(0.0, 1.0);
+        // App uses -1.0..+1.0, engine uses 0.0..1.0 (0=full A, 1=full B)
+        let clamped = ((v + 1.0) / 2.0).clamp(0.0, 1.0);
         if let Ok(inner) = self.inner.read() {
             if (inner.master.crossfader - clamped).abs() <= f32::EPSILON { return; }
         }

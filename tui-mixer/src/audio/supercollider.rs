@@ -13,23 +13,23 @@ pub struct SuperColliderClient {
     addr: String,
     connected: bool,
     base_node_id: i32,
+    input_bus: i32,
     synth_def_sent: bool,
     group_id: Option<i32>,
     synth_id: Option<i32>,
-    monitor_synth_id: Option<i32>,
 }
 
 impl SuperColliderClient {
-    pub fn new(addr: impl Into<String>, base_node_id: i32) -> Self {
+    pub fn new(addr: impl Into<String>, base_node_id: i32, input_bus: i32) -> Self {
         Self {
             socket: None,
             addr: addr.into(),
             connected: false,
             base_node_id,
+            input_bus,
             synth_def_sent: false,
             group_id: None,
             synth_id: None,
-            monitor_synth_id: None,
         }
     }
 
@@ -60,10 +60,9 @@ impl SuperColliderClient {
     /// The SynthDef reads stereo audio from a bus, applies EQ, LPF, HPF,
     /// volume, and pan, then outputs to the hardware.
     ///
-    /// After sending, call `create_monitor_synth()`, `create_group()`, and `create_synth()` to activate.
+    /// After sending, call `create_group()` and `create_synth()` to activate.
     pub fn send_synth_def(&mut self) -> Result<(), String> {
-        // Send both SynthDefs: monitorChannel (bus 0→2) and mixerChannel (bus 2→0 with effects)
-        let synthdef_files = ["monitorChannel.scsyndef", "mixerChannel.scsyndef"];
+        let synthdef_files = ["mixerChannel.scsyndef"];
         
         for filename in &synthdef_files {
             let paths = [
@@ -110,7 +109,7 @@ impl SuperColliderClient {
     }
 
     /// Create the mixer synth in this deck's group
-    /// Reads from bus 0 (hardware in), processes, outputs to bus 0 (hardware out)
+    /// Reads from the deck's SuperDirt orbit bus, processes, outputs to hardware out.
     pub fn create_synth(&mut self) -> Result<(), String> {
         let group_id = self.group_id.unwrap_or(0);
         let synth_id = self.base_node_id + 200;
@@ -124,58 +123,32 @@ impl SuperColliderClient {
                 OscType::Int(1),  // addToTail
                 OscType::Int(group_id), // target: our group
                 OscType::Str("in".to_string()),
-                OscType::Int(2),  // read from bus 2 (SuperDirt output)
+                OscType::Int(self.input_bus),
                 OscType::Str("out".to_string()),
                 OscType::Int(0),  // write to bus 0
                 OscType::Str("vol".to_string()),
-                OscType::Float(0.8),
+                OscType::Float(4.0),
                 OscType::Str("lpf".to_string()),
                 OscType::Float(20000.0),
                 OscType::Str("hpf".to_string()),
                 OscType::Float(20.0),
-                OscType::Str("eqLow".to_string()),
+                OscType::Str("eqLowFreq".to_string()),
+                OscType::Float(20000.0),
+                OscType::Str("eqLowGain".to_string()),
                 OscType::Float(0.0),
-                OscType::Str("eqMid".to_string()),
+                OscType::Str("eqMidFreq".to_string()),
+                OscType::Float(1000.0),
+                OscType::Str("eqMidGain".to_string()),
                 OscType::Float(0.0),
-                OscType::Str("eqHigh".to_string()),
+                OscType::Str("eqHighFreq".to_string()),
+                OscType::Float(20.0),
+                OscType::Str("eqHighGain".to_string()),
                 OscType::Float(0.0),
                 OscType::Str("pan".to_string()),
                 OscType::Float(0.0),
             ],
         );
         self.send_raw(&msg)
-    }
-
-    /// Create a monitoring synth that routes SuperDirt output (bus 0) to mixer input (bus 2)
-    /// This allows the mixer to process audio without modifying SuperDirt's config
-    pub fn create_monitor_synth(&mut self) -> Result<(), String> {
-        let monitor_id = self.base_node_id + 300;
-        self.monitor_synth_id = Some(monitor_id);
-
-        let msg = Self::encode_osc_message(
-            "/s_new",
-            &[
-                OscType::Str("monitorChannel".to_string()),
-                OscType::Int(monitor_id),
-                OscType::Int(1),  // addToTail
-                OscType::Int(0),  // target: default group
-                OscType::Str("in".to_string()),
-                OscType::Int(0),  // read from bus 0 (SuperDirt output)
-                OscType::Str("out".to_string()),
-                OscType::Int(2),  // write to bus 2 (mixer input)
-            ],
-        );
-        self.send_raw(&msg)
-    }
-
-    /// Free the monitoring synth (restores direct SuperDirt → speakers routing)
-    pub fn free_monitor_synth(&self) -> Result<(), String> {
-        if let Some(monitor_id) = self.monitor_synth_id {
-            let msg = Self::encode_osc_message("/n_free", &[OscType::Int(monitor_id)]);
-            self.send_raw(&msg)
-        } else {
-            Ok(())
-        }
     }
 
     /// Free the mixer synth (stops effect processing)
@@ -215,9 +188,9 @@ impl SuperColliderClient {
         }
     }
 
-    /// Set volume (0.0 - 1.0)
+    /// Set volume (0.0 - 8.0)
     pub fn set_volume(&self, volume: f32) -> Result<(), String> {
-        self.set_synth_param("vol", volume.clamp(0.0, 1.0))
+        self.set_synth_param("vol", volume.clamp(0.0, 8.0))
     }
 
     /// Set low-pass filter frequency (20 - 20000 Hz)
@@ -233,13 +206,15 @@ impl SuperColliderClient {
 
     /// Set EQ (all three bands)
     pub fn set_eq(&self, low: f32, mid: f32, high: f32) -> Result<(), String> {
-        // Low: lowpass cutoff 20000->500Hz (only active when cutting)
+        // Low: cut with lowpass, boost with low shelf
         if low < 0.0 {
             let normalized = (-low / 24.0).clamp(0.0, 1.0);
             let low_freq: f32 = 20000.0 * (500.0f32 / 20000.0).powf(normalized);
             self.set_synth_param("eqLowFreq", low_freq.clamp(20.0, 20000.0))?;
+            self.set_synth_param("eqLowGain", 0.0)?;
         } else {
             self.set_synth_param("eqLowFreq", 20000.0)?;
+            self.set_synth_param("eqLowGain", (low / 2.0).clamp(0.0, 12.0))?;
         }
 
         // Mid: sweepable peak EQ frequency and gain
@@ -254,13 +229,15 @@ impl SuperColliderClient {
             self.set_synth_param("eqMidGain", 0.0)?;
         }
 
-        // High: highpass cutoff 20->5000Hz (only active when cutting)
+        // High: cut with highpass, boost with high shelf
         if high < 0.0 {
             let normalized = (-high / 24.0).clamp(0.0, 1.0);
             let high_freq: f32 = 20.0 * (5000.0f32 / 20.0).powf(normalized);
-            self.set_synth_param("eqHighFreq", high_freq.clamp(20.0, 20000.0))
+            self.set_synth_param("eqHighFreq", high_freq.clamp(20.0, 20000.0))?;
+            self.set_synth_param("eqHighGain", 0.0)
         } else {
-            self.set_synth_param("eqHighFreq", 20.0)
+            self.set_synth_param("eqHighFreq", 20.0)?;
+            self.set_synth_param("eqHighGain", (high / 2.0).clamp(0.0, 12.0))
         }
     }
 
@@ -293,7 +270,6 @@ impl SuperColliderClient {
 
     /// Free all nodes (cleanup)
     pub fn free_all(&self) -> Result<(), String> {
-        self.free_monitor_synth()?;
         self.free_synth()?;
         self.free_group()
     }

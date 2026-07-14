@@ -433,14 +433,15 @@ impl MpvClient {
 
         let mut filters = Vec::new();
 
-        // Low: lowpass filter sweeps from 20000Hz (no cut) to 500Hz (max cut)
-        // Only active when cutting (low < 0, bottom half of bar)
         if low < 0.0 {
             let normalized = (-low / 24.0).clamp(0.0, 1.0);
             let low_freq: f32 = 20000.0 * (500.0f32 / 20000.0).powf(normalized);
             if low_freq < 20000.0 {
                 filters.push(format!("lowpass=f={:.0}", low_freq));
             }
+        } else if low > 0.1 {
+            let gain = (low / 2.0).clamp(0.0, 12.0);
+            filters.push(format!("equalizer=f=120:t=h:w=220:g={:.1}", gain));
         }
 
         // Mid: equalizer with sweepable frequency and gain
@@ -451,14 +452,15 @@ impl MpvClient {
             filters.push(format!("equalizer=f={:.0}:t=h:w=500:g={:.1}", mid_freq, mid_gain));
         }
 
-        // High: highpass filter sweeps from 20Hz (no cut) to 5000Hz (max cut)
-        // Only active when cutting (high < 0, bottom half of bar)
         if high < 0.0 {
             let normalized = (-high / 24.0).clamp(0.0, 1.0);
             let high_freq: f32 = 20.0 * (5000.0f32 / 20.0).powf(normalized);
             if high_freq > 20.0 {
                 filters.push(format!("highpass=f={:.0}", high_freq));
             }
+        } else if high > 0.1 {
+            let gain = (high / 2.0).clamp(0.0, 12.0);
+            filters.push(format!("equalizer=f=8000:t=h:w=6000:g={:.1}", gain));
         }
 
         if !filters.is_empty() {

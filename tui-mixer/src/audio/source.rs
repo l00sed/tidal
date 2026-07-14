@@ -1,19 +1,11 @@
 //! Audio source abstraction for MPV IPC control
 
 /// Audio source representing an MPV instance
-pub struct AudioSource {
-    name: String,
-}
+pub struct AudioSource;
 
 impl AudioSource {
-    pub fn new(name: impl Into<String>, _socket_path: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn new(_name: impl Into<String>, _socket_path: impl Into<String>) -> Self {
+        Self
     }
 }
 
@@ -29,10 +21,6 @@ impl AudioSourceManager {
 
     pub fn add_source(&mut self, source: AudioSource) {
         self.sources.push(source);
-    }
-
-    pub fn sources(&self) -> &[AudioSource] {
-        &self.sources
     }
 }
 

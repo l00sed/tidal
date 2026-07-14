@@ -98,7 +98,7 @@ impl<'a> Widget for ChannelStrip<'a> {
         let inner = if self.show_border {
             // Minimalist border - thin line style
             let border_color = if self.selected {
-                if self.editing { Color::Yellow } else { Color::Rgb(120, 100, 0) }
+                if self.selected_control.is_some() { BORDER_ACTIVE } else { BORDER_NAVIGATED }
             } else if self.deck_label.is_some() {
                 if self.channel.connected {
                     match self.deck_color {
@@ -126,7 +126,7 @@ impl<'a> Widget for ChannelStrip<'a> {
             };
 
             let title_style = if self.selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
             } else if self.channel.connected {
                 Style::default().fg(border_color).add_modifier(Modifier::BOLD)
             } else {
@@ -155,7 +155,7 @@ impl<'a> Widget for ChannelStrip<'a> {
                 Constraint::Length(1),  // Separator
                 Constraint::Length(1),  // BPM display
                 Constraint::Length(1),  // Separator
-                Constraint::Length(12),  // EQ section (vertical bars + kill buttons + filter/LFO)
+                Constraint::Length(7),  // EQ section (3 bars + separator + 4 filter knobs + gaps)
                 Constraint::Length(1),  // Separator
                 Constraint::Length(1),  // Pan
                 Constraint::Length(1),  // Separator
@@ -165,7 +165,7 @@ impl<'a> Widget for ChannelStrip<'a> {
             ]
         } else {
             vec![
-                Constraint::Length(12),  // EQ section (vertical bars + kill buttons + filter/LFO)
+                Constraint::Length(7),  // EQ section (3 bars + separator + 4 filter knobs + gaps)
                 Constraint::Length(2),  // Pan
                 Constraint::Min(7),     // Fader + Meter
                 Constraint::Length(1),  // Separator before buttons
@@ -182,8 +182,8 @@ impl<'a> Widget for ChannelStrip<'a> {
 
         // Deck indicator (only for deck channels)
         if has_deck {
-            // Scrubber (only shown when track loaded)
-            let has_track = self.channel.connected && self.channel.duration > 0.0;
+            // Scrubber (only shown for seekable MPV tracks)
+            let has_track = self.channel.connected && self.channel.duration > 0.0 && !self.channel.uses_supercollider;
             if has_track {
                 self.render_scrub_bar(chunks[idx], buf, self.is_control_selected(ChannelControl::Scrub));
             }
@@ -223,7 +223,7 @@ impl<'a> Widget for ChannelStrip<'a> {
             let label_style = if bpm_editing {
                 Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
             } else if bpm_selected {
-                Style::default().fg(TEXT_EDITING)
+                Style::default().fg(TEXT_BRIGHT)
             } else {
                 Style::default().fg(TEXT_DIM)
             };
@@ -254,21 +254,21 @@ impl<'a> Widget for ChannelStrip<'a> {
         }
 
         // EQ section with vertical bars
-        let eq_sep_x = self.render_eq_section(chunks[idx], buf);
+        let eq_sep_positions = self.render_eq_section(chunks[idx], buf);
         idx += 1;
 
         // Separator below EQ
         self.draw_separator(chunks[idx], buf);
-        // Bottom junction (┴) where vertical separator meets the horizontal line
-        if let Some(sep_x) = eq_sep_x {
-            let sep_style = Style::default().fg(SEPARATOR);
-            buf.set_string(sep_x, chunks[idx].y, "┴", sep_style);
+        // Bottom junctions (┴) where vertical separators meet the horizontal line
+        let sep_style = Style::default().fg(SEPARATOR);
+        for sep_x in &eq_sep_positions {
+            buf.set_string(*sep_x, chunks[idx].y, "┴", sep_style);
         }
         idx += 1;
 
         // Pan
         self.render_pan_bar(chunks[idx], buf, self.channel.pan,
-            self.is_control_selected(ChannelControl::Pan), false);
+            self.is_control_selected(ChannelControl::Pan), self.is_control_editing(ChannelControl::Pan));
         idx += 1;
 
         // Separator between pan and fader
@@ -300,6 +300,7 @@ impl<'a> Widget for ChannelStrip<'a> {
             };
             Fader::new(self.channel.fader)
                 .selected(self.is_control_selected(ChannelControl::Fader))
+                .editing(self.is_control_editing(ChannelControl::Fader))
                 .label(db_label)
                 .render(fader_chunks[1], buf);
         }
@@ -334,7 +335,7 @@ impl<'a> ChannelStrip<'a> {
     #[allow(dead_code)]
     fn border_color(&self) -> Color {
         if self.selected {
-            if self.editing { Color::Yellow } else { Color::Rgb(120, 100, 0) }
+            if self.selected_control.is_some() { Color::Yellow } else { Color::Rgb(120, 100, 0) }
         } else if self.deck_label.is_some() {
             if self.channel.connected {
                 match self.deck_color {
@@ -362,7 +363,7 @@ impl<'a> ChannelStrip<'a> {
         let label_style = if editing {
             Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
         } else if selected {
-            Style::default().fg(TEXT_EDITING)
+            Style::default().fg(TEXT_BRIGHT)
         } else {
             Style::default().fg(TEXT_GHOST)
         };
@@ -406,229 +407,167 @@ impl<'a> ChannelStrip<'a> {
     
     /// Render the EQ section with vertical bars (H/M/L) and filter/LFO controls
     /// Returns the x-position of the vertical separator for junction drawing
-    fn render_eq_section(&self, area: Rect, buf: &mut Buffer) -> Option<u16> {
-        if area.width < 10 || area.height < 10 {
-            return None;
+    fn render_eq_section(&self, area: Rect, buf: &mut Buffer) -> Vec<u16> {
+        if area.width < 10 || area.height < 4 {
+            return vec![];
         }
 
-        // Layout: [H bar + kill] [M bar + kill] [L bar + kill] [separator] [CUT+LFO]
-        // Each EQ bar gets ~20% width, separator 1 char, filters share remaining space
-        let eq_width = area.width / 5;
-        let filter_width = area.width - eq_width * 3 - 1;
+        // Left-aligned: 3 bars with 1-char gaps between = 5 chars, +1 filter sep
+        // Remaining space goes to filter column
+        let eq_total = 5u16; // bar gap bar gap bar
+        let filter_width = area.width.saturating_sub(eq_total + 1); // +1 for filter separator
         
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(eq_width),         // Low
-                Constraint::Length(eq_width),         // Mid
-                Constraint::Length(eq_width),         // High
-                Constraint::Length(1),                // Separator
-                Constraint::Length(filter_width),     // Filters + LFO (stacked)
+                Constraint::Length(1),             // Low bar
+                Constraint::Length(1),             // Separator
+                Constraint::Length(1),             // Mid bar
+                Constraint::Length(1),             // Separator
+                Constraint::Length(1),             // High bar
+                Constraint::Length(1),             // Separator before filters
+                Constraint::Length(filter_width),  // Filters + LFO
             ])
             .split(area);
 
         // Render three EQ bands with vertical bars (L/M/H from left to right)
-        self.render_vertical_eq_bar(sections[0], buf, "L",
-            self.channel.eq_low, self.channel.eq_low_kill,
-            self.is_control_selected(ChannelControl::EqLow),
-            self.is_control_selected(ChannelControl::EqLowKill));
+        self.render_vertical_eq_bar(sections[0], buf,
+            self.channel.eq_low, self.channel.spectrum_peaks[0],
+            self.is_control_selected(ChannelControl::EqLow));
 
-        self.render_vertical_eq_bar(sections[1], buf, "M",
-            self.channel.eq_mid, self.channel.eq_mid_kill,
-            self.is_control_selected(ChannelControl::EqMid),
-            self.is_control_selected(ChannelControl::EqMidKill));
+        self.render_vertical_eq_bar(sections[2], buf,
+            self.channel.eq_mid, self.channel.spectrum_peaks[1],
+            self.is_control_selected(ChannelControl::EqMid));
 
-        self.render_vertical_eq_bar(sections[2], buf, "H",
-            self.channel.eq_high, self.channel.eq_high_kill,
-            self.is_control_selected(ChannelControl::EqHigh),
-            self.is_control_selected(ChannelControl::EqHighKill));
+        self.render_vertical_eq_bar(sections[4], buf,
+            self.channel.eq_high, self.channel.spectrum_peaks[2],
+            self.is_control_selected(ChannelControl::EqHigh));
 
-        // Vertical separator with junctions
+        // Collect all separator x-positions (between bands + before filters)
         let sep_style = Style::default().fg(SEPARATOR);
-        let sep_x = sections[3].x;
-        for y in sections[3].y..sections[3].y + sections[3].height {
-            buf.set_string(sep_x, y, "│", sep_style);
-        }
-        // Top junction (┬) connects to separator above (deck channels only)
-        if self.deck_label.is_some() && area.y > 0 {
-            buf.set_string(sep_x, area.y - 1, "┬", sep_style);
+        let sep_positions: Vec<u16> = vec![sections[1].x, sections[3].x, sections[5].x];
+
+        for &sep_x in &sep_positions {
+            for row in 0..area.height {
+                let y = area.y + area.height - 1 - row;
+                buf.set_string(sep_x, y, "│", sep_style);
+            }
         }
 
-        // Filter column: 4 knobs stacked vertically
-        let knob_h = sections[4].height / 4;
+        // Top junctions (┬) connect to separator above (deck channels only)
+        if self.deck_label.is_some() && area.y > 0 {
+            for &sep_x in &sep_positions {
+                buf.set_string(sep_x, area.y - 1, "┬", sep_style);
+            }
+        }
+
+        // Filter column: 4 knobs top-aligned with 1-row gaps
         let filter_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(knob_h),   // Filter Cutoff (-/+)
-                Constraint::Length(knob_h),   // Filter Freq (H/kH)
-                Constraint::Length(knob_h),   // LFO Shape (󱑻/Hz)
-                Constraint::Length(knob_h),   // LFO Speed (󰴻/󰤇)
+                Constraint::Length(1),   // Filter Cutoff (-/+)
+                Constraint::Length(1),   // Gap
+                Constraint::Length(1),   // Filter Freq (H/kH)
+                Constraint::Length(1),   // Gap
+                Constraint::Length(1),   // LFO Shape (󱑻/Hz)
+                Constraint::Length(1),   // Gap
+                Constraint::Length(1),   // LFO Speed (󰴻/󰤇)
             ])
-            .split(sections[4]);
+            .split(sections[6]);
 
         self.render_filter_bar(filter_chunks[0], buf,
             self.channel.filter_cutoff,
             Some(("-", "+")),
             self.is_control_selected(ChannelControl::FilterCutoff));
 
-        self.render_filter_bar(filter_chunks[1], buf,
+        self.render_filter_bar(filter_chunks[2], buf,
             self.channel.filter_freq,
             Some(("Hz", "kHz")),
             self.is_control_selected(ChannelControl::FilterFreq));
 
-        self.render_filter_bar(filter_chunks[2], buf,
+        self.render_filter_bar(filter_chunks[4], buf,
             self.channel.lfo_shape,
             Some(("󱑻", "󰥛")),
             self.is_control_selected(ChannelControl::LfoShape));
 
-        self.render_filter_bar(filter_chunks[3], buf,
+        self.render_filter_bar(filter_chunks[6], buf,
             self.channel.lfo_speed,
             Some(("󰴻", "󰤇")),
             self.is_control_selected(ChannelControl::LfoSpeed));
 
-        Some(sep_x)
+        sep_positions
     }
 
-    /// Render a single vertical EQ bar with kill button beneath
-    #[allow(clippy::too_many_arguments)]
+    /// Render a single vertical EQ bar
     fn render_vertical_eq_bar(&self, area: Rect, buf: &mut Buffer,
-                               label: &str, eq_value: f32, killed: bool,
-                               bar_selected: bool, kill_selected: bool) {
-        if area.width < 2 || area.height < 4 {
+                               eq_value: f32, peak: f32, bar_selected: bool) {
+        if area.width < 1 || area.height < 2 {
             return;
         }
 
         let bar_editing = bar_selected && self.editing;
-        let kill_editing = kill_selected && self.editing;
+        let bar_height = area.height;
+        let bar_x = area.x + (area.width - 1) / 2;
 
-        // Top label (slightly left of center for visual balance)
-        let label_style = if bar_editing || kill_editing {
-            Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
-        } else if bar_selected || kill_selected {
-            Style::default().fg(TEXT_EDITING)
-        } else {
-            Style::default().fg(TEXT_GHOST)
+        // Normalize EQ value: -24dB to +24dB maps to -1.0 to 1.0 (0 = center)
+        let normalized = eq_value / 24.0;
+        let total_steps = bar_height * 2;
+        let gain_normalized = (normalized + 1.0) / 2.0; // 0..1
+        let gain_step = (gain_normalized * (total_steps - 1) as f32) as u16;
+        // Scale down incoming spectrum peak for display so bars show more movement
+        // without changing underlying audio model. Tweak value if too subtle.
+        let display_scale: f32 = 0.55;
+        let display_peak = (peak * display_scale).clamp(0.0, 1.0);
+        let level_steps = (display_peak * total_steps as f32) as u16;
+
+        // Offset step by +1 so topmost step reaches 100% and maps to red.
+        let color_for_step = |step: u16| -> Color {
+            let pct = (step as f32 + 1.0) / total_steps as f32;
+            if pct > 0.90 { Color::Red }
+            else if pct > 0.80 { Color::Rgb(255, 140, 0) }
+            else if pct > 0.65 { Color::Yellow }
+            else { Color::Green }
         };
-        // Center based on label length, then shift slightly left
-        let label_x = area.x + (area.width.saturating_sub(label.len() as u16)) / 2;
-        buf.set_string(label_x, area.y, label, label_style);
 
-        // Vertical bar area (leave room for kill button at bottom)
-        let bar_height = area.height.saturating_sub(3); // 1 for label, 1 for kill button, 1 for padding
-        
-        if bar_height >= 3 {
-            // Normalize EQ value: -24dB to +24dB maps to -1.0 to 1.0 (0 = center)
-            let normalized = eq_value / 24.0; // -1.0 to 1.0
-            let bg_color = Color::Rgb(30, 30, 30);
-            
-            // tui-slider vertical_blocks style
-            let filled_symbol = "█";
-            let empty_symbol = "│";
-            let handle_symbol = "─";
-            let filled_color = if normalized > 0.0 { Color::Green } else { Color::Red };
-            let empty_color = Color::DarkGray;
-            let handle_color = if bar_editing {
-                TEXT_BRIGHT
-            } else if bar_selected {
-                BORDER_ACTIVE
-            } else {
-                Color::White
-            };
-            
-            // Bar centered
-            let bar_x = area.x + (area.width - 1) / 2;
-            
-            // Each cell has 2 vertical levels (upper half and lower half)
-            let total_half_rows = bar_height * 2;
-            let center_half_row = total_half_rows as f32 / 2.0;
-            // Max offset so value stays in 0..total_half_rows-1 range
-            let max_offset = (total_half_rows as f32 - 1.0) / 2.0;
-            
-            // Map normalized value (-1.0 to 1.0) to half-row position (0 to total-1)
-            let value_half_row = center_half_row - normalized * max_offset;
-            
-            // Convert to steps
-            let value_step = value_half_row as u16;
-            let center_step = center_half_row as u16;
-            
-            for row in 0..bar_height {
-                let y = area.y + 1 + row;
-                let lower_step = row * 2;
-                let upper_step = row * 2 + 1;
-                
-                // Check if each half is between center and value
-                let lower_in_fill = if normalized > 0.0 {
-                    lower_step >= value_step && lower_step < center_step
-                } else if normalized < 0.0 {
-                    lower_step > center_step && lower_step <= value_step
-                } else {
-                    false
-                };
-                
-                let upper_in_fill = if normalized > 0.0 {
-                    upper_step >= value_step && upper_step < center_step
-                } else if normalized < 0.0 {
-                    upper_step > center_step && upper_step <= value_step
-                } else {
-                    false
-                };
-                
-                let is_indicator = upper_step == value_step || lower_step == value_step;
-                
-                // Draw using tui-slider vertical_blocks style
-                let (ch, color, use_bg) = if is_indicator {
-                    // Moving handle - transparent background
-                    (handle_symbol, handle_color, false)
-                } else if lower_step == center_step || upper_step == center_step {
-                    // Center line - transparent background
-                    let center_color = if bar_selected { BORDER_ACTIVE } else { TEXT_DIM };
-                    (handle_symbol, center_color, false)
-                } else if upper_in_fill && lower_in_fill {
-                    // Both halves filled - keep bg for filled area
-                    (filled_symbol, filled_color, true)
-                } else if upper_in_fill {
-                    ("▀", filled_color, true)
-                } else if lower_in_fill {
-                    ("▄", filled_color, true)
-                } else {
-                    // Empty - transparent background
-                    (empty_symbol, empty_color, false)
-                };
-                
-                if use_bg {
-                    buf.set_string(bar_x, y, ch, Style::default().fg(color).bg(bg_color));
-                } else {
-                    buf.set_string(bar_x, y, ch, Style::default().fg(color));
-                }
+        let handle_color = if bar_editing {
+            TEXT_EDITING
+        } else {
+            Color::White
+        };
+
+        let handle_char = if bar_selected || bar_editing { "◆" } else { "─" };
+
+        for row in 0..bar_height {
+            let y = area.y + bar_height - 1 - row;
+            let lower_step = row * 2;
+            let upper_step = row * 2 + 1;
+
+            let lower_filled = level_steps > lower_step;
+            let upper_filled = level_steps > upper_step;
+
+            let gain_in_lower = gain_step == lower_step;
+            let gain_in_upper = gain_step == upper_step;
+
+            if gain_in_upper || gain_in_lower {
+                let gain_style = Style::default().fg(handle_color).add_modifier(Modifier::BOLD);
+                buf.set_string(bar_x, y, handle_char, gain_style);
+            } else if upper_filled && lower_filled {
+                let c = color_for_step(upper_step);
+                buf.set_string(bar_x, y, "█", Style::default().fg(c));
+            } else if upper_filled && !lower_filled {
+                let c = color_for_step(upper_step);
+                buf.set_string(bar_x, y, "▀", Style::default().fg(c));
+            } else if !upper_filled && lower_filled {
+                let c = color_for_step(lower_step);
+                buf.set_string(bar_x, y, "▄", Style::default().fg(c));
             }
         }
-
-        // Kill button at bottom (centered)
-        let kill_y = area.y + area.height - 1;
-        let kill_x = area.x + (area.width - 1) / 2;
-        let kill_char = if killed { "󱨦" } else { "󱨥" };
-        let kill_style = if kill_selected {
-            if killed {
-                // Kill active + focused: yellow/gold with bold
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                // Kill inactive + focused: use TEXT_EDITING (yellow)
-                Style::default().fg(TEXT_EDITING)
-            }
-        } else if killed {
-            // Kill active + unfocused: use gray (same as filter knob unfocused)
-            Style::default().fg(Color::Rgb(100, 100, 100))
-        } else {
-            // Kill inactive + unfocused: use TEXT_DIM
-            Style::default().fg(TEXT_DIM)
-        };
-        buf.set_string(kill_x, kill_y, kill_char, kill_style);
     }
 
     /// Render a compact vertical filter/LFO bar with optional label
     fn render_filter_bar(&self, area: Rect, buf: &mut Buffer,
                          value: f32, side_labels: Option<(&str, &str)>, selected: bool) {
-        if area.width < 1 || area.height < 2 {
+        if area.width < 1 || area.height < 1 {
             return;
         }
 
@@ -641,9 +580,9 @@ impl<'a> ChannelStrip<'a> {
 
         // Knob style
         let knob_style = if editing {
-            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+            Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
         } else if selected {
-            Style::default().fg(METER_FILL)
+            Style::default().fg(TEXT_BRIGHT)
         } else {
             Style::default().fg(Color::Rgb(100, 100, 100))
         };
@@ -700,7 +639,7 @@ impl<'a> ChannelStrip<'a> {
         let time_str = format!("{} / {}", elapsed, total);
         let time_x = area.x + area.width.saturating_sub(time_str.len() as u16);
         let time_style = if editing {
-            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+            Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
         } else if selected {
             Style::default().fg(TEXT_BRIGHT)
         } else {
@@ -716,7 +655,7 @@ impl<'a> ChannelStrip<'a> {
             for i in 0..bar_width {
                 let ch = if i == filled { "◆" } else { "─" };
                 let color = if i < filled {
-                    if editing { TEXT_BRIGHT } else { METER_FILL }
+                    if editing { TEXT_EDITING } else { METER_FILL }
                 } else {
                     METER_TRACK
                 };
@@ -855,6 +794,10 @@ impl<'a> MasterStrip<'a> {
         self
     }
 
+    fn is_control_editing(&self, control: GlobalControl) -> bool {
+        self.editing && self.selected && self.selected_control == Some(control)
+    }
+
     /// Render compact master EQ bars (10-band, no gaps) inside MasterStrip
     fn render_master_eq_bars(&self, area: Rect, buf: &mut Buffer) {
         if area.width < 10 || area.height < 2 {
@@ -874,6 +817,7 @@ impl<'a> MasterStrip<'a> {
         };
 
         let eq_selected = self.selected;
+        let eq_editing = self.editing;
 
         for i in 0..10 {
             let x_offset = start_x + (i as u16) * bar_step;
@@ -883,13 +827,18 @@ impl<'a> MasterStrip<'a> {
 
             let band_selected = eq_selected
                 && self.selected_control == Some(GlobalControl::all_eq_variants()[i]);
+            let band_editing = band_selected && eq_editing;
 
             let peak = self.master.spectrum_peaks[i];
             let db = self.master.master_eq[i];
             let gain_normalized = (db + 12.0) / 24.0;
 
             let total_steps = bar_area_height * 2;
-            let level_steps = (peak * total_steps as f32) as u16;
+            // Reduce displayed peak so EQ bars less likely stay at full height.
+            // 0.55 chosen after manual testing as reasonable default; adjust if needed.
+            let display_scale: f32 = 0.55;
+            let display_peak = (peak * display_scale).clamp(0.0, 1.0);
+            let level_steps = (display_peak * total_steps as f32) as u16;
             let gain_step = (gain_normalized * (total_steps - 1) as f32) as u16;
 
             let bar_x = area.x + x_offset;
@@ -914,9 +863,10 @@ impl<'a> MasterStrip<'a> {
                 };
 
                 if gain_in_upper || gain_in_lower {
-                    let gain_color = if band_selected { BORDER_ACTIVE } else { Color::White };
+                    let gain_color = if band_editing { TEXT_EDITING } else { Color::White };
                     let gain_style = Style::default().fg(gain_color).add_modifier(Modifier::BOLD);
-                    buf.set_string(bar_x, y, "─", gain_style);
+                    let handle_char = if band_selected { "◆" } else { "─" };
+                    buf.set_string(bar_x, y, handle_char, gain_style);
                 } else if upper_filled && lower_filled {
                     let c = color_for_step(upper_step);
                     buf.set_string(bar_x, y, "█", Style::default().fg(c));
@@ -959,12 +909,18 @@ impl<'a> Widget for MasterStrip<'a> {
             Style::default().fg(BTN_DM_PURPLE)
         };
 
+        let title_style = if self.pane_selected {
+            Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+        } else {
+            border_style
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
             .title(Span::styled(
                 " M ",
-                border_style.add_modifier(Modifier::BOLD),
+                title_style,
             ));
 
         let inner = block.inner(area);
@@ -1122,6 +1078,7 @@ impl<'a> Widget for MasterStrip<'a> {
         let fader_selected = self.selected_control == Some(GlobalControl::MasterFader);
         Fader::new(self.master.fader)
             .selected(fader_selected)
+            .editing(self.is_control_editing(GlobalControl::MasterFader))
             .label(db_label)
             .render(meter_fader[1], buf);
 

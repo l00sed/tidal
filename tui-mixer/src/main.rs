@@ -43,6 +43,20 @@ fn main() -> Result<()> {
         app.set_samples_dir(dir);
     }
 
+    // Setup terminal
+    enable_raw_mode()?;
+
+    // Initialize Rust-native audio engine before configuring sources,
+    // so engine.load_file() works during auto-load
+    match crate::audio::engine::AudioEngine::new() {
+        Ok(engine) => {
+            app.audio_engine = Some(engine);
+        }
+        Err(e) => {
+            eprintln!("Audio engine unavailable (falling back to MPV/SC): {}", e);
+        }
+    }
+
     if !cli.sources.is_empty() {
         app.configure_sources(cli.sources);
     } else if cli.auto_discover {
@@ -50,19 +64,6 @@ fn main() -> Result<()> {
         let discovered = discover_sources();
         if !discovered.is_empty() {
             app.configure_sources(discovered);
-        }
-    }
-
-    // Setup terminal
-    enable_raw_mode()?;
-
-    // Initialize Rust-native audio engine
-    match crate::audio::engine::AudioEngine::new() {
-        Ok(engine) => {
-            app.audio_engine = Some(engine);
-        }
-        Err(e) => {
-            eprintln!("Audio engine unavailable (falling back to MPV/SC): {}", e);
         }
     }
     let mut stdout = stdout();
@@ -274,6 +275,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .pad_config_editing(app.sample_pads.editing_control)
                 .racks(&app.rack_state)
                 .scroll_offset(app.rack_scroll_offset)
+                .layout_start_end(Some((app.mixer_window_start, app.mixer_window_end)))
                 .master_output_device(app.master_output.selected_device())
                 .cue_output_device(app.cue_output.selected_device())
                 .output_picker_active(app.output_picker_active)
@@ -296,6 +298,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             }
             
             frame.render_widget(view, frame.area());
+
+            // Keep mixer window in sync with viewport (handles resize)
+            app.ensure_mixer_pane_visible();
 
             // Update areas for mouse hit testing
             let (channel_areas, crossfader_area, master_area, cue_area, loops_area, pad_areas) =

@@ -66,6 +66,9 @@ pub struct MixerChannel {
     /// Counter to throttle lavfi sync calls (0 = sync now)
     #[serde(skip)]
     pub lfo_sync_tick: u32,
+    /// Previous LFO speed for detecting activation from idle
+    #[serde(skip)]
+    pub prev_lfo_speed: f32,
     /// Low shelf EQ gain (-15 to +15 dB)
     pub eq_low: f32,
     /// Mid EQ gain (-15 to +15 dB)
@@ -137,6 +140,15 @@ pub struct MixerChannel {
     /// Accumulated seek amount (seek when threshold reached)
     #[serde(skip)]
     pub scrub_accumulator: f32,
+    /// Whether this channel's source is SuperCollider (disables scrub)
+    #[serde(skip)]
+    pub uses_supercollider: bool,
+    /// Per-band spectrum peaks for EQ meter overlay (L/M/H)
+    #[serde(skip)]
+    pub spectrum_peaks: [f32; 3],
+    /// Per-band spectrum decay state
+    #[serde(skip)]
+    pub spectrum_decay: [f32; 3],
 }
 
 fn default_playback_speed() -> f32 {
@@ -154,10 +166,11 @@ impl MixerChannel {
             pan: 0.0,
             filter_cutoff: 0.0,   // Off
             filter_freq: 0.5,     // Center (1kHz)
-            lfo_shape: 0.0,       // Square
+            lfo_shape: 0.5,       // Blend (square/sine)
             lfo_speed: 0.0,       // Slow
             lfo_phase: 0.0,
             lfo_sync_tick: 0,
+            prev_lfo_speed: 0.0,
             eq_low: 0.0,
             eq_mid: 0.0,
             eq_high: 0.0,
@@ -184,6 +197,9 @@ impl MixerChannel {
             scrub_speed: 0.0,
             scrub_coarse: false,
             scrub_accumulator: 0.0,
+            uses_supercollider: false,
+            spectrum_peaks: [0.0; 3],
+            spectrum_decay: [0.0; 3],
         }
     }
 
@@ -233,10 +249,10 @@ impl ChannelControl {
             ChannelControl::Bpm => "BPM",
             ChannelControl::Fader => "GAIN",
             ChannelControl::Pan => "PAN",
-            ChannelControl::FilterCutoff => "CUT",
-            ChannelControl::FilterFreq => "FREQ",
-            ChannelControl::LfoShape => "SHP",
-            ChannelControl::LfoSpeed => "SPD",
+            ChannelControl::FilterCutoff => "CUTOFF",
+            ChannelControl::FilterFreq => "FREQUENCY",
+            ChannelControl::LfoShape => "SHAPE",
+            ChannelControl::LfoSpeed => "SPEED",
             ChannelControl::EqLow => "LOW",
             ChannelControl::EqLowKill => "L×",
             ChannelControl::EqMid => "MID",
@@ -355,19 +371,6 @@ impl ChannelControl {
             8 => Some(ChannelControl::Fader),
             9 => Some(ChannelControl::Mute),
             10 => Some(ChannelControl::Solo),
-            _ => None,
-        }
-    }
-    
-    /// Get the paired kill switch for an EQ control
-    pub fn eq_kill_pair(&self) -> Option<Self> {
-        match self {
-            ChannelControl::EqHigh => Some(ChannelControl::EqHighKill),
-            ChannelControl::EqMid => Some(ChannelControl::EqMidKill),
-            ChannelControl::EqLow => Some(ChannelControl::EqLowKill),
-            ChannelControl::EqHighKill => Some(ChannelControl::EqHigh),
-            ChannelControl::EqMidKill => Some(ChannelControl::EqMid),
-            ChannelControl::EqLowKill => Some(ChannelControl::EqLow),
             _ => None,
         }
     }
@@ -688,15 +691,15 @@ impl MixerState {
             self.selected_control.row_index_no_deck()
         };
         
-        // Check if scrubber is visible (track loaded)
-        let has_track = self.selected_channel()
-            .map(|ch| ch.connected && ch.duration > 0.0)
+        // Check if scrubber is visible (track loaded and not SuperCollider source)
+        let scrub_visible = self.selected_channel()
+            .map(|ch| ch.connected && ch.duration > 0.0 && !ch.uses_supercollider)
             .unwrap_or(false);
         
         // Max row indices: CUE=16 (CueOutputSelect), Deck A/B=13 (Solo), Non-deck=10 (Solo)
         let max_row = if is_cue_pane { 16 } else if is_deck { 13 } else { 10 };
-        // Min row: skip Scrub (0) if no track loaded
-        let min_row = if has_track { 0 } else { 1 };
+        // Min row: skip Scrub (0) if no track loaded or SC source
+        let min_row = if scrub_visible { 0 } else { 1 };
         let mut new_row = if current_row <= min_row { max_row } else { current_row - 1 };
         
         // CUE deck visual layout:
@@ -710,7 +713,7 @@ impl MixerState {
             new_row = match current_row {
                 16 => 15,  // OUTPUT → ->B
                 15 => 14,  // ->B → ->A (up one row, same side)
-                14 => 12,  // →A → M (up, same side)
+                14 => 11,  // →A → Fader
                 13 => 12,  // S → M (up, same side)
                 12 => 11,  // M → Fader
                 11 => 10,  // Fader → Pan
@@ -722,8 +725,8 @@ impl MixerState {
             new_row = 11;
         }
         
-        // Skip Scrub when no track loaded
-        if !has_track && new_row == 0 {
+        // Skip Scrub when no track loaded or SC source
+        if !scrub_visible && new_row == 0 {
             new_row = max_row;
         }
         
@@ -744,19 +747,19 @@ impl MixerState {
             self.selected_control.row_index_no_deck()
         };
         
-        // Check if scrubber is visible (track loaded)
-        let has_track = self.selected_channel()
-            .map(|ch| ch.connected && ch.duration > 0.0)
+        // Check if scrubber is visible (track loaded and not SuperCollider source)
+        let scrub_visible = self.selected_channel()
+            .map(|ch| ch.connected && ch.duration > 0.0 && !ch.uses_supercollider)
             .unwrap_or(false);
         
         // Max row indices: CUE=16 (CueOutputSelect), Deck A/B=13 (Solo), Non-deck=10 (Solo)
         let max_row = if is_cue_pane { 16 } else if is_deck { 13 } else { 10 };
-        // Min row: skip Scrub (0) if no track loaded
-        let min_row = if has_track { 0 } else { 1 };
+        // Min row: skip Scrub (0) if no track loaded or SC source
+        let min_row = if scrub_visible { 0 } else { 1 };
         let mut new_row = if current_row >= max_row { min_row } else { current_row + 1 };
         
-        // Skip Scrub when no track loaded
-        if !has_track && new_row == 0 {
+        // Skip Scrub when no track loaded or SC source
+        if !scrub_visible && new_row == 0 {
             new_row = 1;
         }
         
@@ -770,7 +773,7 @@ impl MixerState {
         if is_cue_pane {
             new_row = match current_row {
                 11 => 12,  // Fader → M
-                12 => 14,  // M → ->A (down to right side)
+                12 => 13,  // M → S
                 14 => 15,  // ->A → ->B (down one row)
                 15 => 16,  // ->B → OUTPUT (down to row 6)
                 13 => 16,  // S → OUTPUT (down)
@@ -807,7 +810,9 @@ impl MixerState {
                             channel.fader = (channel.fader + delta.signum() * step).clamp(0.0, 1.0);
                         }
                         ChannelControl::Scrub => {
-                            channel.playback_speed = (channel.playback_speed + delta * 0.5).clamp(0.5, 2.0);
+                            if !channel.uses_supercollider {
+                                channel.playback_speed = (channel.playback_speed + delta * 0.5).clamp(0.5, 2.0);
+                            }
                         }
                         ChannelControl::Bpm => {
                             // Adjust target BPM: +/- 1 BPM per keypress
@@ -1009,6 +1014,32 @@ impl MixerState {
                     (rms_r - channel.rms_right) * rms_release
                 };
                 channel.rms_level = (channel.rms_left + channel.rms_right) / 2.0;
+
+                // Per-band spectrum peaks shaped by EQ gains
+                let peak = channel.peak_level;
+                let eq_gains = [
+                    10f32.powf(channel.eq_low / 20.0),
+                    10f32.powf(channel.eq_mid / 20.0),
+                    10f32.powf(channel.eq_high / 20.0),
+                ];
+                let weights = [6.0, 4.0, 4.2]; // Low, Mid, High
+                for b in 0..3 {
+                    channel.spectrum_decay[b] *= 0.88;
+                    let noise = rand_simple() * 0.5;
+                    let band_peak = (peak * weights[b] * eq_gains[b] + noise * peak * 0.4).min(1.0);
+                    let attack = 0.5;
+                    let release = 0.12;
+                    let target = band_peak;
+                    let current = channel.spectrum_decay[b];
+                    let new_val = if target > current {
+                        current + (target - current) * attack
+                    } else {
+                        current + (target - current) * release
+                    };
+                    channel.spectrum_decay[b] = new_val;
+                    channel.spectrum_peaks[b] = channel.spectrum_peaks[b].max(new_val) * 0.92;
+                }
+
                 continue;
             }
 
@@ -1054,7 +1085,8 @@ impl MixerState {
             };
 
             // Total effective gain (pre-master)
-            let gain = (fader * eq_mult * filter_mult * xf_gain).clamp(0.0, 1.0);
+            let meter_boost = if channel.uses_supercollider { 4.0 } else { 1.0 };
+            let gain = (fader * eq_mult * filter_mult * xf_gain * meter_boost).clamp(0.0, 1.0);
 
             if gain <= 0.001 {
                 continue;
@@ -1096,6 +1128,7 @@ impl MixerState {
                 channel.peak_right = channel.peak_right.max(peak_r);
                 channel.peak_level = channel.peak_left.max(channel.peak_right);
             }
+            update_channel_spectrum(channel);
         }
 
         // --- Deck C (cue channel) meters ---
@@ -1128,6 +1161,59 @@ impl MixerState {
                         (rms_r - cue.rms_right) * rms_release
                     };
                     cue.rms_level = (cue.rms_left + cue.rms_right) / 2.0;
+                    update_channel_spectrum(cue);
+                }
+            } else {
+                let effective_muted = cue.muted || (self.solo_active && !cue.solo) || !cue.playing;
+
+                if !effective_muted && cue.fader > 0.0 {
+                    let low = if cue.eq_low_kill { -60.0 } else { cue.eq_low };
+                    let mid = if cue.eq_mid_kill { -60.0 } else { cue.eq_mid };
+                    let high = if cue.eq_high_kill { -60.0 } else { cue.eq_high };
+                    let eq_mult = (10f32.powf(low / 20.0)
+                        + 10f32.powf(mid / 20.0)
+                        + 10f32.powf(high / 20.0)) / 3.0;
+                    let filter_mult = if cue.filter_cutoff > 0.01 {
+                        1.0 - cue.filter_cutoff * 0.9
+                    } else {
+                        1.0
+                    };
+                    let meter_boost = if cue.uses_supercollider { 4.0 } else { 1.0 };
+                    let gain = (cue.fader * eq_mult * filter_mult * meter_boost).clamp(0.0, 1.0);
+
+                    if gain > 0.001 {
+                        let pan_l = ((1.0 - cue.pan) * 0.5).max(0.0);
+                        let pan_r = ((1.0 + cue.pan) * 0.5).max(0.0);
+                        let t = rand_simple();
+                        let beat = (t * std::f32::consts::TAU).sin().abs();
+                        let noise = rand_simple() * 0.2;
+                        let base = gain * (0.6 + beat * 0.25);
+                        let activity_l = (base + noise) * pan_l;
+                        let activity_r = (base + noise) * pan_r;
+
+                        let rms_attack = 0.35;
+                        let rms_release = 0.06;
+                        cue.rms_left += if activity_l > cue.rms_left {
+                            (activity_l - cue.rms_left) * rms_attack
+                        } else {
+                            (activity_l - cue.rms_left) * rms_release
+                        };
+                        cue.rms_right += if activity_r > cue.rms_right {
+                            (activity_r - cue.rms_right) * rms_attack
+                        } else {
+                            (activity_r - cue.rms_right) * rms_release
+                        };
+                        cue.rms_level = (cue.rms_left + cue.rms_right) / 2.0;
+
+                        if rand_simple() > 0.7 {
+                            let peak_l = (activity_l * 1.4).min(1.0);
+                            let peak_r = (activity_r * 1.4).min(1.0);
+                            cue.peak_left = cue.peak_left.max(peak_l);
+                            cue.peak_right = cue.peak_right.max(peak_r);
+                            cue.peak_level = cue.peak_left.max(cue.peak_right);
+                        }
+                        update_channel_spectrum(cue);
+                    }
                 }
             }
         }
@@ -1240,4 +1326,27 @@ fn rand_simple() -> f32 {
         .unwrap()
         .subsec_nanos();
     ((nanos % 1000) as f32) / 1000.0
+}
+
+fn update_channel_spectrum(channel: &mut MixerChannel) {
+    let peak = channel.peak_level.max(channel.rms_level);
+    let eq_gains = [
+        10f32.powf(channel.eq_low / 20.0),
+        10f32.powf(channel.eq_mid / 20.0),
+        10f32.powf(channel.eq_high / 20.0),
+    ];
+    let weights = [6.0, 4.0, 4.2];
+    for b in 0..3 {
+        channel.spectrum_decay[b] *= 0.88;
+        let noise = rand_simple() * 0.5;
+        let band_peak = (peak * weights[b] * eq_gains[b] + noise * peak * 0.4).min(1.0);
+        let current = channel.spectrum_decay[b];
+        let new_val = if band_peak > current {
+            current + (band_peak - current) * 0.5
+        } else {
+            current + (band_peak - current) * 0.12
+        };
+        channel.spectrum_decay[b] = new_val;
+        channel.spectrum_peaks[b] = channel.spectrum_peaks[b].max(new_val) * 0.92;
+    }
 }

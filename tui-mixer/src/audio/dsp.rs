@@ -28,11 +28,6 @@ impl Biquad {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.x1 = 0.0; self.x2 = 0.0;
-        self.y1 = 0.0; self.y2 = 0.0;
-    }
-
     /// Set coefficients using RBJ cookbook formulas (pre-warped bilinear transform).
     pub fn set_params(&mut self, filter_type: FilterType, freq: f32, q: f32, gain_db: f32) {
         let fs = self.sample_rate;
@@ -89,11 +84,13 @@ pub struct LfoOsc {
     pub speed: f32,
     pub shape: f32,
     freq_hz: f32,
+    prev_speed: f32,
+    prev_output: f32,
 }
 
 impl LfoOsc {
     pub fn new(sample_rate: f32) -> Self {
-        Self { phase: 0.0, sample_rate, speed: 0.0, shape: 0.0, freq_hz: 0.0 }
+        Self { phase: 0.0, sample_rate, speed: 0.0, shape: 0.0, freq_hz: 0.0, prev_speed: 0.0, prev_output: 0.0 }
     }
 
     pub fn set_speed(&mut self, speed: f32) {
@@ -102,29 +99,34 @@ impl LfoOsc {
             self.freq_hz = 0.0;
         } else {
             self.freq_hz = 0.05 + speed.powf(3.0) * 9.95;
+            // Start at peak (phase 0.25) when LFO activates from idle
+            if self.prev_speed <= 0.001 {
+                self.phase = 0.25;
+            }
         }
+        self.prev_speed = speed;
     }
 
     pub fn set_shape(&mut self, shape: f32) {
         self.shape = shape.clamp(0.0, 1.0);
     }
 
-    pub fn freq(&self) -> f32 { self.freq_hz }
-
     #[inline]
     pub fn tick(&mut self) -> Option<f32> {
         if self.freq_hz <= 0.001 {
             self.phase = 0.0;
+            self.prev_output = 0.0;
             return None;
         }
         self.phase = (self.phase + self.freq_hz / self.sample_rate) % 1.0;
         let raw = (self.phase * TAU).sin();
         let sq = if raw > 0.0 { 1.0 } else { 0.0 };
         let sine = raw * 0.5 + 0.5;
-        Some(sq * (1.0 - self.shape) + sine * self.shape)
+        let out = sq * (1.0 - self.shape) + sine * self.shape;
+        // One-pole smooth to prevent clicks on activation
+        self.prev_output += (out - self.prev_output) * 0.01;
+        Some(self.prev_output)
     }
-
-    pub fn reset_phase(&mut self) { self.phase = 0.0; }
 }
 
 /// Stereo panning using sine/cosine law.

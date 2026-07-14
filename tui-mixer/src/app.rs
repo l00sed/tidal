@@ -9,6 +9,10 @@ use crate::audio::{AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, Mp
 use crate::audio::engine::AudioEngine;
 use crate::state::{ChannelControl, GlobalControl, MixerState, PadControl, RackState, SamplePadGrid, SendTarget, SelectionFocus};
 
+const SC_GAIN_BOOST: f32 = 8.0;
+const SC_DEFAULT_BPM: f32 = 135.0;
+const TIDAL_BPM_PATH: &str = "/tmp/termixer-bpm";
+
 /// Which deck is being configured
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deck {
@@ -342,34 +346,45 @@ impl MixerLayout {
             }
             (s, 4usize)
         } else if let (Some(cs), Some(ce)) = (cur_start, cur_end) {
-            // We have a current window — only shift it if selected_col
-            // is outside.  This keeps the window stable when navigating
-            // between already-visible panes.
-            let mut s = cs;
-            let mut e = ce;
-            if selected_col < s {
-                // Selected is left of window — shift left until visible.
-                s = selected_col;
-                e = s + (ce - cs);
-            } else if selected_col > e {
-                // Selected is right of window — shift right until visible.
-                e = selected_col;
-                s = e - (ce - cs);
+            // If the selected column is already visible and the window
+            // fits the viewport, keep it. Otherwise recompute.
+            let window_min: u16 = (cs..=ce).map(|i| mins[i]).sum();
+            if selected_col >= cs && selected_col <= ce && window_min <= viewport_w {
+                (cs, ce)
+            } else {
+                // Selection moved outside — shift window to include it,
+                // preserving the current width where possible.
+                let width = ce - cs;
+                let (s, e) = if selected_col < cs {
+                    // Shift left
+                    (selected_col, selected_col + width)
+                } else {
+                    // Shift right
+                    (selected_col.saturating_sub(width), selected_col)
+                };
+                let mut s = s;
+                let mut e = e;
+                // Clamp and shrink if needed
+                s = s.min(4);
+                e = e.min(4);
+                // Shrink from the far edge if it doesn't fit
+                while s < e && (s..=e).map(|i| mins[i]).sum::<u16>() > viewport_w {
+                    if selected_col - s <= e - selected_col {
+                        e -= 1;
+                    } else {
+                        s += 1;
+                    }
+                }
+                (s, e)
             }
-            // Clamp to valid range.
-            s = s.min(3);
-            e = e.max(s).min(3);
-            (s, e)
         } else {
             // No current window — find largest window around selected_col.
             let mut s = selected_col;
             let mut e = selected_col;
             let mut used = mins[selected_col];
-
             loop {
                 let fit_left = s > 0 && used + mins[s - 1] <= viewport_w;
-                let fit_right = e < 3 && used + mins[e + 1] <= viewport_w;
-
+                let fit_right = e < 4 && used + mins[e + 1] <= viewport_w;
                 if fit_left && fit_right {
                     if mins[s - 1] <= mins[e + 1] {
                         used += mins[s - 1];
@@ -485,8 +500,8 @@ pub struct App {
     pub terminal_height: u16,
     // Terminal width for horizontal pane scrolling
     pub term_width: u16,
-    // Current mixer window bounds (column indices) — used to avoid
-    // unnecessary window shifts when navigating between visible panes.
+    // Current mixer window bounds (column indices) — preserved when
+    // navigating between already-visible panes.
     pub mixer_window_start: usize,
     pub mixer_window_end: usize,
     // Audio output devices
@@ -503,6 +518,7 @@ pub struct App {
     // Counter for MPV state polling (poll every N ticks)
     mpv_poll_counter: u8,
     source_refresh_counter: u8,
+    tidal_bpm_poll_counter: u8,
     // Timestamp (elapsed_ms) of last TUI-initiated volume push per deck (0,1,2)
     last_volume_push_ms: [u64; 3],
     // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
@@ -628,6 +644,7 @@ impl App {
             debug_log: Vec::new(),
             mpv_poll_counter: 0,
             source_refresh_counter: 0,
+            tidal_bpm_poll_counter: 0,
             last_volume_push_ms: [0; 3],
             consecutive_poll_failures: [0; 3],
             pending_bpm: Arc::new(Mutex::new(Vec::new())),
@@ -651,6 +668,7 @@ impl App {
         }
 
         // Second pass: connect to MPV and load files into engine decoders
+        let mut loaded_channels = Vec::new();
         for (i, (name, socket_path)) in sources.iter().enumerate() {
             if let Some(channel) = self.mixer.channels.get_mut(i) {
                 channel.name = name.clone();
@@ -662,10 +680,13 @@ impl App {
                         Ok(path) => {
                             if let Some(ref engine) = self.audio_engine {
                                 engine.load_file(i, path);
+                                loaded_channels.push(i);
                             }
                         }
                         Err(e) => eprintln!("Audio: get_path failed for {}: {}", name, e),
                     }
+                    let _ = client.ensure_astats();
+                    client.start_metering();
                     match i {
                         0 => self.mpv_deck_a = Some(client),
                         1 => self.mpv_deck_b = Some(client),
@@ -674,9 +695,31 @@ impl App {
                     }
                     if let Some(channel) = self.mixer.channels.get_mut(i) {
                         channel.connected = true;
+                        channel.uses_supercollider = false;
                     }
                 }
             }
+        }
+        // Sync crossfader/volume state to engine for all loaded channels
+        for ch in &loaded_channels {
+            self.sync_volume_to_mpv(*ch);
+        }
+
+        // Mute Deck A and B on startup to avoid mangled audio
+        // Ensure fader is at unity gain (+0 dB) so unmuting gives immediate sound
+        let deck_a_ch = self.mixer.dj.deck_a_channel;
+        let deck_b_ch = self.mixer.dj.deck_b_channel;
+        if let Some(ch) = self.mixer.channels.get_mut(deck_a_ch) {
+            ch.muted = true;
+            ch.fader = 0.5;  // Unity gain (+0 dB)
+        }
+        if let Some(ch) = self.mixer.channels.get_mut(deck_b_ch) {
+            ch.muted = true;
+            ch.fader = 0.5;  // Unity gain (+0 dB)
+        }
+        // Push mute state to engine
+        for ch in &loaded_channels {
+            self.sync_volume_to_mpv(*ch);
         }
     }
 
@@ -728,6 +771,11 @@ impl App {
             self.poll_mpv_state();
         }
 
+        self.tidal_bpm_poll_counter = self.tidal_bpm_poll_counter.wrapping_add(1);
+        if self.tidal_bpm_poll_counter % 20 == 0 {
+            self.poll_tidal_bpm();
+        }
+
         // Refresh source picker every 10 ticks (~500ms) when open on MPV Sockets tab
         if matches!(self.mode, AppMode::SourcePicker(_))
             && matches!(self.source_picker.tab, SourcePickerTab::MpvSockets)
@@ -768,11 +816,16 @@ impl App {
         // Advance LFO phase and count sync ticks for all channels
         for ch in &mut self.mixer.channels {
             if ch.lfo_speed > 0.001 {
+                // Start at peak when LFO activates from idle
+                if ch.prev_lfo_speed <= 0.001 {
+                    ch.lfo_phase = 0.25;
+                }
                 let freq_hz = 0.05 + ch.lfo_speed.powf(3.0) * 9.95;
                 ch.lfo_phase = (ch.lfo_phase + freq_hz / 20.0) % 1.0;
             } else {
                 ch.lfo_phase = 0.0;
             }
+            ch.prev_lfo_speed = ch.lfo_speed;
             ch.lfo_sync_tick = ch.lfo_sync_tick.wrapping_add(1);
         }
         // Sync filters every tick — af-command updates are cheap (no graph rebuild)
@@ -919,7 +972,7 @@ impl App {
                 }
             } else if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
                 ch.playing = result.playing;
-                if result.volume_ok {
+                if result.volume_ok && !ch.muted {
                     ch.fader = result.fader;
                 }
                 if let Some(tp) = result.time_pos {
@@ -1304,10 +1357,9 @@ impl App {
     }
 
     /// Scroll mixer viewport so the currently selected pane snaps to the
-    /// left edge of the viewport. Mirrors the layout calculation from
-    /// `render_mixer_full_width` so the scroll offset matches actual rendered
-    /// pane positions at any terminal width.
-    fn ensure_mixer_pane_visible(&mut self) {
+    /// Recompute the mixer window to ensure the selected pane is visible.
+    /// Called after rendering to keep the window in sync with viewport size.
+    pub fn ensure_mixer_pane_visible(&mut self) {
         let viewport_w = self.term_width.max(1) as u16;
         let layout = MixerLayout::compute(
             viewport_w,
@@ -1611,19 +1663,10 @@ impl App {
         match self.selected_pane {
             SelectedPane::DeckA | SelectedPane::DeckB | SelectedPane::DeckC => {
                 if self.mixer.is_in_eq_or_filter_section() {
-                    // EQ/Filter section
                     match self.mixer.selected_control {
-                        // L/M/H bars: toggle between bar and kill switch
+                        // EQ bars: navigate down to Pan
                         ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
-                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                                self.mixer.selected_control = paired;
-                            }
-                        }
-                        // Kill switches: toggle back to bar
-                        ChannelControl::EqLowKill | ChannelControl::EqMidKill | ChannelControl::EqHighKill => {
-                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                                self.mixer.selected_control = paired;
-                            }
+                            self.mixer.selected_control = ChannelControl::Pan;
                         }
                         // Filter/LFO knobs: cycle down through 4 controls
                         ChannelControl::FilterCutoff => {
@@ -1635,13 +1678,21 @@ impl App {
                         ChannelControl::LfoShape => {
                             self.mixer.selected_control = ChannelControl::LfoSpeed;
                         }
+                        // LFO speed: navigate down to Pan
                         ChannelControl::LfoSpeed => {
-                            self.mixer.selected_control = ChannelControl::FilterCutoff;
+                            self.mixer.selected_control = ChannelControl::Pan;
                         }
                         _ => {}
                     }
                 } else {
-                    self.mixer.select_next_control(self.selected_pane == SelectedPane::DeckC);
+                    match self.mixer.selected_control {
+                        ChannelControl::Bpm => {
+                            self.mixer.selected_control = ChannelControl::FilterCutoff;
+                        }
+                        _ => {
+                            self.mixer.select_next_control(self.selected_pane == SelectedPane::DeckC);
+                        }
+                    }
                 }
             }
             SelectedPane::DjCenter => {
@@ -1700,24 +1751,16 @@ impl App {
         match self.selected_pane {
             SelectedPane::DeckA | SelectedPane::DeckB | SelectedPane::DeckC => {
                 if self.mixer.is_in_eq_or_filter_section() {
-                    // EQ/Filter section
                     match self.mixer.selected_control {
-                        // L/M/H bars: toggle between bar and kill switch
+                        // EQ bars: navigate up to BPM
                         ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
-                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                                self.mixer.selected_control = paired;
-                            }
+                            self.mixer.selected_control = ChannelControl::Bpm;
                         }
-                        // Kill switches: toggle back to bar
-                        ChannelControl::EqLowKill | ChannelControl::EqMidKill | ChannelControl::EqHighKill => {
-                            if let Some(paired) = self.mixer.selected_control.eq_kill_pair() {
-                                self.mixer.selected_control = paired;
-                            }
-                        }
-                        // Filter/LFO knobs: cycle up through 4 controls (reverse)
+                        // Filter cutoff: navigate up to BPM
                         ChannelControl::FilterCutoff => {
-                            self.mixer.selected_control = ChannelControl::LfoSpeed;
+                            self.mixer.selected_control = ChannelControl::Bpm;
                         }
+                        // Other filter/LFO knobs: cycle up (reverse)
                         ChannelControl::FilterFreq => {
                             self.mixer.selected_control = ChannelControl::FilterCutoff;
                         }
@@ -1839,7 +1882,7 @@ impl App {
                 // EQ/Filter section: move left
                 self.mixer.selected_control = match self.mixer.selected_control {
                     // L/M/H: move left between bands
-                    ChannelControl::EqLow => ChannelControl::EqLow, // stay on L (leftmost)
+                    ChannelControl::EqLow => ChannelControl::FilterCutoff,
                     ChannelControl::EqLowKill => ChannelControl::EqLowKill,
                     ChannelControl::EqMid => ChannelControl::EqLow,
                     ChannelControl::EqMidKill => ChannelControl::EqLowKill,
@@ -1848,6 +1891,8 @@ impl App {
                     // HPF/LPF: move left to H
                     ChannelControl::FilterCutoff => ChannelControl::EqHigh,
                     ChannelControl::FilterFreq => ChannelControl::EqHigh,
+                    ChannelControl::LfoShape => ChannelControl::EqHigh,
+                    ChannelControl::LfoSpeed => ChannelControl::EqHigh,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1876,7 +1921,7 @@ impl App {
                 // EQ/Filter section: move left
                 self.mixer.selected_control = match self.mixer.selected_control {
                     // L/M/H: move left between bands
-                    ChannelControl::EqLow => ChannelControl::EqLow, // stay on L (leftmost)
+                    ChannelControl::EqLow => ChannelControl::FilterCutoff,
                     ChannelControl::EqLowKill => ChannelControl::EqLowKill,
                     ChannelControl::EqMid => ChannelControl::EqLow,
                     ChannelControl::EqMidKill => ChannelControl::EqLowKill,
@@ -1885,6 +1930,8 @@ impl App {
                     // Filter: move left to H
                     ChannelControl::FilterCutoff => ChannelControl::EqHigh,
                     ChannelControl::FilterFreq => ChannelControl::EqHigh,
+                    ChannelControl::LfoShape => ChannelControl::EqHigh,
+                    ChannelControl::LfoSpeed => ChannelControl::EqHigh,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1956,11 +2003,13 @@ impl App {
                     ChannelControl::EqLowKill => ChannelControl::EqMidKill,
                     ChannelControl::EqMid => ChannelControl::EqHigh,
                     ChannelControl::EqMidKill => ChannelControl::EqHighKill,
-                    ChannelControl::EqHigh => ChannelControl::EqHigh, // stay on H (rightmost)
+                    ChannelControl::EqHigh => ChannelControl::FilterCutoff,
                     ChannelControl::EqHighKill => ChannelControl::EqHighKill,
                     // Filter: move right to L
                     ChannelControl::FilterCutoff => ChannelControl::EqLow,
                     ChannelControl::FilterFreq => ChannelControl::EqLow,
+                    ChannelControl::LfoShape => ChannelControl::EqLow,
+                    ChannelControl::LfoSpeed => ChannelControl::EqLow,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -1993,11 +2042,13 @@ impl App {
                     ChannelControl::EqLowKill => ChannelControl::EqMidKill,
                     ChannelControl::EqMid => ChannelControl::EqHigh,
                     ChannelControl::EqMidKill => ChannelControl::EqHighKill,
-                    ChannelControl::EqHigh => ChannelControl::EqHigh, // stay on H (rightmost)
+                    ChannelControl::EqHigh => ChannelControl::FilterCutoff,
                     ChannelControl::EqHighKill => ChannelControl::EqHighKill,
                     // Filter: move right to L
                     ChannelControl::FilterCutoff => ChannelControl::EqLow,
                     ChannelControl::FilterFreq => ChannelControl::EqLow,
+                    ChannelControl::LfoShape => ChannelControl::EqLow,
+                    ChannelControl::LfoSpeed => ChannelControl::EqLow,
                     _ => self.mixer.selected_control,
                 };
             } else {
@@ -2186,7 +2237,7 @@ impl App {
                         }
                         ChannelControl::LfoShape => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
-                                channel.lfo_shape = 0.0;
+                                channel.lfo_shape = 0.5;
                             }
                         }
                         ChannelControl::LfoSpeed => {
@@ -2370,7 +2421,7 @@ impl App {
                         }
                         ChannelControl::FilterCutoff => channel.filter_cutoff = 0.0,
                         ChannelControl::FilterFreq => channel.filter_freq = 0.5,
-                        ChannelControl::LfoShape => channel.lfo_shape = 0.0,
+                        ChannelControl::LfoShape => channel.lfo_shape = 0.5,
                         ChannelControl::LfoSpeed => channel.lfo_speed = 0.0,
                         ChannelControl::EqLow => channel.eq_low = 0.0,
                         ChannelControl::EqMid => channel.eq_mid = 0.0,
@@ -3761,11 +3812,26 @@ impl App {
             Deck::C => self.mixer.dj.deck_c_channel,
         };
 
-        // Drop MPV client
+        // Mute and drop MPV client
         match deck {
-            Deck::A => self.mpv_deck_a = None,
-            Deck::B => self.mpv_deck_b = None,
-            Deck::C => self.mpv_deck_c = None,
+            Deck::A => {
+                if let Some(ref mut client) = self.mpv_deck_a {
+                    let _ = client.set_mute(true);
+                }
+                self.mpv_deck_a = None;
+            }
+            Deck::B => {
+                if let Some(ref mut client) = self.mpv_deck_b {
+                    let _ = client.set_mute(true);
+                }
+                self.mpv_deck_b = None;
+            }
+            Deck::C => {
+                if let Some(ref mut client) = self.mpv_deck_c {
+                    let _ = client.set_mute(true);
+                }
+                self.mpv_deck_c = None;
+            }
         }
 
         // Free SC synths
@@ -3833,24 +3899,46 @@ impl App {
             };
 
             // Free old SC synths if switching away from SC source
+            // Also stop MPV decoder and mute MPV client if switching away from MPV
             match deck {
                 Deck::A => {
                     if let Some(ref old) = self.sc_deck_a {
                         let _ = old.free_all();
                     }
                     self.sc_deck_a = None;
+                    if let Some(ref mut client) = self.mpv_deck_a {
+                        let _ = client.set_mute(true);
+                    }
+                    self.mpv_deck_a = None;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.stop_decoder(channel_idx);
+                    }
                 }
                 Deck::B => {
                     if let Some(ref old) = self.sc_deck_b {
                         let _ = old.free_all();
                     }
                     self.sc_deck_b = None;
+                    if let Some(ref mut client) = self.mpv_deck_b {
+                        let _ = client.set_mute(true);
+                    }
+                    self.mpv_deck_b = None;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.stop_decoder(channel_idx);
+                    }
                 }
                 Deck::C => {
                     if let Some(ref old) = self.sc_deck_c {
                         let _ = old.free_all();
                     }
                     self.sc_deck_c = None;
+                    if let Some(ref mut client) = self.mpv_deck_c {
+                        let _ = client.set_mute(true);
+                    }
+                    self.mpv_deck_c = None;
+                    if let Some(ref engine) = self.audio_engine {
+                        engine.stop_decoder(channel_idx);
+                    }
                 }
             }
 
@@ -3866,6 +3954,7 @@ impl App {
                     channel.name = item.name.clone();
                     channel.connected = connected;
                     channel.base_bpm = 0.0; // Reset for new track detection
+                    channel.uses_supercollider = false;
 
                     // Sync initial volume from MPV
                     if connected {
@@ -3907,6 +3996,9 @@ impl App {
                     }
                 }
 
+                // Sync crossfader/volume state to engine for new source
+                self.sync_volume_to_mpv(channel_idx);
+
                 // Trigger BPM analysis if we have a file path
                 if let Some(ref path) = file_path {
                     let pending = self.pending_bpm.clone();
@@ -3928,19 +4020,27 @@ impl App {
                     Deck::B => 2000,
                     Deck::C => 3000,
                 };
-                let mut client = SuperColliderClient::new(addr, base_node_id);
+                let input_bus = 4;
+                let mut client = SuperColliderClient::new(addr, base_node_id, input_bus);
                 let connected = client.connect().is_ok();
 
                 if let Some(channel) = self.mixer.get_channel_mut(channel_idx) {
                     channel.name = item.name.clone();
                     channel.connected = connected;
+                    channel.playing = connected;
+                    channel.bpm = Some(SC_DEFAULT_BPM);
+                    channel.base_bpm = SC_DEFAULT_BPM;
+                    channel.target_bpm = SC_DEFAULT_BPM;
                     channel.source_id = Some(addr.to_string());
+                    channel.uses_supercollider = true;
+                    channel.scrub_direction = 0.0;
+                    channel.scrub_speed = 0.0;
+                    channel.scrub_accumulator = 0.0;
                 }
 
-                // Send SynthDef, create monitor (bus 0→2), create group, create mixer synth
+                // SuperDirt composite output routes to bus 4; whichever deck selects SC controls it.
                 if connected {
                     let _ = client.send_synth_def();
-                    let _ = client.create_monitor_synth();
                     let _ = client.create_group();
                     let _ = client.create_synth();
 
@@ -3951,7 +4051,7 @@ impl App {
                         } else {
                             self.calculate_crossfader_gains().1
                         };
-                        let vol = (channel.fader * xf_gain * self.mixer.master.fader).clamp(0.0, 1.0);
+                        let vol = (channel.fader * xf_gain * self.mixer.master.fader * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0);
                         let _ = client.set_volume(vol);
                         // Apply unified filter (crossfade between LPF and HPF)
                         let cutoff = channel.filter_cutoff;
@@ -4002,6 +4102,7 @@ impl App {
                 // TODO: Spawn mpv --input-ipc-server=/tmp/mpv-deck-{a|b}.sock <file>
                 if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
                     channel.name = item.name;
+                    channel.uses_supercollider = false;
                 }
             }
         }
@@ -4014,6 +4115,14 @@ impl App {
             let _ = old.free_all();
         }
         self.sc_deck_c = None;
+        // Stop MPV decoder and mute MPV client if switching sources
+        if let Some(ref mut client) = self.mpv_deck_c {
+            let _ = client.set_mute(true);
+        }
+        self.mpv_deck_c = None;
+        if let Some(ref engine) = self.audio_engine {
+            engine.stop_decoder(self.mixer.dj.deck_c_channel);
+        }
 
         if item.is_socket {
             let socket_path = item.path.to_string_lossy().to_string();
@@ -4023,6 +4132,7 @@ impl App {
             self.mixer.cue_channel.name = item.name.clone();
             self.mixer.cue_channel.connected = connected;
             self.mixer.cue_channel.base_bpm = 0.0; // Reset for new track
+            self.mixer.cue_channel.uses_supercollider = false;
 
             if connected {
                 if let Ok(vol) = client.get_volume() {
@@ -4063,20 +4173,27 @@ impl App {
         } else if item.is_udp {
             let addr = item.path.to_string_lossy().to_string();
             let addr = addr.strip_prefix("udp://").unwrap_or(&addr);
-            let mut client = SuperColliderClient::new(addr, 3000);
+            let mut client = SuperColliderClient::new(addr, 3000, 4);
             let connected = client.connect().is_ok();
 
             self.mixer.cue_channel.name = item.name.clone();
             self.mixer.cue_channel.connected = connected;
+            self.mixer.cue_channel.playing = connected;
+            self.mixer.cue_channel.bpm = Some(SC_DEFAULT_BPM);
+            self.mixer.cue_channel.base_bpm = SC_DEFAULT_BPM;
+            self.mixer.cue_channel.target_bpm = SC_DEFAULT_BPM;
             self.mixer.cue_channel.source_id = Some(addr.to_string());
+            self.mixer.cue_channel.uses_supercollider = true;
+            self.mixer.cue_channel.scrub_direction = 0.0;
+            self.mixer.cue_channel.scrub_speed = 0.0;
+            self.mixer.cue_channel.scrub_accumulator = 0.0;
 
             if connected {
                 let _ = client.send_synth_def();
-                let _ = client.create_monitor_synth();
                 let _ = client.create_group();
                 let _ = client.create_synth();
 
-                let vol = self.mixer.cue_channel.fader;
+                let vol = (self.mixer.cue_channel.fader * self.mixer.master.fader * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0);
                 let _ = client.set_volume(vol);
                 // Apply unified filter for CUE channel (crossfade between LPF and HPF)
                 let cutoff = self.mixer.cue_channel.filter_cutoff;
@@ -4118,6 +4235,7 @@ impl App {
             self.sc_deck_c = Some(client);
         } else {
             self.mixer.cue_channel.name = item.name.clone();
+            self.mixer.cue_channel.uses_supercollider = false;
         }
     }
 
@@ -4235,8 +4353,8 @@ impl App {
         if let Some(client) = self.mpv_for_channel(channel_idx) {
             let _ = client.set_volume(vol);
         }
-        let sc_vol = if engine_active || effective_muted { 0.0 } else {
-            (fader * gain * master * 2.0).clamp(0.0, 2.0)
+        let sc_vol = if effective_muted { 0.0 } else {
+            (fader * gain * master * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0)
         };
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_volume(sc_vol);
@@ -4332,11 +4450,11 @@ impl App {
         } else { msgs.push("NO MPV CLIENT C".to_string()); }
 
         if let Some(ref client) = self.sc_deck_a {
-            let sc_vol = if a_muted { 0.0 } else { (a_fader * gain_a * master * 2.0).clamp(0.0, 2.0) };
+            let sc_vol = if a_muted { 0.0 } else { (a_fader * gain_a * master * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0) };
             let _ = client.set_volume(sc_vol);
         }
         if let Some(ref client) = self.sc_deck_b {
-            let sc_vol = if b_muted { 0.0 } else { (b_fader * gain_b * master * 2.0).clamp(0.0, 2.0) };
+            let sc_vol = if b_muted { 0.0 } else { (b_fader * gain_b * master * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0) };
             let _ = client.set_volume(sc_vol);
         }
 
@@ -4357,6 +4475,10 @@ impl App {
     fn start_scrub(&mut self, direction: f32, coarse: bool) {
         if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
             if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                if ch.uses_supercollider {
+                    return;
+                }
+
                 ch.scrub_direction = direction;
                 ch.scrub_coarse = coarse;
                 // Accelerate: each keypress increases speed
@@ -4375,11 +4497,11 @@ impl App {
         let deck_c_ch = self.mixer.dj.deck_c_channel;
 
         for ch_idx in [deck_a_ch, deck_b_ch, deck_c_ch] {
-            let (direction, speed) = self.mixer.get_channel(ch_idx)
-                .map(|c| (c.scrub_direction, c.scrub_speed))
-                .unwrap_or((0.0, 0.0));
+            let (direction, speed, uses_supercollider) = self.mixer.get_channel(ch_idx)
+                .map(|c| (c.scrub_direction, c.scrub_speed, c.uses_supercollider))
+                .unwrap_or((0.0, 0.0, false));
 
-            if direction == 0.0 || speed <= 0.0 {
+            if uses_supercollider || direction == 0.0 || speed <= 0.0 {
                 continue;
             }
 
@@ -4461,6 +4583,34 @@ impl App {
         }
     }
 
+    fn poll_tidal_bpm(&mut self) {
+        let Ok(text) = std::fs::read_to_string(TIDAL_BPM_PATH) else {
+            return;
+        };
+        let Ok(bpm) = text.trim().parse::<f32>() else {
+            return;
+        };
+        if !(10.0..=400.0).contains(&bpm) {
+            return;
+        }
+
+        for idx in 0..self.mixer.channels.len() {
+            if let Some(ch) = self.mixer.get_channel_mut(idx)
+                && ch.uses_supercollider
+            {
+                ch.bpm = Some(bpm);
+                ch.base_bpm = bpm;
+                ch.target_bpm = bpm;
+            }
+        }
+
+        if self.mixer.cue_channel.uses_supercollider {
+            self.mixer.cue_channel.bpm = Some(bpm);
+            self.mixer.cue_channel.base_bpm = bpm;
+            self.mixer.cue_channel.target_bpm = bpm;
+        }
+    }
+
     /// Read real-time onset-detected BPM from each MPV metering thread.
     /// Read real-time onset-detected BPM from each MPV metering thread.
     /// Captures base_bpm on first detection for stable speed factor.
@@ -4521,14 +4671,23 @@ impl App {
 
         if let Some(client) = self.mpv_for_channel(channel_idx) {
             let _ = client.set_mute(muted);
+            let vol = if muted {
+                0.0
+            } else {
+                (fader * gain * master * 2.0 * 200.0).clamp(0.0, 200.0)
+            };
+            let _ = client.set_volume(vol);
         }
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let vol = if muted {
                 0.0
             } else {
-                (fader * gain * master * 2.0).clamp(0.0, 2.0)
+                (fader * gain * master * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0)
             };
             let _ = client.set_volume(vol);
+        }
+        if let Some(ref engine) = self.audio_engine {
+            engine.state.set_muted(channel_idx, muted);
         }
         self.sync_capture_dsp_params();
     }
@@ -4545,6 +4704,11 @@ impl App {
         }
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_pause(paused);
+        }
+
+        // If master is paused but a deck is now playing, unpause master
+        if !self.mixer.master.playing && playing {
+            self.mixer.master.playing = true;
         }
     }
 
@@ -4659,9 +4823,9 @@ impl App {
             if let Some(client) = self.mpv_for_channel(channel_idx) {
                 let _ = client.set_eq(effective_low, effective_mid, effective_high);
             }
-            if let Some(client) = self.sc_for_channel(channel_idx) {
-                let _ = client.set_eq(effective_low, effective_mid, effective_high);
-            }
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_eq(effective_low, effective_mid, effective_high);
         }
         // Send to Rust audio engine
         if let Some(ref engine) = self.audio_engine {
@@ -4755,7 +4919,8 @@ impl App {
 
         let effective_hpf = 20.0 + (hpf_target - 20.0) * intensity;
 
-        // Skip MPV/SC lavfi filter calls when the engine has a decoder for this channel
+        // Skip MPV lavfi calls when the engine has a decoder for this channel.
+        // SC controls route over OSC and should always receive updates.
         let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
         if !engine_active {
             if let Some(client) = self.mpv_for_channel(channel_idx) {
@@ -4764,10 +4929,10 @@ impl App {
                 if let Some(e) = le { self.debug_log.push(format!("lpf: {}", e)); }
                 if let Some(e) = he { self.debug_log.push(format!("hpf: {}", e)); }
             }
-            if let Some(client) = self.sc_for_channel(channel_idx) {
-                let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
-                let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
-            }
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
+            let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
         }
 
         // Send to Rust audio engine
@@ -4808,9 +4973,9 @@ impl App {
             if let Some(client) = self.mpv_for_channel(channel_idx) {
                 let _ = client.set_pan(pan);
             }
-            if let Some(client) = self.sc_for_channel(channel_idx) {
-                let _ = client.set_pan(pan);
-            }
+        }
+        if let Some(client) = self.sc_for_channel(channel_idx) {
+            let _ = client.set_pan(pan);
         }
         // Send to Rust audio engine
         if let Some(ref engine) = self.audio_engine {
@@ -4822,6 +4987,13 @@ impl App {
     /// Sync BPM-based speed to MPV for a channel
     /// Speed = target_bpm / base_bpm (stable reference from first detection)
     fn sync_bpm_to_mpv(&mut self, channel_idx: usize) {
+        if self.mixer.get_channel(channel_idx)
+            .map(|c| c.uses_supercollider)
+            .unwrap_or(false)
+        {
+            return;
+        }
+
         let (target_bpm, base_bpm) = self.mixer.get_channel(channel_idx)
             .map(|c| (c.target_bpm, c.base_bpm))
             .unwrap_or((120.0, 120.0));

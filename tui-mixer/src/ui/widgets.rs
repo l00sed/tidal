@@ -15,6 +15,8 @@ pub struct Fader {
     value: f32,
     /// Is this fader selected
     selected: bool,
+    /// Is this fader being edited
+    editing: bool,
     /// Label text
     label: String,
 }
@@ -24,12 +26,18 @@ impl Fader {
         Self {
             value: value.clamp(0.0, 1.0),
             selected: false,
+            editing: false,
             label: String::new(),
         }
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    pub fn editing(mut self, editing: bool) -> Self {
+        self.editing = editing;
         self
     }
 
@@ -101,12 +109,16 @@ impl Widget for Fader {
         let fader_y = track_bottom - (self.value * track_height as f32) as u16;
         let fader_y = fader_y.clamp(track_top, track_bottom);
 
-        let fader_style = if self.selected {
+        let fader_style = if self.editing {
             Style::default()
-                .fg(BORDER_ACTIVE)
+                .fg(TEXT_EDITING)
+                .add_modifier(Modifier::BOLD)
+        } else if self.selected {
+            Style::default()
+                .fg(TEXT_BRIGHT)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(TEXT_BRIGHT)
+            Style::default().fg(Color::Rgb(100, 100, 100))
         };
 
         // Draw fader cap as a wider element
@@ -550,12 +562,14 @@ impl Widget for LevelMeter {
             // total_steps = meter_height * 2 (upper + lower half per cell).
             let total_steps = (meter_height * 2.0) as u16;
             let level_steps = (level * total_steps as f32) as u16;
-            let peak_step = if peak > 0.0 {
-                let s = (peak * total_steps as f32) as u16;
-                Some(s.clamp(0, total_steps - 1))
-            } else {
-                None
-            };
+                // Scale peak hold slightly so peak marker reaches true top when near 1.0
+                let peak_display_scale: f32 = 0.98;
+                let peak_step = if peak > 0.0 {
+                    let s = (peak * peak_display_scale * total_steps as f32) as u16;
+                    Some(s.clamp(0, total_steps - 1))
+                } else {
+                    None
+                };
 
             for row in 0..(meter_height as u16) {
                 let y = meter_bottom - row;
@@ -566,8 +580,9 @@ impl Widget for LevelMeter {
                 let upper_filled = level_steps > upper_step;
 
                 // Determine colors for upper and lower halves
+                // Use (step+1)/total_steps so topmost step maps to 100%.
                 let color_for_step = |step: u16| -> Color {
-                    let pct = step as f32 / total_steps as f32;
+                    let pct = (step as f32 + 1.0) / total_steps as f32;
                     if pct > 0.90 {
                         Color::Red
                     } else if pct > 0.75 {
@@ -629,5 +644,3 @@ impl Widget for LevelMeter {
         }
     }
 }
-
-

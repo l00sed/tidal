@@ -93,20 +93,11 @@ impl AudioRingBuf {
 
 unsafe impl Sync for AudioRingBuf {}
 
-/// Metadata about a loaded file.
-pub struct DecodedInfo {
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub duration_secs: Option<f64>,
-}
-
 /// Background decoder thread: fills a ring buffer from symphonia.
 pub struct DecoderThread {
     pub ring: Arc<AudioRingBuf>,
-    pub info: Arc<DecodedInfo>,
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
-    seek_pos: Arc<AtomicF64>,
     _handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -135,11 +126,6 @@ impl DecoderThread {
 
         let codec_params = track.codec_params.clone();
         let track_id = track.id;
-        let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-        let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
-        let duration_secs = codec_params.n_frames.map(|f| f as f64 / sample_rate as f64);
-
-        let info = Arc::new(DecodedInfo { sample_rate, channels, duration_secs });
 
         let codec_opts = DecoderOptions::default();
         let mut decoder = symphonia::default::get_codecs()
@@ -216,14 +202,12 @@ impl DecoderThread {
             .map_err(|e| format!("Thread error: {}", e))?;
 
         Ok(Self {
-            ring, info, _handle: Some(handle),
-            stop, paused, seek_pos,
+            ring, _handle: Some(handle),
+            stop, paused,
         })
     }
 
     pub fn play(&self) { self.paused.store(false, Ordering::Release); }
-    pub fn pause(&self) { self.paused.store(true, Ordering::Release); }
-    pub fn seek(&self, secs: f64) { self.seek_pos.store(secs); }
 }
 
 impl Drop for DecoderThread {
