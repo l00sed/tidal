@@ -398,15 +398,20 @@ impl MpvClient {
         if freq >= 19000.0 {
             // Bypass: push cutoff to Nyquist — no audible filtering, no graph rebuild
             if self.has_filter("lpf") {
-                self.af_command("lpf", "frequency", "20000")?;
+                self.af_command("lpf", "frequency", "20000").ok();
             }
-        } else if !self.has_filter("lpf") {
+        } else if self.has_filter("lpf") {
+            // Subsequent updates: send parameter command — NO graph rebuild
+            if self.af_command("lpf", "frequency", &format!("{:.0}", freq)).is_err() {
+                // Filter was removed (e.g. by seek) — rebuild it
+                self.send_command(vec!["af".into(), "remove".into(), "@lpf".into()]).ok();
+                let filter = format!("@lpf:lavfi=[lowpass=f={:.0}]", freq);
+                self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
+            }
+        } else {
             // First use: create the filter graph entry once
             let filter = format!("@lpf:lavfi=[lowpass=f={:.0}]", freq);
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
-        } else {
-            // Subsequent updates: send parameter command — NO graph rebuild
-            self.af_command("lpf", "frequency", &format!("{:.0}", freq))?;
         }
         Ok(())
     }
@@ -415,13 +420,17 @@ impl MpvClient {
         if freq <= 25.0 {
             // Bypass: push cutoff to DC level — no audible filtering, no graph rebuild
             if self.has_filter("hpf") {
-                self.af_command("hpf", "frequency", "20")?;
+                self.af_command("hpf", "frequency", "20").ok();
             }
-        } else if !self.has_filter("hpf") {
+        } else if self.has_filter("hpf") {
+            if self.af_command("hpf", "frequency", &format!("{:.0}", freq)).is_err() {
+                self.send_command(vec!["af".into(), "remove".into(), "@hpf".into()]).ok();
+                let filter = format!("@hpf:lavfi=[highpass=f={:.0}]", freq);
+                self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
+            }
+        } else {
             let filter = format!("@hpf:lavfi=[highpass=f={:.0}]", freq);
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
-        } else {
-            self.af_command("hpf", "frequency", &format!("{:.0}", freq))?;
         }
         Ok(())
     }
@@ -514,6 +523,29 @@ impl MpvClient {
     pub fn get_path(&mut self) -> Result<String, String> {
         let val = self.get_property("path")?;
         val.as_str().map(|s| s.to_string()).ok_or("Invalid path value".to_string())
+    }
+
+    /// Get musical key from MPV metadata (TKEY, INITIALKEY, or KEY tags).
+    /// Returns Camelot notation (e.g., "8A", "12B") if found and parseable.
+    pub fn get_key_from_metadata(&mut self) -> Option<String> {
+        let metadata = self.get_property("metadata").ok()?;
+        let obj = metadata.as_object()?;
+
+        // Try standard key tag names
+        let key_tags = ["KEY", "INITIALKEY", "TKEY"];
+        for tag in &key_tags {
+            if let Some(val) = obj.get(*tag).and_then(|v| v.as_str()) {
+                // Try Camelot first
+                if let Some((pc, is_major)) = crate::audio::bpm::parse_camelot(val) {
+                    return Some(crate::audio::bpm::pitch_class_to_camelot(pc, is_major));
+                }
+                // Try standard key names (e.g., "C major", "Am", "Bb")
+                if let Some(camelot) = crate::audio::bpm::parse_key_name(val) {
+                    return Some(camelot);
+                }
+            }
+        }
+        None
     }
 
     /// An audio device known to MPV (CoreAudio UID + human description).

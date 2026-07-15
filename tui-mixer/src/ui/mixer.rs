@@ -40,6 +40,7 @@ pub struct MixerView<'a> {
     selected_master_output_idx: usize,
     selected_cue_output_idx: usize,
     debug_log: Option<&'a [String]>,
+    debug_scroll: usize,
     samples_dir: Option<&'a std::path::Path>,
     layout_start_end: Option<(usize, usize)>,
 }
@@ -70,6 +71,7 @@ impl<'a> MixerView<'a> {
             selected_master_output_idx: 0,
             selected_cue_output_idx: 0,
             debug_log: None,
+            debug_scroll: 0,
             samples_dir: None,
             layout_start_end: None,
         }
@@ -185,6 +187,11 @@ impl<'a> MixerView<'a> {
         self
     }
 
+    pub fn debug_scroll(mut self, scroll: usize) -> Self {
+        self.debug_scroll = scroll;
+        self
+    }
+
     pub fn samples_dir(mut self, dir: Option<&'a std::path::Path>) -> Self {
         self.samples_dir = dir;
         self
@@ -198,7 +205,7 @@ impl<'a> Widget for MixerView<'a> {
         let (main_area, debug_area) = if debug_enabled && self.debug_log.is_some() && !self.debug_log.unwrap().is_empty() {
             let chunks = Layout::vertical([
                 Constraint::Min(0),
-                Constraint::Length(5),  // 5 lines for debug log
+                Constraint::Length(10),  // 10 lines for debug log
             ]).split(area);
             (chunks[0], Some(chunks[1]))
         } else {
@@ -1068,13 +1075,34 @@ impl<'a> MixerView<'a> {
                 
                 let icon = if item.is_socket { "⚡" } else if item.is_udp { "◉ " } else { "♪ " };
                 let line = format!("{} {}", icon, item.name);
-                let display = if line.len() > list_area.width as usize {
-                    format!("{}…", &line[..list_area.width as usize - 1])
+
+                // Right-align key column if available (3 chars: "12B")
+                let key_display = item.camelot_key.as_deref().unwrap_or("");
+                let usable_width = list_area.width as usize;
+                let name_width = if !key_display.is_empty() && usable_width > 6 {
+                    usable_width - 4 // reserve 4 chars for key + padding
                 } else {
-                    format!("{:width$}", line, width = list_area.width as usize)
+                    usable_width
                 };
-                
-                buf.set_string(list_area.x, y, &display, style);
+
+                let truncated_name = if line.len() > name_width {
+                    format!("{}…", &line[..name_width - 1])
+                } else {
+                    format!("{:width$}", line, width = name_width)
+                };
+
+                buf.set_string(list_area.x, y, &truncated_name, style);
+
+                // Show key right-aligned if present
+                if !key_display.is_empty() && usable_width > 6 {
+                    let key_style = if is_selected {
+                        Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(TEXT_DIM)
+                    };
+                    let key_x = list_area.x + usable_width as u16 - 3;
+                    buf.set_string(key_x, y, key_display, key_style);
+                }
             }
         }
 
@@ -1263,18 +1291,25 @@ impl<'a> MixerView<'a> {
         use ratatui::widgets::{Block, Borders, Paragraph};
         use ratatui::text::{Line, Span};
         
+        let title = if self.debug_scroll > 0 {
+            format!(" DEBUG [scrolled {}] ", self.debug_scroll)
+        } else {
+            " DEBUG ".to_string()
+        };
+        
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" DEBUG ")
+            .title(title)
             .border_style(Style::default().fg(BORDER_DEFAULT));
         
         let inner = block.inner(area);
         block.render(area, buf);
         
-        // Show last N lines that fit in the area
+        // Show N lines ending at (len - scroll_offset)
         let max_lines = inner.height as usize;
-        let start = log.len().saturating_sub(max_lines);
-        let visible_logs: Vec<Line> = log[start..]
+        let end = log.len().saturating_sub(self.debug_scroll);
+        let start = end.saturating_sub(max_lines);
+        let visible_logs: Vec<Line> = log[start..end]
             .iter()
             .map(|msg| Line::from(Span::styled(msg.clone(), Style::default().fg(TEXT_DEFAULT))))
             .collect();

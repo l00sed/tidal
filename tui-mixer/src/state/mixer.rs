@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::audio::bpm::{parse_camelot, pitch_class_to_camelot};
+
 /// DJ section controls
 #[derive(Debug, Clone)]
 pub struct DjSection {
@@ -122,6 +124,12 @@ pub struct MixerChannel {
     /// Target BPM for playback speed adjustment (user-controlled)
     #[serde(default)]
     pub target_bpm: f32,
+    /// Detected musical key in Camelot Wheel notation (e.g., "8A", "12B")
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Key offset in semitones from detected key (user-controlled via edit mode)
+    #[serde(default)]
+    pub key_offset: i32,
     /// Current playback position in seconds (polled from MPV)
     #[serde(default)]
     pub time_pos: f32,
@@ -191,6 +199,8 @@ impl MixerChannel {
             bpm: None,
             base_bpm: 0.0,
             target_bpm: 120.0,
+            key: None,
+            key_offset: 0,
             time_pos: 0.0,
             duration: 0.0,
             scrub_direction: 0.0,
@@ -220,6 +230,7 @@ pub enum ChannelControl {
     PlayPause,
     Scrub,
     Bpm,
+    Key,
     Fader,
     Pan,
     FilterCutoff,
@@ -247,6 +258,7 @@ impl ChannelControl {
             ChannelControl::PlayPause => "PLAY",
             ChannelControl::Scrub => "SCRUB",
             ChannelControl::Bpm => "BPM",
+            ChannelControl::Key => "KEY",
             ChannelControl::Fader => "GAIN",
             ChannelControl::Pan => "PAN",
             ChannelControl::FilterCutoff => "CUTOFF",
@@ -275,6 +287,7 @@ impl ChannelControl {
                 | ChannelControl::Pan
                 | ChannelControl::Scrub
                 | ChannelControl::Bpm
+                | ChannelControl::Key
                 | ChannelControl::FilterCutoff
                 | ChannelControl::FilterFreq
                 | ChannelControl::LfoShape
@@ -286,27 +299,28 @@ impl ChannelControl {
     }
 
     /// Get the index in the vertical layout (top to bottom)
-    /// PlayPause and Bpm are only available for deck channels (A/B)
+    /// PlayPause, Bpm, and Key are only available for deck channels (A/B)
     /// Kill switches share rows with their EQ controls
-    /// CueControl items are rows 12-14 (Deck C only)
+    /// CueControl items are rows 13-15 (Deck C only)
     pub fn row_index(&self) -> usize {
         match self {
             ChannelControl::Scrub => 0,
             ChannelControl::PlayPause => 1,
             ChannelControl::Bpm => 2,
-            ChannelControl::EqHigh | ChannelControl::EqHighKill => 3,
-            ChannelControl::EqMid | ChannelControl::EqMidKill => 4,
-            ChannelControl::EqLow | ChannelControl::EqLowKill => 5,
-            ChannelControl::FilterCutoff => 6,
-            ChannelControl::FilterFreq => 7,
-            ChannelControl::LfoShape => 8,
-            ChannelControl::LfoSpeed => 9,
-            ChannelControl::Pan => 10,
-            ChannelControl::Fader => 11,
-            ChannelControl::Mute => 12,
-            ChannelControl::Solo => 13,
-            ChannelControl::CueSendToA => 14,
-            ChannelControl::CueSendToB => 15,
+            ChannelControl::Key => 3,
+            ChannelControl::EqHigh | ChannelControl::EqHighKill => 4,
+            ChannelControl::EqMid | ChannelControl::EqMidKill => 5,
+            ChannelControl::EqLow | ChannelControl::EqLowKill => 6,
+            ChannelControl::FilterCutoff => 7,
+            ChannelControl::FilterFreq => 8,
+            ChannelControl::LfoShape => 9,
+            ChannelControl::LfoSpeed => 10,
+            ChannelControl::Pan => 11,
+            ChannelControl::Fader => 12,
+            ChannelControl::Mute => 13,
+            ChannelControl::Solo => 14,
+            ChannelControl::CueSendToA => 15,
+            ChannelControl::CueSendToB => 16,
             ChannelControl::CueOutputSelect => 16,
         }
     }
@@ -316,30 +330,32 @@ impl ChannelControl {
             0 => Some(ChannelControl::Scrub),
             1 => Some(ChannelControl::PlayPause),
             2 => Some(ChannelControl::Bpm),
-            3 => Some(ChannelControl::EqHigh),
-            4 => Some(ChannelControl::EqMid),
-            5 => Some(ChannelControl::EqLow),
-            6 => Some(ChannelControl::FilterCutoff),
-            7 => Some(ChannelControl::FilterFreq),
-            8 => Some(ChannelControl::LfoShape),
-            9 => Some(ChannelControl::LfoSpeed),
-            10 => Some(ChannelControl::Pan),
-            11 => Some(ChannelControl::Fader),
-            12 => Some(ChannelControl::Mute),
-            13 => Some(ChannelControl::Solo),
-            14 => Some(ChannelControl::CueSendToA),
-            15 => Some(ChannelControl::CueSendToB),
-            16 => Some(ChannelControl::CueOutputSelect),
+            3 => Some(ChannelControl::Key),
+            4 => Some(ChannelControl::EqHigh),
+            5 => Some(ChannelControl::EqMid),
+            6 => Some(ChannelControl::EqLow),
+            7 => Some(ChannelControl::FilterCutoff),
+            8 => Some(ChannelControl::FilterFreq),
+            9 => Some(ChannelControl::LfoShape),
+            10 => Some(ChannelControl::LfoSpeed),
+            11 => Some(ChannelControl::Pan),
+            12 => Some(ChannelControl::Fader),
+            13 => Some(ChannelControl::Mute),
+            14 => Some(ChannelControl::Solo),
+            15 => Some(ChannelControl::CueSendToA),
+            16 => Some(ChannelControl::CueSendToB),
+            17 => Some(ChannelControl::CueOutputSelect),
             _ => None,
         }
     }
     
-    /// Get row index for non-deck channels (no PlayPause/Bpm)
+    /// Get row index for non-deck channels (no PlayPause/Bpm/Key)
     pub fn row_index_no_deck(&self) -> usize {
         match self {
             ChannelControl::PlayPause => 0, // Not used, but fallback
             ChannelControl::Scrub => 0,       // Not used, but fallback
             ChannelControl::Bpm => 0,          // Not used for non-deck, fallback
+            ChannelControl::Key => 0,          // Not used for non-deck, fallback
             ChannelControl::EqHigh | ChannelControl::EqHighKill => 0,
             ChannelControl::EqMid | ChannelControl::EqMidKill => 1,
             ChannelControl::EqLow | ChannelControl::EqLowKill => 2,
@@ -817,6 +833,20 @@ impl MixerState {
                         ChannelControl::Bpm => {
                             // Adjust target BPM: +/- 1 BPM per keypress
                             channel.target_bpm = (channel.target_bpm + delta * 20.0).clamp(10.0, 400.0);
+                        }
+                        ChannelControl::Key => {
+                            // Bump key up/down by 1 semitone through Camelot wheel
+                            if let Some(ref current_key) = channel.key {
+                                if let Some((pc, is_major)) = parse_camelot(current_key) {
+                                    // Shift by 1 semitone (12 semitones = 1 octave = same position on wheel)
+                                    let new_pc = ((pc as i32 + delta.signum() as i32 + 12) % 12) as usize;
+                                    channel.key = Some(pitch_class_to_camelot(new_pc, is_major));
+                                }
+                            }
+                            // Track offset and shift playback speed
+                            channel.key_offset += delta.signum() as i32;
+                            let semitone_factor = 2.0_f32.powf(channel.key_offset as f32 / 12.0);
+                            channel.playback_speed = semitone_factor;
                         }
                         ChannelControl::Pan => {
                             channel.pan = (channel.pan + delta).clamp(-1.0, 1.0);

@@ -240,7 +240,7 @@ impl Widget for DeckIndicator {
         }
 
         let cx = area.x + area.width / 2;
-        let cy = area.y + area.height.saturating_sub(1) / 2;
+        let cy = area.y + (area.height.saturating_sub(1) / 2).saturating_sub(1);
 
         // Futuristic ring animation - 8 segments around center
         // When playing, one segment is highlighted and rotates
@@ -349,10 +349,10 @@ impl Widget for DeckIndicator {
             buf.set_string(speed_x, speed_y, &speed_str, speed_style);
         }
         
-        // Source name at bottom of area (with 2 rows below ring)
+        // Source name below ring (1 row below ring bottom, leaving last row for separator)
         if let Some(ref name) = self.source_name {
             let max_len = area.width.saturating_sub(2) as usize;
-            let name_y = (cy + 4).min(area.y + area.height.saturating_sub(1));
+            let name_y = (cy + 3).min(area.y + area.height.saturating_sub(2));
             let name_style = if self.selected {
                 Style::default().fg(Color::Yellow)
             } else {

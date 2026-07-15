@@ -81,6 +81,7 @@ pub struct SourcePickerItem {
     pub is_socket: bool,
     pub is_udp: bool,
     pub is_dir: bool,
+    pub camelot_key: Option<String>,
 }
 
 impl SourcePickerState {
@@ -515,6 +516,8 @@ pub struct App {
     pub output_picker_target: OutputPickerTarget,
     // Debug log messages (circular buffer, last 100 messages)
     pub debug_log: Vec<String>,
+    // Scroll offset for debug log (0 = latest, higher = older messages)
+    pub debug_scroll: usize,
     // Counter for MPV state polling (poll every N ticks)
     mpv_poll_counter: u8,
     source_refresh_counter: u8,
@@ -523,8 +526,8 @@ pub struct App {
     last_volume_push_ms: [u64; 3],
     // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
     consecutive_poll_failures: [u8; 3],
-    // Pending BPM results from background analysis (channel_idx, bpm)
-    pending_bpm: Arc<Mutex<Vec<(usize, f32)>>>,
+    // Pending BPM+key results from background analysis (channel_idx, bpm, key)
+    pending_bpm: Arc<Mutex<Vec<(usize, f32, Option<String>)>>>,
 }
 
 /// Which output device picker is active
@@ -642,6 +645,7 @@ impl App {
             output_picker_active: false,
             output_picker_target: OutputPickerTarget::Master,
             debug_log: Vec::new(),
+            debug_scroll: 0,
             mpv_poll_counter: 0,
             source_refresh_counter: 0,
             tidal_bpm_poll_counter: 0,
@@ -820,7 +824,7 @@ impl App {
                 if ch.prev_lfo_speed <= 0.001 {
                     ch.lfo_phase = 0.25;
                 }
-                let freq_hz = 0.05 + ch.lfo_speed.powf(3.0) * 9.95;
+                let freq_hz = 0.05 + ch.lfo_speed.powf(3.0) * 29.95;
                 ch.lfo_phase = (ch.lfo_phase + freq_hz / 20.0) % 1.0;
             } else {
                 ch.lfo_phase = 0.0;
@@ -1013,6 +1017,16 @@ impl App {
             // Quit from anywhere
             KeyCode::Char('q') => {
                 self.should_quit = true;
+                return;
+            }
+            // Debug log scrolling (only when DEBUG=1 and log is non-empty)
+            KeyCode::Char('[') if !self.debug_log.is_empty() => {
+                let max_scroll = self.debug_log.len().saturating_sub(1);
+                self.debug_scroll = (self.debug_scroll + 1).min(max_scroll);
+                return;
+            }
+            KeyCode::Char(']') if !self.debug_log.is_empty() => {
+                self.debug_scroll = self.debug_scroll.saturating_sub(1);
                 return;
             }
             // Source picker for Deck A from anywhere
@@ -1687,6 +1701,9 @@ impl App {
                 } else {
                     match self.mixer.selected_control {
                         ChannelControl::Bpm => {
+                            self.mixer.selected_control = ChannelControl::Key;
+                        }
+                        ChannelControl::Key => {
                             self.mixer.selected_control = ChannelControl::FilterCutoff;
                         }
                         _ => {
@@ -1754,11 +1771,15 @@ impl App {
                     match self.mixer.selected_control {
                         // EQ bars: navigate up to BPM
                         ChannelControl::EqLow | ChannelControl::EqMid | ChannelControl::EqHigh => {
+                            self.mixer.selected_control = ChannelControl::Key;
+                        }
+                        // Key: navigate up to BPM
+                        ChannelControl::Key => {
                             self.mixer.selected_control = ChannelControl::Bpm;
                         }
-                        // Filter cutoff: navigate up to BPM
+                        // Filter cutoff: navigate up to Key
                         ChannelControl::FilterCutoff => {
-                            self.mixer.selected_control = ChannelControl::Bpm;
+                            self.mixer.selected_control = ChannelControl::Key;
                         }
                         // Other filter/LFO knobs: cycle up (reverse)
                         ChannelControl::FilterFreq => {
@@ -2237,7 +2258,7 @@ impl App {
                         }
                         ChannelControl::LfoShape => {
                             if let Some(channel) = self.mixer.selected_channel_mut() {
-                                channel.lfo_shape = 0.5;
+                                channel.lfo_shape = 0.0;
                             }
                         }
                         ChannelControl::LfoSpeed => {
@@ -2418,6 +2439,11 @@ impl App {
                         ChannelControl::Bpm => {
                             // Reset to x1.00: target_bpm = base BPM from first detection
                             channel.target_bpm = if channel.base_bpm > 0.0 { channel.base_bpm } else { 120.0 };
+                        }
+                        ChannelControl::Key => {
+                            // Reset key to unknown (detection will re-populate)
+                            channel.key = None;
+                            channel.key_offset = 0;
                         }
                         ChannelControl::FilterCutoff => channel.filter_cutoff = 0.0,
                         ChannelControl::FilterFreq => channel.filter_freq = 0.5,
@@ -3415,6 +3441,7 @@ impl App {
                             is_socket: true,
                             is_udp: false,
                             is_dir: false,
+                            camelot_key: None,
                         });
                     }
                 }
@@ -3441,6 +3468,7 @@ impl App {
                             is_socket: true,
                             is_udp: false,
                             is_dir: false,
+                            camelot_key: None,
                         });
                     }
                 }
@@ -3467,6 +3495,7 @@ impl App {
                                 is_socket: false,
                                 is_udp: false,
                                 is_dir: false,
+                                camelot_key: None,
                             });
                         }
                     }
@@ -3485,6 +3514,7 @@ impl App {
             is_socket: false,
             is_udp: true,
             is_dir: false,
+            camelot_key: None,
         });
     }
 
@@ -3502,6 +3532,7 @@ impl App {
                 is_socket: false,
                 is_udp: false,
                 is_dir: false,
+                camelot_key: None,
             });
         }
     }
@@ -3530,6 +3561,7 @@ impl App {
                 is_socket: false,
                 is_udp: false,
                 is_dir: true,
+                camelot_key: None,
             });
         }
 
@@ -3555,6 +3587,7 @@ impl App {
                         is_socket: false,
                         is_udp: false,
                         is_dir: true,
+                        camelot_key: None,
                     });
                 } else if path.is_file() {
                     if let Some(ext) = path.extension() {
@@ -3566,6 +3599,7 @@ impl App {
                                 is_socket: false,
                                 is_udp: false,
                                 is_dir: false,
+                                camelot_key: None,
                             });
                         }
                     }
@@ -3967,6 +4001,13 @@ impl App {
                         // Add astats filter for real-time metering
                         let _ = client.ensure_astats();
                         client.start_metering();
+
+                        // Query MPV metadata for key info (fast, no file decode needed)
+                        if let Some(key) = client.get_key_from_metadata() {
+                            tracing::debug!("Got key from MPV metadata for ch{}: {}", channel_idx, key);
+                            channel.key = Some(key);
+                            channel.key_offset = 0;
+                        }
                     }
                 }
 
@@ -3999,13 +4040,14 @@ impl App {
                 // Sync crossfader/volume state to engine for new source
                 self.sync_volume_to_mpv(channel_idx);
 
-                // Trigger BPM analysis if we have a file path
+                // Trigger BPM+key analysis if we have a file path
                 if let Some(ref path) = file_path {
                     let pending = self.pending_bpm.clone();
                     let on_result = Arc::new(Mutex::new(move |result: crate::audio::BpmResult| {
-                        tracing::debug!("BPM detected for channel {}: {:.1} (conf: {:.2})", channel_idx, result.bpm, result.confidence);
+                        tracing::debug!("BPM detected for channel {}: {:.1} (conf: {:.2}), key: {:?}", channel_idx, result.bpm, result.confidence, result.key);
                         if let Ok(mut queue) = pending.lock() {
-                            queue.push((channel_idx, result.bpm));
+                            tracing::debug!("Pushing to pending_bpm: ch={}, key={:?}", channel_idx, result.key);
+                            queue.push((channel_idx, result.bpm, result.key));
                         }
                     }));
                     BpmAnalyzer::analyze_file(path, on_result);
@@ -4056,7 +4098,7 @@ impl App {
                         // Apply unified filter (crossfade between LPF and HPF)
                         let cutoff = channel.filter_cutoff;
                         let freq_pos = channel.filter_freq;
-                        let intensity = cutoff.powf(2.5);
+                        let intensity = cutoff.powf(1.2);
                         let log_min = 20f32.log10();
                         let log_max = 20000f32.log10();
                         let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
@@ -4158,14 +4200,14 @@ impl App {
             let source = AudioSource::new(item.name.clone(), socket_path);
             self.audio_manager.add_source(source);
 
-            // Trigger BPM analysis if we have a file path
+            // Trigger BPM+key analysis if we have a file path
             if let Some(path) = file_path {
                 let pending = self.pending_bpm.clone();
                 let channel_idx = self.mixer.dj.deck_c_channel;
                 let on_result = Arc::new(Mutex::new(move |result: crate::audio::BpmResult| {
-                    tracing::debug!("BPM detected for CUE: {:.1} (conf: {:.2})", result.bpm, result.confidence);
+                    tracing::debug!("BPM detected for CUE: {:.1} (conf: {:.2}), key: {:?}", result.bpm, result.confidence, result.key);
                     if let Ok(mut queue) = pending.lock() {
-                        queue.push((channel_idx, result.bpm));
+                        queue.push((channel_idx, result.bpm, result.key));
                     }
                 }));
                 BpmAnalyzer::analyze_file(&path, on_result);
@@ -4198,7 +4240,7 @@ impl App {
                 // Apply unified filter for CUE channel (crossfade between LPF and HPF)
                 let cutoff = self.mixer.cue_channel.filter_cutoff;
                 let freq_pos = self.mixer.cue_channel.filter_freq;
-                let intensity = cutoff.powf(2.5);
+                let intensity = cutoff.powf(1.2);
                 let log_min = 20f32.log10();
                 let log_max = 20000f32.log10();
                 let actual_freq = 10f32.powf(log_min + freq_pos * (log_max - log_min));
@@ -4569,16 +4611,21 @@ impl App {
 
     /// Apply pending BPM results from background analysis to channel state
     fn apply_pending_bpm(&mut self) {
-        let results: Vec<(usize, f32)> = {
+        let results: Vec<(usize, f32, Option<String>)> = {
             if let Ok(mut queue) = self.pending_bpm.lock() {
                 queue.drain(..).collect()
             } else {
                 Vec::new()
             }
         };
-        for (ch_idx, bpm) in results {
+        for (ch_idx, bpm, key) in results {
             if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                tracing::debug!("apply_pending_bpm ch={}: bpm={:.1}, key={:?}", ch_idx, bpm, key);
                 ch.bpm = Some(bpm);
+                if key.is_some() {
+                    ch.key = key;
+                    ch.key_offset = 0;
+                }
             }
         }
     }
@@ -4733,12 +4780,18 @@ impl App {
                 }
             }
         } else {
-            // Pause: save current play state of each channel, then pause all
+            // Pause: save actual MPV playback state (channel.playing may be stale),
+            // then pause all.
             self.mixer.previously_playing.clear();
             for idx in 0..self.mixer.channels.len() {
-                let was_playing = self.mixer.get_channel(idx)
-                    .map(|c| c.playing)
-                    .unwrap_or(false);
+                let was_playing = self.mpv_for_channel(idx)
+                    .and_then(|c| c.get_pause().ok())
+                    .map(|paused| !paused)
+                    .unwrap_or_else(|| {
+                        self.mixer.get_channel(idx)
+                            .map(|c| c.playing)
+                            .unwrap_or(false)
+                    });
                 self.mixer.previously_playing.push(was_playing);
                 if let Some(channel) = self.mixer.get_channel_mut(idx) {
                     channel.playing = false;
@@ -4751,7 +4804,10 @@ impl App {
                 }
             }
             // Also save and pause CUE channel
-            let cue_was_playing = self.mixer.cue_channel.playing;
+            let cue_was_playing = self.mpv_for_channel(2)
+                .and_then(|c| c.get_pause().ok())
+                .map(|paused| !paused)
+                .unwrap_or(self.mixer.cue_channel.playing);
             self.mixer.previously_playing.push(cue_was_playing);
             self.mixer.cue_channel.playing = false;
             if let Some(client) = self.mpv_for_channel(2) {
@@ -4776,6 +4832,15 @@ impl App {
                     }
                     ChannelControl::Bpm => {
                         self.sync_bpm_to_mpv(ch_idx);
+                    }
+                    ChannelControl::Key => {
+                        // Key adjustment changes playback_speed directly, sync to MPV
+                        if let Some(channel) = self.mixer.get_channel(ch_idx) {
+                            let speed = channel.playback_speed;
+                            if let Some(client) = self.mpv_for_channel(ch_idx) {
+                                let _ = client.set_speed(speed);
+                            }
+                        }
                     }
                     ChannelControl::Pan => {
                         self.sync_pan_to_mpv(ch_idx);
@@ -4857,8 +4922,8 @@ impl App {
             .map(|c| (c.filter_cutoff, c.filter_freq, c.lfo_shape, c.lfo_speed))
             .unwrap_or((0.0, 0.5, 0.0, 0.0));
 
-        // Power curve for smooth intensity ramp (exponent 2.5)
-        let raw_cutoff = cutoff.powf(2.5);
+        // Power curve for smooth intensity ramp (exponent 1.2)
+        let raw_cutoff = cutoff.powf(1.2);
 
         // When LFO speed is 0, bypass LFO entirely — shape has no effect
         let modulated = if lfo_speed <= 0.001 {
@@ -4994,12 +5059,14 @@ impl App {
             return;
         }
 
-        let (target_bpm, base_bpm) = self.mixer.get_channel(channel_idx)
-            .map(|c| (c.target_bpm, c.base_bpm))
-            .unwrap_or((120.0, 120.0));
+        let (target_bpm, base_bpm, key_offset) = self.mixer.get_channel(channel_idx)
+            .map(|c| (c.target_bpm, c.base_bpm, c.key_offset))
+            .unwrap_or((120.0, 120.0, 0));
 
         let base = if base_bpm > 0.0 { base_bpm } else { 120.0 };
-        let speed = (target_bpm / base).clamp(0.1, 4.0);
+        let bpm_factor = (target_bpm / base).clamp(0.1, 4.0);
+        let semitone_factor = 2.0_f32.powf(key_offset as f32 / 12.0);
+        let speed = (bpm_factor * semitone_factor).clamp(0.1, 4.0);
         if let Some(client) = self.mpv_for_channel(channel_idx) {
             let _ = client.set_speed(speed);
         }
@@ -5034,6 +5101,10 @@ impl App {
         self.debug_log.push(msg.into());
         if self.debug_log.len() > 100 {
             self.debug_log.remove(0);
+        }
+        // Auto-scroll to bottom when new messages arrive (unless user is scrolling)
+        if self.debug_scroll > 0 {
+            self.debug_scroll = 0;
         }
     }
     

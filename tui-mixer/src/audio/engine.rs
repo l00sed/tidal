@@ -89,7 +89,7 @@ impl DspFilters {
         let hpf_target = 20.0 + (actual_freq - 20.0) * blend;
 
         // Apply intensity (cutoff) as frequency sweep toward the target
-        let intensity = ctrl.filter_cutoff.powf(2.5);
+        let intensity = ctrl.filter_cutoff.powf(1.2);
         let lpf_hz = (20000.0 - (20000.0 - lpf_target) * intensity).max(200.0).min(20000.0);
         let hpf_hz = (20.0 + (hpf_target - 20.0) * intensity).clamp(20.0, 20000.0);
 

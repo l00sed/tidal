@@ -98,7 +98,7 @@ impl LfoOsc {
         if speed <= 0.001 {
             self.freq_hz = 0.0;
         } else {
-            self.freq_hz = 0.05 + speed.powf(3.0) * 9.95;
+            self.freq_hz = 0.05 + speed.powf(3.0) * 29.95;
             // Start at peak (phase 0.25) when LFO activates from idle
             if self.prev_speed <= 0.001 {
                 self.phase = 0.25;

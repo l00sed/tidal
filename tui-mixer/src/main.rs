@@ -285,6 +285,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .selected_master_output_idx(app.selected_master_output_idx)
                 .selected_cue_output_idx(app.selected_cue_output_idx)
                 .debug_log(&app.debug_log)
+                .debug_scroll(app.debug_scroll)
                 .samples_dir(Some(&app.samples_dir));
             
             // Add source picker if active

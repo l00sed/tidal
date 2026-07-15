@@ -151,14 +151,13 @@ impl<'a> Widget for ChannelStrip<'a> {
         let constraints = if has_deck {
             vec![
                 Constraint::Length(1),  // Scrubber (hidden until track loaded)
-                Constraint::Length(6),  // Deck indicator (ring + padding + marquee)
-                Constraint::Length(1),  // Separator
-                Constraint::Length(1),  // BPM display
-                Constraint::Length(1),  // Separator
+                Constraint::Length(7),  // Deck indicator (ring + space + marquee)
+                Constraint::Length(1),  // BPM display (combined BPM+KEY)
+                Constraint::Length(1),  // Separator below BPM
                 Constraint::Length(7),  // EQ section (3 bars + separator + 4 filter knobs + gaps)
-                Constraint::Length(1),  // Separator
+                Constraint::Length(1),  // Separator below EQ
                 Constraint::Length(1),  // Pan
-                Constraint::Length(1),  // Separator
+                Constraint::Length(1),  // Separator between pan and fader
                 Constraint::Min(5),     // Fader + Meter
                 Constraint::Length(1),  // Separator before buttons
                 Constraint::Length(1),  // Buttons row
@@ -166,7 +165,9 @@ impl<'a> Widget for ChannelStrip<'a> {
         } else {
             vec![
                 Constraint::Length(7),  // EQ section (3 bars + separator + 4 filter knobs + gaps)
-                Constraint::Length(2),  // Pan
+                Constraint::Length(1),  // Separator below EQ
+                Constraint::Length(1),  // Pan
+                Constraint::Length(1),  // Separator between pan and fader
                 Constraint::Min(7),     // Fader + Meter
                 Constraint::Length(1),  // Separator before buttons
                 Constraint::Length(1),  // Buttons row
@@ -208,48 +209,74 @@ impl<'a> Widget for ChannelStrip<'a> {
                 .render(chunks[idx], buf);
             idx += 1;
 
-            // Separator
-            self.draw_separator(chunks[idx], buf);
-            idx += 1;
-
-            // BPM display (always shown) - label left, value right, highlighted when focused
+            // Combined BPM+KEY display: speed factor BPM │ key
             let bpm_selected = self.is_control_selected(ChannelControl::Bpm);
             let bpm_editing = self.is_control_editing(ChannelControl::Bpm);
+            let key_selected = self.is_control_selected(ChannelControl::Key);
+            let key_editing = self.is_control_editing(ChannelControl::Key);
             let bpm_value = if let Some(bpm) = self.channel.bpm {
                 format!("{:.0}", bpm)
             } else {
                 "---".to_string()
             };
-            let label_style = if bpm_editing {
-                Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
+            let key_str = if let Some(ref key) = self.channel.key {
+                if self.channel.key_offset != 0 {
+                    let sign = if self.channel.key_offset > 0 { "+" } else { "" };
+                    format!("{}{}{}", key, sign, self.channel.key_offset)
+                } else {
+                    key.clone()
+                }
+            } else {
+                "---".to_string()
+            };
+            let base = self.channel.base_bpm;
+            let speed = if base > 0.0 { self.channel.target_bpm / base } else { 1.0 };
+            let factor_str = format!("x{:.2}", speed);
+
+            let speed_style = if bpm_editing {
+                Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
             } else if bpm_selected {
-                Style::default().fg(TEXT_BRIGHT)
+                Style::default().fg(TEXT_DEFAULT)
             } else {
                 Style::default().fg(TEXT_DIM)
             };
-            let value_style = if bpm_editing {
+            let bpm_style = if bpm_editing {
                 Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
             } else if bpm_selected {
                 Style::default().fg(TEXT_BRIGHT)
             } else {
                 Style::default().fg(TEXT_DEFAULT)
             };
-            // Label left-aligned, value right-aligned
+            let key_style = if key_editing {
+                Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+            } else if key_selected {
+                Style::default().fg(TEXT_BRIGHT)
+            } else {
+                Style::default().fg(TEXT_DIM)
+            };
+
             let bpm_area = chunks[idx];
-            buf.set_string(bpm_area.x, bpm_area.y, "BPM", label_style);
-            // Show speed factor when selected (e.g. x0.85)
-            if bpm_selected || bpm_editing {
-                let base = self.channel.base_bpm;
-                let speed = if base > 0.0 { self.channel.target_bpm / base } else { 1.0 };
-                let factor_str = format!("x{:.2}", speed);
-                buf.set_string(bpm_area.x + 4, bpm_area.y, &factor_str, Style::default().fg(TEXT_DIM));
-            }
             let val_right = bpm_area.x + bpm_area.width;
-            buf.set_string(val_right.saturating_sub(4), bpm_area.y, &format!("{:>4}", bpm_value), value_style);
+            // Separator position: between BPM and key (key gets 5 chars: " 12B ")
+            let sep_x = val_right.saturating_sub(6);
+
+            // Separator above BPM row with ┬ junction
+            self.draw_separator_with_junction(chunks[idx - 1], buf, sep_x, "┬");
+
+            // Speed factor left-aligned (4 chars: "x1.00")
+            buf.set_string(bpm_area.x, bpm_area.y, &factor_str, speed_style);
+            // BPM right-aligned before separator (4 chars)
+            buf.set_string(sep_x.saturating_sub(5), bpm_area.y, &format!("{:>4}", bpm_value), bpm_style);
+            // Vertical separator
+            let sep_style = Style::default().fg(SEPARATOR);
+            buf.set_string(sep_x, bpm_area.y, "│", sep_style);
+            // Key centered with 1 space on each side (5 chars available)
+            let key_padded = format!(" {} ", key_str);
+            buf.set_string(sep_x + 1, bpm_area.y, &key_padded, key_style);
             idx += 1;
 
-            // Separator
-            self.draw_separator(chunks[idx], buf);
+            // Separator below BPM row with ┴ junction
+            self.draw_separator_with_junction(chunks[idx], buf, sep_x, "┴");
             idx += 1;
         }
 
@@ -328,6 +355,23 @@ impl<'a> ChannelStrip<'a> {
         // Plain horizontal line - no junction characters
         for x in area.x..area.x + area.width {
             buf.set_string(x, y, "─", style);
+        }
+    }
+
+    /// Draw a horizontal separator with a junction character at a specific x position.
+    fn draw_separator_with_junction(&self, area: Rect, buf: &mut Buffer, junction_x: u16, junction_char: &str) {
+        if area.width < 1 || area.height < 1 {
+            return;
+        }
+        let style = Style::default().fg(SEPARATOR);
+        let y = area.y + area.height.saturating_sub(1);
+        
+        for x in area.x..area.x + area.width {
+            if x == junction_x {
+                buf.set_string(x, y, junction_char, style);
+            } else {
+                buf.set_string(x, y, "─", style);
+            }
         }
     }
 
@@ -636,7 +680,7 @@ impl<'a> ChannelStrip<'a> {
             0.0
         };
 
-        let time_str = format!("{} / {}", elapsed, total);
+        let time_str = format!("{}/{}", elapsed, total);
         let time_x = area.x + area.width.saturating_sub(time_str.len() as u16);
         let time_style = if editing {
             Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
