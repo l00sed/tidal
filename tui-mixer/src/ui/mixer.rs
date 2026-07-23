@@ -5,15 +5,15 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget, Wrap},
 };
 
-use crate::state::{MixerState, RackMode, RackState, SelectionFocus, GlobalControl, ChannelControl, SamplePadGrid, PAD_KEYS};
+use crate::state::{MixerState, SequenceState, SelectionFocus, GlobalControl, ChannelControl, SamplePadGrid, PAD_KEYS};
 use crate::ui::channel::{ChannelStrip, MasterStrip};
 use crate::ui::colors::*;
-use crate::ui::sampler::{CountInOverlay, PadConfigPane, RackRow};
+use crate::ui::sampler::{PadConfigPane, SequenceRow, SequenceTopBar};
 use crate::ui::widgets::Crossfader;
-use crate::app::{Deck, MixerLayout, SelectedPane, SourcePickerState, SourcePickerTab, PickerInputMode, OutputPickerTarget};
+use crate::app::{Deck, MixerLayout, SelectedPane, SourcePickerState, SourcePickerTab, PickerInputMode, OutputPickerTarget, ConfirmAction};
 
 /// The main mixer view
 pub struct MixerView<'a> {
@@ -23,14 +23,15 @@ pub struct MixerView<'a> {
     editing: bool,
     control_select: bool,
     frame: u8,
+    elapsed_ms: u64,
     selected_pane: SelectedPane,
     source_picker: Option<(Deck, &'a SourcePickerState)>,
     sample_picker: Option<(usize, &'a SourcePickerState)>,
     selected_pad_idx: Option<usize>,
     pad_config_mode: bool,
     pad_config_editing: bool,
-    racks: Option<&'a RackState>,
-    scroll_offset: usize,
+    sequences: Option<&'a SequenceState>,
+    current_play_steps: &'a [usize],
     master_output_device: Option<&'a str>,
     cue_output_device: Option<&'a str>,
     output_picker_active: bool,
@@ -43,6 +44,9 @@ pub struct MixerView<'a> {
     debug_scroll: usize,
     samples_dir: Option<&'a std::path::Path>,
     layout_start_end: Option<(usize, usize)>,
+    confirm_action: Option<ConfirmAction>,
+    confirm_selected: bool,
+    help_scroll: usize,
 }
 
 impl<'a> MixerView<'a> {
@@ -54,14 +58,15 @@ impl<'a> MixerView<'a> {
             editing: false,
             control_select: false,
             frame: 0,
+            elapsed_ms: 0,
             selected_pane: SelectedPane::DeckA,
             source_picker: None,
             sample_picker: None,
             selected_pad_idx: None,
             pad_config_mode: false,
             pad_config_editing: false,
-            racks: None,
-            scroll_offset: 0,
+            sequences: None,
+            current_play_steps: &[],
             master_output_device: None,
             cue_output_device: None,
             output_picker_active: false,
@@ -74,6 +79,9 @@ impl<'a> MixerView<'a> {
             debug_scroll: 0,
             samples_dir: None,
             layout_start_end: None,
+            confirm_action: None,
+            confirm_selected: false,
+            help_scroll: 0,
         }
     }
 
@@ -86,7 +94,7 @@ impl<'a> MixerView<'a> {
         self.editing = editing;
         self
     }
-    
+
     pub fn control_select(mut self, control_select: bool) -> Self {
         self.control_select = control_select;
         self
@@ -97,16 +105,21 @@ impl<'a> MixerView<'a> {
         self
     }
 
+    pub fn elapsed_ms(mut self, elapsed_ms: u64) -> Self {
+        self.elapsed_ms = elapsed_ms;
+        self
+    }
+
     pub fn selected_pane(mut self, pane: SelectedPane) -> Self {
         self.selected_pane = pane;
         self
     }
-    
+
     pub fn source_picker(mut self, deck: Deck, picker: &'a SourcePickerState) -> Self {
         self.source_picker = Some((deck, picker));
         self
     }
-    
+
     pub fn sample_picker(mut self, pad_idx: usize, picker: &'a SourcePickerState) -> Self {
         self.sample_picker = Some((pad_idx, picker));
         self
@@ -122,13 +135,13 @@ impl<'a> MixerView<'a> {
         self
     }
 
-    pub fn racks(mut self, racks: &'a RackState) -> Self {
-        self.racks = Some(racks);
+    pub fn sequences(mut self, sequences: &'a SequenceState) -> Self {
+        self.sequences = Some(sequences);
         self
     }
 
-    pub fn scroll_offset(mut self, offset: usize) -> Self {
-        self.scroll_offset = offset;
+    pub fn current_play_steps(mut self, steps: &'a [usize]) -> Self {
+        self.current_play_steps = steps;
         self
     }
 
@@ -136,7 +149,7 @@ impl<'a> MixerView<'a> {
         self.layout_start_end = start_end;
         self
     }
-    
+
     pub fn selected_pad_idx(mut self, idx: Option<usize>) -> Self {
         self.selected_pad_idx = idx;
         self
@@ -162,6 +175,21 @@ impl<'a> MixerView<'a> {
         self
     }
 
+    pub fn confirm_action(mut self, action: Option<ConfirmAction>) -> Self {
+        self.confirm_action = action;
+        self
+    }
+
+    pub fn confirm_selected(mut self, selected: bool) -> Self {
+        self.confirm_selected = selected;
+        self
+    }
+
+    pub fn help_scroll(mut self, offset: usize) -> Self {
+        self.help_scroll = offset;
+        self
+    }
+
     pub fn master_output_devices(mut self, devices: &'a [String]) -> Self {
         self.master_output_devices = devices;
         self
@@ -181,7 +209,7 @@ impl<'a> MixerView<'a> {
         self.selected_cue_output_idx = idx;
         self
     }
-    
+
     pub fn debug_log(mut self, log: &'a [String]) -> Self {
         self.debug_log = Some(log);
         self
@@ -211,7 +239,7 @@ impl<'a> Widget for MixerView<'a> {
         } else {
             (area, None)
         };
-        
+
         // Always use full-width layout
         self.render_full_width_layout(main_area, buf);
 
@@ -219,19 +247,24 @@ impl<'a> Widget for MixerView<'a> {
         if self.show_help {
             self.render_help_overlay(main_area, buf);
         }
-        
+
         // Render source picker overlay if active
         if let Some((deck, picker)) = self.source_picker {
             self.render_source_picker(main_area, buf, deck, picker);
         }
-        
+
         // Sample picker is rendered inline in render_dj_center
 
         // Render output device picker overlay if active
         if self.output_picker_active {
             self.render_output_picker(main_area, buf);
         }
-        
+
+        // Render confirm dialog overlay if active
+        if let Some(action) = self.confirm_action {
+            self.render_confirm_dialog(main_area, buf, action);
+        }
+
         // Render debug log if present
         if let Some(area) = debug_area {
             if let Some(log) = self.debug_log {
@@ -263,7 +296,7 @@ impl<'a> MixerView<'a> {
         // Minimalist header - just mode indicator and status
         let mode_str = if self.editing { "[EDIT]" } else { "" };
         let title = format!("TERMIXER {}", mode_str);
-        
+
         let title_style = Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD);
         buf.set_string(area.x + 1, area.y, &title, title_style);
 
@@ -274,7 +307,7 @@ impl<'a> MixerView<'a> {
             SelectedPane::DeckC => "DECK C",
             SelectedPane::Master => "MASTER",
             SelectedPane::DjCenter => "PADS",
-            SelectedPane::Loops => "LOOPS",
+            SelectedPane::Loops => "SEQUENCES",
             SelectedPane::Crossfader => "CROSSFADE",
         };
 
@@ -322,9 +355,6 @@ impl<'a> MixerView<'a> {
         let (cur_start, cur_end) = self.layout_start_end.map(|(s, e)| (Some(s), Some(e))).unwrap_or((None, None));
         let layout = MixerLayout::compute(area.width, self.selected_pane, cur_start, cur_end);
 
-        let loops_height = (area.height as f32 * 0.20) as u16;
-        let loops_height = loops_height.max(3);
-
         // Build constraints ONLY for visible columns (start..=end).
         // This prevents ratatui from squeezing when off-screen columns
         // inflate the constraint sum beyond the viewport width.
@@ -364,18 +394,22 @@ impl<'a> MixerView<'a> {
                 .deck_color(DECK_A)
                 .editing(self.editing && pane_selected)
                 .frame(self.frame)
+                .elapsed_ms(self.elapsed_ms)
                 .render(chunk(0), buf);
         }
 
         // ── DJ Center (column 1) — split vertically into Pads, Loops, Crossfader ──
         if layout.start <= 1 && 1 <= layout.end {
             let crossfader_height = 5u16;
+            let available = chunk(1).height.saturating_sub(crossfader_height);
+            let pads_height = (available * 2) / 3;
+            let loops_height_actual = available.saturating_sub(pads_height);
             let dj_vertical = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(16),                 // Pads area
-                    Constraint::Length(loops_height),    // Loops pane
-                    Constraint::Length(crossfader_height), // Crossfader pane
+                    Constraint::Length(pads_height),          // Pads area
+                    Constraint::Length(loops_height_actual),  // Sequences pane
+                    Constraint::Length(crossfader_height),    // Crossfader pane
                 ])
                 .split(chunk(1));
 
@@ -384,7 +418,7 @@ impl<'a> MixerView<'a> {
             let crossfader_area = dj_vertical[2];
 
             self.render_dj_center(dj_center_area, buf);
-            self.render_loops(loops_area, buf);
+            self.render_sequences(loops_area, buf);
             self.render_crossfader(crossfader_area, buf);
         }
 
@@ -400,6 +434,7 @@ impl<'a> MixerView<'a> {
                 .deck_color(DECK_B)
                 .editing(self.editing && pane_selected)
                 .frame(self.frame)
+                .elapsed_ms(self.elapsed_ms)
                 .render(chunk(2), buf);
         }
 
@@ -433,7 +468,7 @@ impl<'a> MixerView<'a> {
         } else {
             BG_LIGHT
         };
-        
+
         let pane_selected = self.selected_pane == SelectedPane::DjCenter;
         let title_style = if pane_selected {
             Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
@@ -475,10 +510,10 @@ impl<'a> MixerView<'a> {
         let cell_w = 5u16;
         let cell_h = 3u16;
         let gap_x = 1u16;  // Gap between columns
-        
+
         let grid_w = cell_w * 4 + gap_x * 3;  // 4 cells + 3 gaps
         let grid_h = cell_h * 4;
-        
+
         // Center the grid in available space
         let offset_x = (area.width.saturating_sub(grid_w)) / 2;
         let offset_y = (area.height.saturating_sub(grid_h)) / 2;
@@ -488,7 +523,7 @@ impl<'a> MixerView<'a> {
                 let pad_idx = row * 4 + col;
                 let x = area.x + offset_x + col as u16 * (cell_w + gap_x);
                 let y = area.y + offset_y + row as u16 * cell_h;
-                
+
                 if x + cell_w <= area.x + area.width && y + cell_h <= area.y + area.height {
                     let cell_area = Rect::new(x, y, cell_w, cell_h);
                     self.render_pad_cell(cell_area, buf, pad_idx);
@@ -496,13 +531,13 @@ impl<'a> MixerView<'a> {
             }
         }
     }
-    
+
     /// Render a single pad cell with border
     fn render_pad_cell(&self, area: Rect, buf: &mut Buffer, pad_idx: usize) {
         let pad = &self.pads.pads[pad_idx];
         let is_triggered = pad.triggered;
         let is_selected = self.selected_pad_idx == Some(pad_idx);
-        
+
         let border_color = if is_selected || is_triggered {
             BORDER_ACTIVE
         } else if pad.has_sample() {
@@ -519,11 +554,11 @@ impl<'a> MixerView<'a> {
         buf.set_string(area.x, area.y, "┌", style);
         buf.set_string(area.x + 1, area.y, &horiz, style);
         buf.set_string(area.x + area.width - 1, area.y, "┐", style);
-        
+
         buf.set_string(area.x, area.y + area.height - 1, "└", style);
         buf.set_string(area.x + 1, area.y + area.height - 1, &horiz, style);
         buf.set_string(area.x + area.width - 1, area.y + area.height - 1, "┘", style);
-        
+
         // Side borders for middle rows
         for row in 1..(area.height - 1) {
             buf.set_string(area.x, area.y + row, "│", style);
@@ -535,7 +570,7 @@ impl<'a> MixerView<'a> {
         let inner_w = area.width.saturating_sub(2);
         let cx = area.x + 1 + inner_w / 2;
         let cy = area.y + area.height / 2;
-        
+
         let key_style = if is_selected || is_triggered {
             Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
         } else if pad.has_sample() {
@@ -546,8 +581,9 @@ impl<'a> MixerView<'a> {
         buf.set_string(cx, cy, key.to_string(), key_style);
     }
 
-    /// Render the loops/racks pane (below DJ center, between Deck A and Deck B)
-    fn render_loops(&self, area: Rect, buf: &mut Buffer) {
+    /// Render the sequences pane (below DJ center, between Deck A and Deck B)
+    fn render_sequences(&self, area: Rect, buf: &mut Buffer) {
+
         let is_active = self.control_select || self.editing;
         let border_color = if self.selected_pane == SelectedPane::Loops {
             if is_active { BORDER_ACTIVE } else { BORDER_NAVIGATED }
@@ -563,7 +599,7 @@ impl<'a> MixerView<'a> {
         };
 
         let block = Block::default()
-            .title(Span::styled(" LOOPS ", title_style))
+            .title(Span::styled(" SEQUENCES ", title_style))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
 
@@ -574,54 +610,89 @@ impl<'a> MixerView<'a> {
             return;
         }
 
-        let rack_state = match self.racks {
+        let seq_state = match self.sequences {
             Some(s) => s,
             None => return,
         };
 
-        let pane_selected = self.selected_pane == SelectedPane::Loops;
+        // Top bar (row 0)
+        let global_bar_area = Rect::new(inner.x, inner.y, inner.width, 1);
+        let global_focused = pane_selected && seq_state.global_focused;
+        let global_ctrl = seq_state.global_control;
+        let global_editing = self.editing && global_focused;
+        SequenceTopBar::new(&seq_state.global)
+            .selected(global_focused)
+            .selected_control(global_ctrl)
+            .editing(global_editing)
+            .border_color(border_color)
+            .render(global_bar_area, buf);
 
-        // Rack rows (scrollable)
-        let racks_area = inner;
-        let max_visible = racks_area.height as usize;
-        let scroll_offset = self.scroll_offset;
+        // Separator line (row 1)
+        let sep_y = inner.y + 1;
+        if sep_y < inner.y + inner.height {
+            let sep_line = "─".repeat(inner.width as usize);
+            buf.set_string(inner.x, sep_y, &sep_line, Style::default().fg(border_color));
 
-        for (display_idx, global_idx) in (scroll_offset..rack_state.racks.len()).enumerate() {
+            // Draw ┴ intersections connecting top bar │ to separator line
+            let bpm_str_len = format!("{:.0}", seq_state.global.bpm).len() as u16;
+            let sep1_x = inner.x + inner.width - 7 - bpm_str_len;
+            let sep2_x = inner.x + inner.width - 4;
+            for sx in [sep1_x, sep2_x] {
+                if sx >= inner.x && sx < inner.x + inner.width {
+                    buf.set_string(sx, sep_y, "┴", Style::default().fg(border_color));
+                }
+            }
+
+            // Connect separator line to pane borders: ├ on left, ┤ on right
+            let left_border = inner.x.saturating_sub(1);
+            let right_border = inner.x + inner.width;
+            buf.set_string(left_border, sep_y, "├", Style::default().fg(border_color));
+            buf.set_string(right_border, sep_y, "┤", Style::default().fg(border_color));
+        }
+
+        // Sequence rows (scrollable, starting from row 2)
+        let rows_area = Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(2));
+        let max_visible = rows_area.height as usize;
+        let global_bpm = seq_state.global.bpm;
+
+        // Ensure selected row is visible (scroll to keep it in view)
+        // We need mutable access to scroll_offset, but seq_state is borrowed immutably.
+        // Instead, compute the effective scroll offset for rendering.
+        let effective_scroll = if let Some(sel) = seq_state.selected {
+            let sel_display = sel.saturating_sub(seq_state.scroll_offset);
+            if sel_display >= max_visible && max_visible > 0 {
+                sel.saturating_sub(max_visible - 1)
+            } else if sel < seq_state.scroll_offset {
+                sel
+            } else {
+                seq_state.scroll_offset
+            }
+        } else {
+            seq_state.scroll_offset
+        };
+
+        for (display_idx, global_idx) in (effective_scroll..seq_state.sequences.len()).enumerate() {
             if display_idx >= max_visible {
                 break;
             }
-            let rack = &rack_state.racks[global_idx];
-            let row_y = racks_area.y + display_idx as u16;
-            if row_y < racks_area.y + racks_area.height {
-                let row_area = Rect::new(racks_area.x, row_y, racks_area.width, 1);
-                let is_selected = pane_selected && rack_state.selected_rack == Some(global_idx);
-                let is_recording = matches!(rack_state.mode, RackMode::Recording) 
-                    && rack_state.selected_rack == Some(global_idx);
-                let count_in = match rack_state.mode {
-                    RackMode::CountIn { step, .. } if rack_state.selected_rack == Some(global_idx) => {
-                        Some((step, 6))
-                    }
-                    _ => None,
-                };
-                let selected_control = if is_selected {
-                    rack_state.selected_rack_control
-                } else {
-                    None
-                };
-                RackRow::new(rack)
+            let seq = &seq_state.sequences[global_idx];
+            let row_y = rows_area.y + display_idx as u16;
+            if row_y < rows_area.y + rows_area.height {
+                let row_area = Rect::new(rows_area.x, row_y, rows_area.width, 1);
+                let is_selected = pane_selected && !seq_state.global_focused && seq_state.selected == Some(global_idx);
+                let current_step = self.current_play_steps
+                    .get(global_idx)
+                    .copied()
+                    .unwrap_or(0);
+                SequenceRow::new(seq)
+                    .global_bpm(global_bpm)
                     .selected(is_selected)
-                    .selected_control(selected_control)
+                    .editing(self.editing && is_selected)
+                    .cursor(seq_state.cursor)
+                    .current_play_step(current_step)
                     .frame(self.frame)
-                    .recording(is_recording)
-                    .count_in_opt(count_in)
+                    .border_color(border_color)
                     .render(row_area, buf);
-            }
-        }
-
-        // Count-in overlay
-        if let RackMode::CountIn { step, frame } = rack_state.mode {
-            if pane_selected && rack_state.selected_rack.is_some() {
-                CountInOverlay::new(step, frame).render(racks_area, buf);
             }
         }
     }
@@ -677,7 +748,7 @@ impl<'a> MixerView<'a> {
     fn render_cue_pane(&self, area: Rect, buf: &mut Buffer) {
         let is_active = self.control_select || self.editing;
         let pane_selected = self.selected_pane == SelectedPane::DeckC;
-        
+
         // Render CUE pane border
         let border_color = if pane_selected {
             if is_active { BORDER_ACTIVE } else { BORDER_NAVIGATED }
@@ -726,6 +797,7 @@ impl<'a> MixerView<'a> {
             .deck_color(DECK_C)
             .editing(self.editing && pane_selected)
             .frame(self.frame)
+            .elapsed_ms(self.elapsed_ms)
             .show_border(false)
             .render(chunks[0], buf);
 
@@ -770,14 +842,14 @@ impl<'a> MixerView<'a> {
         // S (Solo) button - with background highlight when active
         let solo_selected = pane_selected && show_control && self.state.selected_control == ChannelControl::Solo;
         let solo_active = self.state.cue_channel.solo;
-        
+
         // Fill left column background if solo is active
         if solo_active {
             for x in controls_area.x + 1..sep_x.saturating_sub(1) {
                 buf.set_string(x, controls_area.y, " ", Style::default().bg(BORDER_ACTIVE));
             }
         }
-        
+
         let solo_style = if solo_active {
             Style::default().fg(Color::Black).bg(BORDER_ACTIVE)
         } else if solo_selected {
@@ -815,28 +887,31 @@ impl<'a> MixerView<'a> {
         // Single line footer with context hints
         let hint = if self.editing {
             if self.state.selected_global == GlobalControl::Crossfader {
-                "hjkl:adjust  a:A  b:B  0/c:center  Enter/Esc:done"
+                "h/j/k/l:adjust  a:A  b:B  0/c:center  Enter/Esc:done"
             } else {
                 // Check if a filter, pan, or BPM is selected
                 match self.state.focus {
                     SelectionFocus::Channel(_) => {
                         match self.state.selected_control {
                             ChannelControl::FilterCutoff | ChannelControl::FilterFreq => {
-                                "hjkl:adjust  H:min  L:max  0:reset  Enter/Esc:done"
+                                "h/j/k/l:adjust  H:min  L:max  0:reset  Enter/Esc:done"
                             }
                             ChannelControl::Pan => {
-                                "hjkl:adjust  H:left  L:right  0/c:center  Enter/Esc:done"
+                                "h/j/k/l:adjust  H:left  L:right  0/c:center  Enter/Esc:done"
                             }
                             ChannelControl::Scrub => {
-                                "hjkl:scrub  HJKL:coarse  Enter/Esc:done"
+                                "h/j/k/l:scrub  H/J/K/L:coarse  Enter/Esc:done"
+                            }
+                            ChannelControl::PrevTrack | ChannelControl::NextTrack => {
+                                "h/l:select icon  Enter:skip track  Esc:back"
                             }
                             ChannelControl::Bpm => {
-                                "hjkl:adjust BPM  0/c:x1.00  Enter/Esc:done"
+                                "h/j/k/l:adjust BPM  0/c:x1.00  Enter/Esc:done"
                             }
-                            _ => "hjkl:adjust  0:reset  c:center  Enter/Esc:done"
+                            _ => "h/j/k/l:adjust  0:reset  c:center  Enter/Esc:done"
                         }
                     }
-                    SelectionFocus::Global => "hjkl:adjust  0:reset  c:center  Enter/Esc:done"
+                    SelectionFocus::Global => "h/j/k/l:adjust  0:reset  c:center  Enter/Esc:done"
                 }
             }
         } else if self.pads.active {
@@ -845,9 +920,9 @@ impl<'a> MixerView<'a> {
             match self.state.focus {
                 SelectionFocus::Channel(_) => {
                     if self.state.selected_control.is_continuous() {
-                        "hjkl:nav  Enter:edit  m:mute  s:solo  Tab:pane  ?:help"
+                        "h/j/k/l:nav  Enter:edit  m:mute  s:solo  Tab:pane  ?:help"
                     } else {
-                        "hjkl:nav  Enter:toggle  Tab:pane  ?:help"
+                        "h/j/k/l:nav  Enter:toggle  Tab:pane  ?:help"
                     }
                 }
                 SelectionFocus::Global => {
@@ -855,7 +930,7 @@ impl<'a> MixerView<'a> {
                     if self.selected_pane == SelectedPane::Crossfader {
                         "a:A  b:B  Enter:edit  Tab:deck  ?:help"
                     } else {
-                        "hjkl:nav  Enter:edit  Tab:deck  ?:help"
+                        "h/j/k/l:nav  Enter:edit  Tab:deck  ?:help"
                     }
                 }
             }
@@ -865,7 +940,7 @@ impl<'a> MixerView<'a> {
 
         // Mode indicators on right side
         let mut right_x = area.x + area.width;
-        
+
         if !self.state.master.playing {
             let label = " PAUSED ";
             right_x = right_x.saturating_sub(label.len() as u16 + 1);
@@ -897,53 +972,68 @@ impl<'a> MixerView<'a> {
 
     fn render_help_overlay(&self, area: Rect, buf: &mut Buffer) {
         let help_width = 52u16.min(area.width.saturating_sub(4));
-        let help_height = 24u16.min(area.height.saturating_sub(4));
+        let help_height = 31u16.min(area.height.saturating_sub(4));
         let help_x = area.x + (area.width.saturating_sub(help_width)) / 2;
         let help_y = area.y + (area.height.saturating_sub(help_height)) / 2;
         let help_area = Rect::new(help_x, help_y, help_width, help_height);
 
         // Clear background
+        Clear.render(help_area, buf);
         for y in help_area.y..help_area.y + help_area.height {
             for x in help_area.x..help_area.x + help_area.width {
-                buf.set_string(x, y, " ", Style::default().bg(Color::Black));
+                buf.set_string(x, y, " ", Style::default().bg(BG_POPUP));
             }
         }
 
         let help_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(TEXT_BRIGHT))
-            .title(" ? Help ");
+            .border_style(Style::default().fg(BORDER_ACTIVE))
+            .title(Span::styled(" HELP ", Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)));
 
         let inner = help_block.inner(help_area);
         help_block.render(help_area, buf);
 
+        let dim = Style::default().fg(TEXT_DIM);
+        let key_style = Style::default().fg(TEXT_BRIGHT);
+        let sep_style = Style::default().fg(SEPARATOR);
+        let sep = Line::from(Span::styled("──────────────────────────────────────────────────", sep_style));
         let help_text = vec![
-            Line::from(Span::styled("Navigation", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("  Tab      Switch panes (Deck A/Pads/Deck B/Master)"),
-            Line::from("  Enter    Select pane / Enter control mode"),
-            Line::from("  Esc      Go back one level"),
-            Line::from("  hjkl     Navigate controls / adjust values"),
-            Line::from(""),
-            Line::from(Span::styled("Editing", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("  Enter    Edit control / Toggle button"),
-            Line::from("  0        Reset to default"),
-            Line::from("  c        Center (pan/crossfader)"),
-            Line::from(""),
-            Line::from(Span::styled("Source & Pads", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("  A/B      Open source picker for deck A/B"),
-            Line::from("  P        Toggle pad trigger mode"),
-            Line::from("  Enter    Assign sample (in pads pane)"),
-            Line::from(""),
-            Line::from(Span::styled("Quick Keys", Style::default().add_modifier(Modifier::BOLD))),
-            Line::from("  m/s      Mute / Solo"),
-            Line::from("  x        Cycle crossfader curve"),
-            Line::from("  q/?      Quit / Toggle help"),
+            Line::from(Span::styled("NAVIGATION", Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))),
+            sep.clone(),
+            Line::from(vec![Span::styled("   Tab", key_style), Span::styled("      Switch panes (Deck A/Pads/Deck B/Master)", dim)]),
+            Line::from(vec![Span::styled("   Enter", key_style), Span::styled("    Select pane / Enter control mode", dim)]),
+            Line::from(vec![Span::styled("   Esc", key_style), Span::styled("      Go back one level", dim)]),
+            Line::from(vec![Span::styled("   h/j/k/l", key_style), Span::styled("  Navigate controls / adjust values", dim)]),
+            sep.clone(),
+            Line::from(Span::styled("EDITING", Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))),
+            sep.clone(),
+            Line::from(vec![Span::styled("   Enter", key_style), Span::styled("    Edit control / Toggle button", dim)]),
+            Line::from(vec![Span::styled("   0", key_style), Span::styled("        Reset to default", dim)]),
+            Line::from(vec![Span::styled("   c", key_style), Span::styled("        Center (pan/crossfader)", dim)]),
+            sep.clone(),
+            Line::from(Span::styled("SEQUENCES", Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))),
+            sep.clone(),
+            Line::from(vec![Span::styled("   Enter", key_style), Span::styled("  Enter edit mode / Toggle step", dim)]),
+            Line::from(vec![Span::styled("   h/l", key_style), Span::styled("    Move left/right in edit mode", dim)]),
+            Line::from(vec![Span::styled("   j/k", key_style), Span::styled("    Move between sequences", dim)]),
+            Line::from(vec![Span::styled("   Esc", key_style), Span::styled("     Exit edit mode / pane", dim)]),
+            Line::from(vec![Span::styled("   x", key_style), Span::styled("        Delete selected loop", dim)]),
+            sep.clone(),
+            Line::from(Span::styled("QUICK KEYS", Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))),
+            sep.clone(),
+            Line::from(vec![Span::styled("   A/B/C", key_style), Span::styled("    Open source picker for deck A/B/C", dim)]),
+            Line::from(vec![Span::styled("   P", key_style), Span::styled("        Toggle pad trigger mode", dim)]),
+            Line::from(vec![Span::styled("   m/s", key_style), Span::styled("      Mute / Solo", dim)]),
+            Line::from(vec![Span::styled("   X", key_style), Span::styled("        Clear focused deck (confirms)", dim)]),
+            Line::from(vec![Span::styled("   R", key_style), Span::styled("        Reset deck / all controls (confirms)", dim)]),
+            Line::from(vec![Span::styled("   q/?", key_style), Span::styled("      Quit / Toggle help", dim)]),
+            sep.clone(),
         ];
 
-        let paragraph = Paragraph::new(help_text).wrap(Wrap { trim: true });
+        let paragraph = Paragraph::new(help_text).wrap(Wrap { trim: true }).scroll((0, self.help_scroll as u16));
         paragraph.render(inner, buf);
     }
-    
+
     fn render_source_picker(&self, area: Rect, buf: &mut Buffer, deck: Deck, picker: &SourcePickerState) {
         // Centered popup
         let popup_width = 60u16.min(area.width.saturating_sub(4));
@@ -965,7 +1055,7 @@ impl<'a> MixerView<'a> {
             Deck::B => " SOURCE [Deck B] ",
             Deck::C => " SOURCE [Deck C] ",
         };
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_ACTIVE))
@@ -1072,7 +1162,7 @@ impl<'a> MixerView<'a> {
                 } else {
                     Style::default().fg(TEXT_BRIGHT)
                 };
-                
+
                 let icon = if item.is_socket { "⚡" } else if item.is_udp { "◉ " } else { "♪ " };
                 let line = format!("{} {}", icon, item.name);
 
@@ -1117,7 +1207,7 @@ impl<'a> MixerView<'a> {
     fn render_sample_picker_inline(&self, area: Rect, buf: &mut Buffer, pad_idx: usize, picker: &SourcePickerState) {
         let key = PAD_KEYS[pad_idx / 4][pad_idx % 4].to_ascii_uppercase();
         let title = format!(" SAMPLE [{}] ", key);
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_ACTIVE))
@@ -1188,7 +1278,7 @@ impl<'a> MixerView<'a> {
                 } else {
                     Style::default().fg(TEXT_BRIGHT)
                 };
-                
+
                 // Nerd Font icons: folder or audio file
                 let icon = if item.is_dir { "\u{f07b}" } else { "\u{f001}" };
                 let line = format!("{} {}", icon, item.name);
@@ -1198,7 +1288,7 @@ impl<'a> MixerView<'a> {
                 } else {
                     format!("{:width$}", line, width = list_area.width as usize)
                 };
-                
+
                 buf.set_string(list_area.x, y, &display, style);
             }
         }
@@ -1264,20 +1354,20 @@ impl<'a> MixerView<'a> {
             if i as u16 >= list_area.height {
                 break;
             }
-            
+
             let is_selected = i == selected_idx;
             let style = if is_selected {
                 Style::default().fg(Color::Black).bg(BORDER_ACTIVE)
             } else {
                 Style::default().fg(TEXT_BRIGHT)
             };
-            
+
             let display = if device.len() > list_area.width as usize {
                 format!("{}…", &device[..list_area.width as usize - 1])
             } else {
                 format!("{:width$}", device, width = list_area.width as usize)
             };
-            
+
             buf.set_string(list_area.x, list_area.y + i as u16, &display, style);
         }
 
@@ -1285,36 +1375,149 @@ impl<'a> MixerView<'a> {
         let hint = "j/k:nav  Enter:select  Esc:cancel";
         buf.set_string(chunks[1].x, chunks[1].y, hint, Style::default().fg(TEXT_GHOST));
     }
-    
+
     /// Render debug log at the bottom of the screen
     fn render_debug_log(&self, area: Rect, buf: &mut Buffer, log: &[String]) {
-        use ratatui::widgets::{Block, Borders, Paragraph};
-        use ratatui::text::{Line, Span};
-        
+        let total_lines = log.len();
+        let inner_height = area.height.saturating_sub(2) as usize; // subtract borders
+
         let title = if self.debug_scroll > 0 {
             format!(" DEBUG [scrolled {}] ", self.debug_scroll)
         } else {
             " DEBUG ".to_string()
         };
-        
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .border_style(Style::default().fg(BORDER_DEFAULT));
-        
+
         let inner = block.inner(area);
         block.render(area, buf);
-        
-        // Show N lines ending at (len - scroll_offset)
-        let max_lines = inner.height as usize;
-        let end = log.len().saturating_sub(self.debug_scroll);
-        let start = end.saturating_sub(max_lines);
-        let visible_logs: Vec<Line> = log[start..end]
+
+        // Reserve rightmost column for scrollbar when content overflows
+        let has_scrollbar = total_lines > inner_height;
+        let text_area = if has_scrollbar && inner.width > 2 {
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width.saturating_sub(1),
+                height: inner.height,
+            }
+        } else {
+            inner
+        };
+
+        let lines: Vec<Line> = log
             .iter()
-            .map(|msg| Line::from(Span::styled(msg.clone(), Style::default().fg(TEXT_DEFAULT))))
+            .map(|msg| Line::from(Span::styled(msg.as_str(), Style::default().fg(TEXT_DEFAULT))))
             .collect();
-        
-        let paragraph = Paragraph::new(visible_logs);
-        paragraph.render(inner, buf);
+
+        let scroll_offset = if total_lines > inner_height {
+            (total_lines - inner_height).saturating_sub(self.debug_scroll)
+        } else {
+            0
+        };
+
+        let paragraph = Paragraph::new(lines).scroll((scroll_offset as u16, 0));
+        paragraph.render(text_area, buf);
+
+        // Render scrollbar on the right edge
+        if has_scrollbar {
+            let scrollbar_area = Rect {
+                x: inner.x + inner.width.saturating_sub(1),
+                y: inner.y,
+                width: 1,
+                height: inner.height,
+            };
+            let mut state = ScrollbarState::new(total_lines)
+                .position(total_lines.saturating_sub(self.debug_scroll + inner_height));
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .render(scrollbar_area, buf, &mut state);
+        }
+    }
+
+    fn render_confirm_dialog(&self, area: Rect, buf: &mut Buffer, action: ConfirmAction) {
+        let (title, message) = match action {
+            ConfirmAction::ClearDeck(deck) => {
+                let label = match deck {
+                    Deck::A => "Deck A",
+                    Deck::B => "Deck B",
+                    Deck::C => "Deck C",
+                };
+                (format!(" CLEAR [{}] ", label), format!("Clear {}?", label))
+            }
+            ConfirmAction::ResetDeck(deck) => {
+                let label = match deck {
+                    Deck::A => "Deck A",
+                    Deck::B => "Deck B",
+                    Deck::C => "Deck C",
+                };
+                (format!(" RESET [{}] ", label), format!("Reset {} controls?", label))
+            }
+            ConfirmAction::ResetAll => (
+                " RESET [GLOBAL] ".into(),
+                "Reset all controls?".into(),
+            ),
+        };
+
+        let popup_width = 46u16.min(area.width.saturating_sub(4));
+        let popup_height = 5u16.min(area.height.saturating_sub(4));
+        let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+        let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        Clear.render(popup_area, buf);
+        for y in popup_area.y..popup_area.y + popup_area.height {
+            for x in popup_area.x..popup_area.x + popup_area.width {
+                buf.set_string(x, y, " ", Style::default().bg(BG_POPUP));
+            }
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER_ACTIVE))
+            .title(Span::styled(
+                title,
+                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD),
+            ));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // message
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // hint
+            ])
+            .split(inner);
+
+        let msg = Paragraph::new(Line::from(Span::styled(
+            message,
+            Style::default().fg(TEXT_DEFAULT),
+        )).centered());
+        msg.render(chunks[1], buf);
+
+        let y_style = if !self.confirm_selected {
+            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_DIM)
+        };
+        let n_style = if self.confirm_selected {
+            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_DIM)
+        };
+
+        let hint = Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Y", y_style),
+            Span::styled("/", Style::default().fg(TEXT_DIM)),
+            Span::styled("n", n_style),
+        ]));
+        hint.render(chunks[3], buf);
     }
 }

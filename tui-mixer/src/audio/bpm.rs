@@ -14,6 +14,7 @@ use symphonia::core::probe::Hint;
 #[derive(Debug, Clone)]
 pub struct BpmResult {
     pub bpm: f32,
+    #[allow(dead_code)]
     pub confidence: f32,
     /// Detected key in Camelot Wheel notation (e.g., "8A", "12B"), or None
     pub key: Option<String>,
@@ -163,7 +164,7 @@ fn parse_note_name(s: &str) -> Option<usize> {
 }
 
 /// Detect key from audio samples using chromagram + Krumhansl-Schmuckler algorithm
-fn detect_key_from_audio(samples: &[f32], sample_rate: u32) -> Option<String> {
+pub fn detect_key_from_audio(samples: &[f32], sample_rate: u32) -> Option<String> {
     if samples.len() < sample_rate as usize {
         return None; // Need at least 1 second
     }
@@ -297,18 +298,15 @@ pub struct BpmAnalyzer;
 
 impl BpmAnalyzer {
     /// Analyze an audio file in a background thread. Calls `on_result` when done.
-    pub fn analyze_file(path: &Path, on_result: Arc<Mutex<dyn Fn(BpmResult) + Send>>) {
+    pub fn analyze_file(
+        path: &Path,
+        on_result: Arc<Mutex<dyn Fn(Result<BpmResult, String>) + Send>>,
+    ) {
         let path = path.to_path_buf();
         thread::spawn(move || {
-            match Self::decode_and_analyze(&path) {
-                Ok(r) => {
-                    if let Ok(cb) = on_result.lock() {
-                        cb(r);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("BPM analysis failed for {}: {}", path.display(), e);
-                }
+            let result = Self::decode_and_analyze(&path);
+            if let Ok(cb) = on_result.lock() {
+                cb(result.map_err(|e| format!("{}: {}", path.display(), e)));
             }
         });
     }

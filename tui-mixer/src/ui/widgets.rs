@@ -6,6 +6,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Widget,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::colors::*;
 
@@ -165,6 +166,12 @@ pub struct DeckIndicator {
     scrub_direction: f32,
     /// Scrub speed (0.0 = not scrubbing)
     scrub_speed: f32,
+    has_prev_track: bool,
+    has_next_track: bool,
+    prev_selected: bool,
+    next_selected: bool,
+    prev_executed_recently: bool,
+    next_executed_recently: bool,
 }
 
 impl DeckIndicator {
@@ -180,6 +187,12 @@ impl DeckIndicator {
             connected: false,
             scrub_direction: 0.0,
             scrub_speed: 0.0,
+            has_prev_track: false,
+            has_next_track: false,
+            prev_selected: false,
+            next_selected: false,
+            prev_executed_recently: false,
+            next_executed_recently: false,
         }
     }
 
@@ -221,6 +234,24 @@ impl DeckIndicator {
     pub fn scrub(mut self, direction: f32, speed: f32) -> Self {
         self.scrub_direction = direction;
         self.scrub_speed = speed;
+        self
+    }
+
+    pub fn playlist_nav(mut self, has_prev: bool, has_next: bool) -> Self {
+        self.has_prev_track = has_prev;
+        self.has_next_track = has_next;
+        self
+    }
+
+    pub fn playlist_selected(mut self, prev_selected: bool, next_selected: bool) -> Self {
+        self.prev_selected = prev_selected;
+        self.next_selected = next_selected;
+        self
+    }
+
+    pub fn playlist_executed(mut self, prev_executed_recently: bool, next_executed_recently: bool) -> Self {
+        self.prev_executed_recently = prev_executed_recently;
+        self.next_executed_recently = next_executed_recently;
         self
     }
 }
@@ -340,6 +371,39 @@ impl Widget for DeckIndicator {
         };
         buf.set_string(cx, cy, center_char, center_style);
 
+        if self.connected {
+            let base_icon_style = Style::default().fg(Color::Rgb(120, 120, 120));
+
+            // Keep one blank cell between icon and spinner ring.
+            let left_x = cx.saturating_sub(4);
+            let right_x = cx.saturating_add(4);
+
+            if left_x >= area.x {
+                let style = if self.prev_executed_recently {
+                    Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
+                } else if self.prev_selected {
+                    Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+                } else if !self.has_prev_track {
+                    Style::default().fg(Color::Rgb(70, 70, 70))
+                } else {
+                    base_icon_style
+                };
+                buf.set_string(left_x, cy, "󰒫", style);
+            }
+            if right_x < area.x + area.width {
+                let style = if self.next_executed_recently {
+                    Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD)
+                } else if self.next_selected {
+                    Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+                } else if !self.has_next_track {
+                    Style::default().fg(Color::Rgb(70, 70, 70))
+                } else {
+                    base_icon_style
+                };
+                buf.set_string(right_x, cy, "󰒬", style);
+            }
+        }
+
         // Speed indicator below ring padding (only if not 1.0x)
         if area.height >= 5 && (self.speed - 1.0).abs() > 0.01 {
             let speed_str = format!("{:.1}x", self.speed);
@@ -351,34 +415,53 @@ impl Widget for DeckIndicator {
         
         // Source name below ring (1 row below ring bottom, leaving last row for separator)
         if let Some(ref name) = self.source_name {
-            let max_len = area.width.saturating_sub(2) as usize;
+            use unicode_width::UnicodeWidthChar;
+            use unicode_width::UnicodeWidthStr;
+
+            let max_width = area.width.saturating_sub(2) as usize;
             let name_y = (cy + 3).min(area.y + area.height.saturating_sub(2));
             let name_style = if self.selected {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default().fg(self.color)
             };
-            
-            if name.len() <= max_len {
+            let name_width = name.width();
+
+            if name_width <= max_width {
                 // Text fits - display normally centered
-                let name_x = area.x + (area.width.saturating_sub(name.len() as u16)) / 2;
+                let name_x = area.x + (area.width.saturating_sub(name_width as u16)) / 2;
                 buf.set_string(name_x, name_y, name, name_style);
             } else {
-                // Text too long - round-robin marquee scroll
-                let scroll_speed = 4u8; // Frames per character shift (slower = higher number)
-                let gap = "   "; // Space between end and start when wrapping
-                
-                // Create wrap-around buffer: text + gap + text
-                let scroll_buf = format!("{}{}{}", name, gap, name);
-                let scroll_len = name.len() + gap.len();
-                
-                // Calculate which character to start from
-                let char_offset = (self.frame / scroll_speed) as usize % scroll_len;
-                
-                // Extract max_len characters from the scroll buffer
-                let display: String = scroll_buf[char_offset..].chars().take(max_len).collect();
-                
-                let name_x = area.x + (area.width.saturating_sub(display.len() as u16)) / 2;
+                // Text too long - smooth marquee scroll
+                // Build (char, width) pairs for accurate display-width tracking
+                let gap = "   ";
+                let scroll_chars: Vec<(char, usize)> = format!("{}{}{}", name, gap, name)
+                    .chars()
+                    .map(|c| (c, c.width().unwrap_or(1)))
+                    .collect();
+                let scroll_width: usize = scroll_chars.iter().map(|(_, w)| w).sum();
+
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                let byte_offset = ((now_ms / 200) as usize) % scroll_width;
+
+                // Walk the circular buffer accumulating display width until max_width
+                let mut display = String::new();
+                let mut filled = 0usize;
+                let mut i = byte_offset;
+                while filled < max_width {
+                    let (ch, w) = scroll_chars[i % scroll_chars.len()];
+                    if filled + w > max_width {
+                        break;
+                    }
+                    display.push(ch);
+                    filled += w;
+                    i += 1;
+                }
+
+                let name_x = area.x + (area.width.saturating_sub(filled as u16)) / 2;
                 buf.set_string(name_x, name_y, &display, name_style);
             }
         }

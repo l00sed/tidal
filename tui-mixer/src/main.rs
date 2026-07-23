@@ -5,6 +5,7 @@
 
 mod app;
 mod audio;
+mod debug_log;
 mod state;
 mod ui;
 
@@ -18,13 +19,16 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, layout::Rect, prelude::Backend, Terminal};
 use std::io::stdout;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::audio::{SourceDiscovery, SourceType};
 use ui::MixerView;
 
 fn main() -> Result<()> {
-    // Logging disabled — TUI renders to stdout so tracing output would corrupt it.
-    // Use the DEBUG=1 env var for the built-in debug pane instead.
+    // Initialize debug logging. When DEBUG=1, tracing output is routed to
+    // the in-app debug pane and stderr is redirected to /dev/null so it
+    // never corrupts the TUI.
+    debug_log::init_logging();
 
     // Parse command line arguments for MPV socket paths
     let args: Vec<String> = std::env::args().collect();
@@ -71,32 +75,11 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // When DEBUG is not set, redirect stderr to /dev/null to prevent
-    // library warnings from corrupting the TUI
-    let _stderr_guard = if std::env::var("DEBUG").is_err() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-            let devnull = std::fs::OpenOptions::new()
-                .write(true)
-                .open("/dev/null")
-                .ok();
-            devnull.map(|f| {
-                let fd = f.as_raw_fd();
-                unsafe { libc::dup2(fd, 2); }
-                f  // Return file to keep it alive
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            None
-        }
-    } else {
-        None
-    };
-
     // Run the application
     let result = run_app(&mut terminal, &mut app);
+
+    // Hand off MPV state before dropping app-owned clients/capture threads.
+    app.cleanup();
 
     // Restore terminal
     disable_raw_mode()?;
@@ -215,8 +198,16 @@ EXAMPLES:
     # Start with music and samples directories
     tidal-mixer -m ~/Music -S ~/Samples
 
-    # Start MPV with IPC socket:
-    mpv --input-ipc-server=/tmp/mpv-music.sock music.mp3
+    # Route MPV through tui-mixer (stable socket/fifo names):
+    TUI_MIXER_ROUTE=1 mpv \
+      --input-ipc-server=/tmp/tui-mixer.sock \
+      --ao=pcm \
+      --ao-pcm-file=/tmp/tui-mixer.pcm \
+      --ao-pcm-waveheader=no \
+      --audio-format=float \
+      --audio-samplerate=48000 \
+      --audio-channels=stereo \
+      music.mp3
 
 KEYBOARD CONTROLS:
     Tab, h/l     Navigate between panes (Deck A, DJ, Deck B, Master)
@@ -247,6 +238,7 @@ MOUSE:
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> where <B as Backend>::Error: Send + Sync + 'static {
     let mut frame_counter: u8 = 0;
+    let mut next_tick = Instant::now() + app.tick_rate;
     
     loop {
         // Update terminal dimensions for scroll calculations
@@ -259,22 +251,26 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
         terminal.draw(|frame| {
             let control_select = matches!(app.mode, app::AppMode::ControlSelect | app::AppMode::Edit);
             let pad_config = app.mode == app::AppMode::SamplePadConfig;
+            let confirm_action = if let app::AppMode::ConfirmAction(a) = app.mode { Some(a) } else { None };
+            let confirm_selected = app.confirm_selected;
             
             // Bind device lists to extend lifetime
             let master_devices = app.master_output.devices();
             let cue_devices = app.cue_output.devices();
             
+            let play_steps: Vec<usize> = app.sequence_state.sequences.iter().map(|s| s.current_step).collect();
             let mut view = MixerView::new(&app.mixer, &app.sample_pads)
                 .show_help(app.show_help())
                 .editing(app.is_editing())
                 .control_select(control_select)
                 .frame(frame_counter)
+                .elapsed_ms(app.elapsed_ms)
                 .selected_pane(app.selected_pane)
                 .selected_pad_idx(app.selected_pad_idx)
                 .pad_config_mode(pad_config)
                 .pad_config_editing(app.sample_pads.editing_control)
-                .racks(&app.rack_state)
-                .scroll_offset(app.rack_scroll_offset)
+                .sequences(&app.sequence_state)
+                .current_play_steps(&play_steps)
                 .layout_start_end(Some((app.mixer_window_start, app.mixer_window_end)))
                 .master_output_device(app.master_output.selected_device())
                 .cue_output_device(app.cue_output.selected_device())
@@ -284,6 +280,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .cue_output_devices(&cue_devices)
                 .selected_master_output_idx(app.selected_master_output_idx)
                 .selected_cue_output_idx(app.selected_cue_output_idx)
+                .confirm_action(confirm_action)
+                .confirm_selected(confirm_selected)
+                .help_scroll(app.help_scroll)
                 .debug_log(&app.debug_log)
                 .debug_scroll(app.debug_scroll)
                 .samples_dir(Some(&app.samples_dir));
@@ -311,7 +310,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
         })?;
 
         // Handle events
-        let timeout = app.tick_rate.saturating_sub(app.last_tick.elapsed());
+        let timeout = next_tick.saturating_duration_since(Instant::now());
 
         if event::poll(timeout)? {
             match event::read()? {
@@ -337,13 +336,21 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             return Ok(());
         }
 
+        // Drain tracing log queue into debug_log buffer
+        debug_log::drain_log_queue(&mut app.debug_log);
+
         // Tick for animations/meters
-        if app.last_tick.elapsed() >= app.tick_rate {
-            app.elapsed_ms += 50; // 50ms per tick at 20fps
-            app.update_racks();
+        if Instant::now() >= next_tick {
+            app.update_sequences();
             app.tick();
             app.last_tick = std::time::Instant::now();
             frame_counter = frame_counter.wrapping_add(1);
+            next_tick += app.tick_rate;
+
+            let now = Instant::now();
+            if now > next_tick + app.tick_rate {
+                next_tick = now + app.tick_rate;
+            }
         }
     }
 }
@@ -400,13 +407,14 @@ fn calculate_all_areas(
         x_cursor += w;
     }
 
-    // DJ center vertical: [Pads] [Loops] [Crossfader]
-    let loops_height = (mixer_area.height as f32 * 0.20) as u16;
-    let loops_height = loops_height.max(3);
+    // DJ center vertical: [Pads] [Sequences] [Crossfader]
+    // PADS gets ~2/3, SEQUENCES ~1/3, crossfader gets 5 rows
     let crossfader_height = 5u16;
+    let shared_height = mixer_area.height.saturating_sub(crossfader_height);
+    let pads_h = (shared_height * 2) / 3;
+    let loops_height = shared_height.saturating_sub(pads_h);
 
     let pads_y = mixer_area.y;
-    let pads_h = mixer_area.height.saturating_sub(loops_height + crossfader_height);
     let loops_y = pads_y + pads_h;
     let crossfader_y = loops_y + loops_height;
 

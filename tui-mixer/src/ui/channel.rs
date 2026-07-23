@@ -12,6 +12,8 @@ use crate::state::{ChannelControl, GlobalControl, MixerChannel};
 use crate::ui::colors::*;
 use crate::ui::widgets::{DeckIndicator, Fader, LevelMeter};
 
+const PLAYLIST_EXEC_FLASH_MS: u64 = 180;
+
 /// A complete channel strip widget - minimalist futuristic design
 pub struct ChannelStrip<'a> {
     channel: &'a MixerChannel,
@@ -21,6 +23,7 @@ pub struct ChannelStrip<'a> {
     deck_color: Color,
     editing: bool,
     frame: u8,
+    elapsed_ms: u64,
     show_border: bool,
 }
 
@@ -34,6 +37,7 @@ impl<'a> ChannelStrip<'a> {
             deck_color: Color::White,
             editing: false,
             frame: 0,
+            elapsed_ms: 0,
             show_border: true,
         }
     }
@@ -73,6 +77,11 @@ impl<'a> ChannelStrip<'a> {
 
     pub fn frame(mut self, frame: u8) -> Self {
         self.frame = frame;
+        self
+    }
+
+    pub fn elapsed_ms(mut self, elapsed_ms: u64) -> Self {
+        self.elapsed_ms = elapsed_ms;
         self
     }
 
@@ -183,9 +192,8 @@ impl<'a> Widget for ChannelStrip<'a> {
 
         // Deck indicator (only for deck channels)
         if has_deck {
-            // Scrubber (only shown for seekable MPV tracks)
-            let has_track = self.channel.connected && self.channel.duration > 0.0 && !self.channel.uses_supercollider;
-            if has_track {
+            // Scrubber (shown for playable non-SC sources)
+            if self.channel.scrub_available() {
                 self.render_scrub_bar(chunks[idx], buf, self.is_control_selected(ChannelControl::Scrub));
             }
             idx += 1;
@@ -197,6 +205,9 @@ impl<'a> Widget for ChannelStrip<'a> {
             } else {
                 None
             };
+            let now_ms = self.elapsed_ms;
+            let prev_executed_recently = now_ms.saturating_sub(self.channel.prev_exec_flash_ms) <= PLAYLIST_EXEC_FLASH_MS;
+            let next_executed_recently = now_ms.saturating_sub(self.channel.next_exec_flash_ms) <= PLAYLIST_EXEC_FLASH_MS;
             DeckIndicator::new(deck_char)
                 .playing(self.channel.playing)
                 .speed(self.channel.playback_speed)
@@ -206,6 +217,12 @@ impl<'a> Widget for ChannelStrip<'a> {
                 .connected(self.channel.connected)
                 .selected(self.is_control_selected(ChannelControl::PlayPause))
                 .scrub(self.channel.scrub_direction, self.channel.scrub_speed)
+                .playlist_nav(self.channel.has_prev_track, self.channel.has_next_track)
+                .playlist_selected(
+                    self.is_control_selected(ChannelControl::PrevTrack),
+                    self.is_control_selected(ChannelControl::NextTrack),
+                )
+                .playlist_executed(prev_executed_recently, next_executed_recently)
                 .render(chunks[idx], buf);
             idx += 1;
 

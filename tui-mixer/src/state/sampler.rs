@@ -62,7 +62,6 @@ impl Default for PadConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadControl {
     Sample,
-    PlayMode,
     Volume,
     Mute,
     HighPass,
@@ -81,7 +80,6 @@ impl PadControl {
     pub fn all() -> &'static [PadControl] {
         &[
             PadControl::Sample,
-            PadControl::PlayMode,
             PadControl::Volume,
             PadControl::Mute,
             PadControl::HighPass,
@@ -121,7 +119,6 @@ impl PadControl {
     pub fn label(&self) -> &'static str {
         match self {
             PadControl::Sample => "Sample",
-            PadControl::PlayMode => "PlayMode",
             PadControl::Volume => "Volume",
             PadControl::Mute => "Mute",
             PadControl::HighPass => "High Pass",
@@ -157,46 +154,10 @@ pub struct SamplePad {
     /// Trigger decay counter (frames until triggered clears)
     #[serde(skip)]
     pub trigger_frames: u8,
-    /// Play mode
-    pub play_mode: PlayMode,
     /// Pad index (0-15)
     pub index: usize,
     /// Per-pad DSP configuration
     pub config: PadConfig,
-}
-
-/// How the sample plays when triggered
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum PlayMode {
-    /// Play once and stop
-    #[default]
-    OneShot,
-    /// Hold to play, release to stop
-    Gate,
-    /// Toggle play/stop
-    Toggle,
-    /// Loop continuously
-    Loop,
-}
-
-impl PlayMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            PlayMode::OneShot => "ONE",
-            PlayMode::Gate => "GATE",
-            PlayMode::Toggle => "TOG",
-            PlayMode::Loop => "LOOP",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        match self {
-            PlayMode::OneShot => PlayMode::Gate,
-            PlayMode::Gate => PlayMode::Toggle,
-            PlayMode::Toggle => PlayMode::Loop,
-            PlayMode::Loop => PlayMode::OneShot,
-        }
-    }
 }
 
 impl SamplePad {
@@ -217,7 +178,6 @@ impl SamplePad {
             playing: false,
             triggered: false,
             trigger_frames: 0,
-            play_mode: PlayMode::OneShot,
             index,
             config: PadConfig::default(),
         }
@@ -290,47 +250,17 @@ impl SamplePadGrid {
         }
     }
 
-    /// Trigger a pad (momentary flash for one-shot, toggle for loop/toggle modes)
+    /// Trigger a pad (momentary flash)
     pub fn trigger_pad(&mut self, index: usize) {
         if index < self.pads.len() {
             let pad = &mut self.pads[index];
-            match pad.play_mode {
-                PlayMode::OneShot => {
-                    pad.triggered = true;
-                    pad.trigger_frames = 3;
-                }
-                PlayMode::Gate => {
-                    pad.triggered = true;
-                    pad.playing = true;
-                }
-                PlayMode::Toggle => {
-                    pad.playing = !pad.playing;
-                    if pad.playing {
-                        pad.triggered = true;
-                        pad.trigger_frames = 3;
-                    }
-                }
-                PlayMode::Loop => {
-                    pad.playing = !pad.playing;
-                    if pad.playing {
-                        pad.triggered = true;
-                        pad.trigger_frames = 3;
-                    }
-                }
-            }
+            pad.triggered = true;
+            pad.trigger_frames = 3;
         }
     }
 
-    /// Release a pad (for Gate mode)
-    pub fn release_pad(&mut self, index: usize) {
-        if index < self.pads.len() {
-            let pad = &mut self.pads[index];
-            if pad.play_mode == PlayMode::Gate {
-                pad.playing = false;
-                pad.triggered = false;
-            }
-        }
-    }
+    /// Release a pad (no-op, kept for API compatibility)
+    pub fn release_pad(&mut self, _index: usize) {}
 
     /// Stop all pads
     pub fn stop_all(&mut self) {
@@ -356,13 +286,6 @@ impl SamplePadGrid {
                     .unwrap_or("Sample")
                     .to_string();
             }
-        }
-    }
-
-    /// Cycle play mode for selected pad
-    pub fn cycle_play_mode(&mut self) {
-        if let Some(pad) = self.pads.get_mut(self.selected_pad) {
-            pad.play_mode = pad.play_mode.next();
         }
     }
 
@@ -480,8 +403,8 @@ impl SamplePadGrid {
                 }
             }
             
-            // For one-shot, clear playing after trigger decay
-            if pad.play_mode == PlayMode::OneShot && !pad.triggered {
+            // Clear playing after trigger decay
+            if !pad.triggered {
                 pad.playing = false;
             }
         }
@@ -494,115 +417,195 @@ impl Default for SamplePadGrid {
     }
 }
 
-/// A recorded pad trigger event
+pub const SEQUENCE_STEPS: usize = 16;
+
+/// A step sequencer sequence tied to a pad
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RackTrigger {
-    /// Milliseconds from the start of the recording
-    pub time_ms: u64,
-    /// Which pad was triggered
+pub struct Sequence {
+    /// Which pad this sequence triggers
     pub pad_idx: usize,
-}
-
-/// Which control is currently selected on a rack
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RackControl {
-    Volume,
-    Mute,
-    Tempo,
-    PlayPause,
-}
-
-/// Recording/playback mode for racks
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RackMode {
-    /// Not recording or playing
-    Idle,
-    /// Count-in before recording starts (1, 2... slow, 1, 2, 3, 4 fast, steady)
-    CountIn {
-        /// Current count step (0-based)
-        step: u8,
-        /// Frame counter for animation timing
-        frame: u8,
-    },
-    /// Actively recording pad triggers
-    Recording,
-}
-
-/// A rack: a recorded sequence of pad triggers that loops as a separate audio layer
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Rack {
     /// Display name
     pub name: String,
-    /// Recorded trigger events
-    pub triggers: Vec<RackTrigger>,
     /// Volume level (0.0 to 1.0)
     pub volume: f32,
     /// Mute toggle
     pub mute: bool,
-    /// Tempo in BPM (controls playback speed)
+    /// Tempo in BPM
     pub tempo: f32,
+    /// 16-step pattern (true = marked, plays sample)
+    pub pattern: [bool; SEQUENCE_STEPS],
     /// Whether currently playing
     #[serde(skip)]
     pub playing: bool,
+    /// Current step being played (for UI highlight)
+    #[serde(skip)]
+    pub current_step: usize,
 }
 
-impl Rack {
-    pub fn new(index: usize) -> Self {
+impl Sequence {
+    pub fn new(pad_idx: usize, _seq_number: usize) -> Self {
+        let key = PAD_KEYS[pad_idx / 4][pad_idx % 4];
         Self {
-            name: format!("Loop {}", index + 1),
-            triggers: Vec::new(),
+            pad_idx,
+            name: format!("{}", key.to_ascii_uppercase()),
             volume: 0.8,
             mute: false,
-            tempo: 120.0,
+            tempo: 1.0, // multiplier relative to global BPM
+            pattern: [false; SEQUENCE_STEPS],
             playing: false,
+            current_step: 0,
         }
+    }
+
+    /// Returns true if any step is marked
+    pub fn any_marked(&self) -> bool {
+        self.pattern.iter().any(|&s| s)
+    }
+
+    /// Step interval in seconds given a global BPM
+    #[allow(dead_code)]
+    pub fn step_interval_secs(&self, global_bpm: f32) -> f32 {
+        let actual_bpm = global_bpm * self.tempo;
+        60.0 / actual_bpm.clamp(20.0, 400.0) / 4.0
+    }
+
+    /// Actual BPM = global * multiplier
+    pub fn actual_bpm(&self, global_bpm: f32) -> f32 {
+        (global_bpm * self.tempo).clamp(20.0, 400.0)
     }
 }
 
-/// State for rack management
-#[derive(Debug, Clone)]
-pub struct RackState {
-    /// All racks
-    pub racks: Vec<Rack>,
-    /// Currently selected rack index (None = '+' button selected)
-    pub selected_rack: Option<usize>,
-    /// Currently selected control within the rack
-    pub selected_rack_control: Option<RackControl>,
-    /// Current recording/playback mode
-    pub mode: RackMode,
-    /// Timestamp when recording started (in ms since program start)
-    pub recording_start_ms: u64,
+/// Horizontal cursor target within a sequence row
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditTarget {
+    Step(usize),
+    Mute,
+    Multiplier,
 }
 
-impl RackState {
+impl EditTarget {
+    /// Total number of targets: 16 steps + mute + multiplier
+    pub fn count() -> usize { SEQUENCE_STEPS + 2 }
+
+    /// Index of this target in the flat horizontal layout
+    pub fn index(&self) -> usize {
+        match self {
+            EditTarget::Step(s) => *s,
+            EditTarget::Mute => SEQUENCE_STEPS,
+            EditTarget::Multiplier => SEQUENCE_STEPS + 1,
+        }
+    }
+
+    /// Create from index
+    pub fn from_index(i: usize) -> Self {
+        if i < SEQUENCE_STEPS {
+            EditTarget::Step(i)
+        } else if i == SEQUENCE_STEPS {
+            EditTarget::Mute
+        } else {
+            EditTarget::Multiplier
+        }
+    }
+
+    /// Move right (wrapping)
+    pub fn right(&self) -> Self {
+        let next = (self.index() + 1) % Self::count();
+        Self::from_index(next)
+    }
+
+    /// Move left (wrapping)
+    pub fn left(&self) -> Self {
+        let next = if self.index() == 0 { Self::count() - 1 } else { self.index() - 1 };
+        Self::from_index(next)
+    }
+}
+
+/// Global controls for all sequences (shown in top bar)
+#[derive(Debug, Clone, Copy)]
+pub struct GlobalSequenceControls {
+    pub volume: f32,
+    pub bpm: f32,
+    pub mute: bool,
+}
+
+impl Default for GlobalSequenceControls {
+    fn default() -> Self {
+        Self { volume: 0.8, bpm: 120.0, mute: false }
+    }
+}
+
+/// Which global control is selected in the top bar
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalSequenceControl {
+    Volume,
+    Bpm,
+    Mute,
+}
+
+/// State for sequence management
+#[derive(Debug, Clone)]
+pub struct SequenceState {
+    /// All sequences
+    pub sequences: Vec<Sequence>,
+    /// Currently selected sequence index (None = global bar selected)
+    pub selected: Option<usize>,
+    /// Scroll offset for visible sequences
+    pub scroll_offset: usize,
+    /// Global controls for all sequences
+    pub global: GlobalSequenceControls,
+    /// Currently selected global control in top bar
+    pub global_control: GlobalSequenceControl,
+    /// Whether the global bar is focused (vs per-sequence)
+    pub global_focused: bool,
+    /// Current horizontal cursor target (steps/mute/multiplier)
+    pub cursor: EditTarget,
+    /// Per-sequence play state saved before master pause
+    pub previously_playing: Vec<bool>,
+    /// Global mute state saved before master pause
+    pub previously_global_mute: bool,
+}
+
+impl SequenceState {
     pub fn new() -> Self {
         Self {
-            racks: Vec::new(),
-            selected_rack: None,
-            selected_rack_control: Some(RackControl::Volume),
-            mode: RackMode::Idle,
-            recording_start_ms: 0,
+            sequences: Vec::new(),
+            selected: None,
+            scroll_offset: 0,
+            global: GlobalSequenceControls::default(),
+            global_control: GlobalSequenceControl::Volume,
+            global_focused: true,
+            cursor: EditTarget::Step(0),
+            previously_playing: Vec::new(),
+            previously_global_mute: false,
         }
     }
 
-    /// Add a new rack and select it
-    pub fn add_rack(&mut self) -> usize {
-        let idx = self.racks.len();
-        self.racks.push(Rack::new(idx));
-        self.selected_rack = Some(idx);
+    /// Add a new sequence for a pad and select it
+    pub fn add_sequence(&mut self, pad_idx: usize) -> usize {
+        let seq = Sequence::new(pad_idx, self.sequences.len() + 1);
+        self.sequences.push(seq);
+        self.sort_sequences();
+        // Find the newly added sequence by pad_idx (first match)
+        let idx = self.sequences.iter().position(|s| s.pad_idx == pad_idx).unwrap_or(0);
+        self.selected = Some(idx);
         idx
     }
 
-    /// Remove a rack by index
-    pub fn remove_rack(&mut self, idx: usize) {
-        if idx < self.racks.len() {
-            self.racks.remove(idx);
-            // Adjust selection
-            if self.racks.is_empty() {
-                self.selected_rack = None;
-            } else if let Some(sel) = self.selected_rack {
-                if sel >= self.racks.len() {
-                    self.selected_rack = Some(self.racks.len() - 1);
+    /// Sort sequences by pad grid order: 4,5,6,7,R,T,Y,U,F,G,H,J,V,B,N,M
+    fn sort_sequences(&mut self) {
+        self.sequences.sort_by_key(|s| s.pad_idx);
+    }
+
+    /// Remove a sequence by index
+    #[allow(dead_code)]
+    pub fn remove_sequence(&mut self, idx: usize) {
+        if idx < self.sequences.len() {
+            self.sequences.remove(idx);
+            if self.sequences.is_empty() {
+                self.selected = None;
+            } else if let Some(sel) = self.selected {
+                if sel >= self.sequences.len() {
+                    self.selected = Some(self.sequences.len() - 1);
                 }
             }
         }
@@ -610,45 +613,97 @@ impl RackState {
 
     /// Move selection up (round-robin)
     pub fn select_up(&mut self) {
-        if self.racks.is_empty() { return; }
-        match self.selected_rack {
-            Some(0) => self.selected_rack = Some(self.racks.len() - 1), // wrap to last
-            Some(i) => self.selected_rack = Some(i - 1),
-            None => self.selected_rack = Some(self.racks.len() - 1),
+        if self.sequences.is_empty() { return; }
+        if self.global_focused {
+            // Already on global bar, do nothing
+            return;
+        }
+        match self.selected {
+            Some(0) => {
+                // Move to global bar
+                self.selected = None;
+                self.global_focused = true;
+            }
+            Some(i) => self.selected = Some(i - 1),
+            None => {
+                self.selected = Some(self.sequences.len() - 1);
+                self.global_focused = false;
+            }
         }
     }
 
     /// Move selection down (round-robin)
     pub fn select_down(&mut self) {
-        if self.racks.is_empty() { return; }
-        match self.selected_rack {
-            Some(i) if i + 1 < self.racks.len() => self.selected_rack = Some(i + 1),
-            Some(_) => self.selected_rack = Some(0), // wrap to first
-            None => self.selected_rack = Some(0),
+        if self.sequences.is_empty() { return; }
+        if self.global_focused {
+            self.global_focused = false;
+            self.selected = Some(0);
+            return;
+        }
+        match self.selected {
+            Some(i) if i + 1 < self.sequences.len() => self.selected = Some(i + 1),
+            Some(_) => self.selected = Some(0),
+            None => {
+                self.selected = Some(0);
+                self.global_focused = false;
+            }
         }
     }
 
-    /// Move rack control selection up (round-robin)
-    pub fn select_rack_control_up(&mut self) {
-        let controls = [RackControl::Volume, RackControl::Mute, RackControl::Tempo, RackControl::PlayPause];
-        let current = self.selected_rack_control.unwrap_or(RackControl::Volume);
-        let idx = controls.iter().position(|&c| c == current).unwrap_or(0);
+    /// Move cursor left (wrapping) within a sequence row
+    pub fn select_control_up(&mut self) {
+        if self.global_focused {
+            self.select_global_control_left();
+            return;
+        }
+        self.cursor = self.cursor.left();
+    }
+
+    /// Move cursor right (wrapping) within a sequence row
+    pub fn select_control_down(&mut self) {
+        if self.global_focused {
+            self.select_global_control_right();
+            return;
+        }
+        self.cursor = self.cursor.right();
+    }
+
+    /// Move global control selection left/right
+    pub fn select_global_control_left(&mut self) {
+        let controls = [
+            GlobalSequenceControl::Volume,
+            GlobalSequenceControl::Bpm,
+            GlobalSequenceControl::Mute,
+        ];
+        let idx = controls.iter().position(|&c| c == self.global_control).unwrap_or(0);
         let new_idx = if idx == 0 { controls.len() - 1 } else { idx - 1 };
-        self.selected_rack_control = Some(controls[new_idx]);
+        self.global_control = controls[new_idx];
     }
 
-    /// Move rack control selection down (round-robin)
-    pub fn select_rack_control_down(&mut self) {
-        let controls = [RackControl::Volume, RackControl::Mute, RackControl::Tempo, RackControl::PlayPause];
-        let current = self.selected_rack_control.unwrap_or(RackControl::Volume);
-        let idx = controls.iter().position(|&c| c == current).unwrap_or(0);
+    pub fn select_global_control_right(&mut self) {
+        let controls = [
+            GlobalSequenceControl::Volume,
+            GlobalSequenceControl::Bpm,
+            GlobalSequenceControl::Mute,
+        ];
+        let idx = controls.iter().position(|&c| c == self.global_control).unwrap_or(0);
         let new_idx = if idx + 1 >= controls.len() { 0 } else { idx + 1 };
-        self.selected_rack_control = Some(controls[new_idx]);
+        self.global_control = controls[new_idx];
     }
 
+    /// Toggle a step in the selected sequence
+    pub fn toggle_step(&mut self, step: usize) {
+        if let Some(sel) = self.selected {
+            if let Some(seq) = self.sequences.get_mut(sel) {
+                seq.pattern[step] = !seq.pattern[step];
+                // Auto-play when any step is marked, auto-stop when all unmarked
+                seq.playing = seq.any_marked();
+            }
+        }
+    }
 }
 
-impl Default for RackState {
+impl Default for SequenceState {
     fn default() -> Self {
         Self::new()
     }

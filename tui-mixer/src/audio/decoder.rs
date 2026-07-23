@@ -42,13 +42,15 @@ impl AudioRingBuf {
         }
     }
 
-    fn readable(&self) -> usize {
-        (self.write_pos.load(Ordering::Acquire) - self.read_pos.load(Ordering::Acquire)) as usize & self.mask
+    pub fn readable(&self) -> usize {
+        let w = self.write_pos.load(Ordering::Acquire);
+        let r = self.read_pos.load(Ordering::Acquire);
+        w.wrapping_sub(r) as usize
     }
 
     fn writable(&self) -> usize {
         let cap = unsafe { (*self.buf.get()).len() };
-        cap - self.readable()
+        cap.saturating_sub(self.readable())
     }
 
     pub fn write(&self, samples: &[f32]) -> usize {
@@ -98,6 +100,9 @@ pub struct DecoderThread {
     pub ring: Arc<AudioRingBuf>,
     stop: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    seek_pos: Arc<AtomicF64>,
+    reverse_scrub: Arc<AtomicBool>,
+    pub duration_secs: f64,
     _handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -107,6 +112,7 @@ impl DecoderThread {
         let stop = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(true));
         let seek_pos = Arc::new(AtomicF64::new(-1.0));
+        let reverse_scrub = Arc::new(AtomicBool::new(false));
 
         let file = std::fs::File::open(path).map_err(|e| format!("{}", e))?;
         let mss = symphonia::core::io::MediaSourceStream::new(Box::new(file), Default::default());
@@ -132,9 +138,15 @@ impl DecoderThread {
             .make(&codec_params, &codec_opts)
             .map_err(|e| format!("Codec error: {}", e))?;
 
+        let duration_secs = match (codec_params.n_frames, codec_params.sample_rate) {
+            (Some(nf), Some(sr)) if sr > 0 => nf as f64 / sr as f64,
+            _ => 0.0,
+        };
+
         let stop_inner = Arc::clone(&stop);
         let paused_inner = Arc::clone(&paused);
         let seek_inner = Arc::clone(&seek_pos);
+        let reverse_inner = Arc::clone(&reverse_scrub);
         let ring_inner = Arc::clone(&ring);
 
         let handle = thread::Builder::new()
@@ -143,6 +155,9 @@ impl DecoderThread {
                 let mut decode_buf = Vec::with_capacity(8192);
                 loop {
                     if stop_inner.load(Ordering::Acquire) { break; }
+
+                    let reverse_now = reverse_inner.load(Ordering::Acquire);
+                    let mut did_seek = false;
 
                     let seek = seek_inner.load();
                     if seek >= 0.0 {
@@ -154,9 +169,19 @@ impl DecoderThread {
                         decoder.reset();
                         ring_inner.reset();
                         seek_inner.store(-1.0);
+                        did_seek = true;
                     }
 
                     if paused_inner.load(Ordering::Acquire) {
+                        if reverse_now && did_seek {
+                            // Allow one decode pass to preview reverse scrub while paused.
+                        } else {
+                            thread::sleep(std::time::Duration::from_millis(10));
+                            continue;
+                        }
+                    }
+
+                    if reverse_now && !did_seek {
                         thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
@@ -190,6 +215,10 @@ impl DecoderThread {
                     sample_buf.copy_interleaved_ref(audio_buf);
                     decode_buf.extend_from_slice(sample_buf.samples());
 
+                    if reverse_now {
+                        reverse_interleaved_frames(&mut decode_buf, num_channels as usize);
+                    }
+
                     // Write into ring buffer (blocking write)
                     let mut written = 0;
                     while written < decode_buf.len() && !stop_inner.load(Ordering::Acquire) {
@@ -203,13 +232,40 @@ impl DecoderThread {
 
         Ok(Self {
             ring, _handle: Some(handle),
-            stop, paused,
+            stop, paused, seek_pos, reverse_scrub, duration_secs,
         })
     }
 
     pub fn play(&self) { self.paused.store(false, Ordering::Release); }
+
+    pub fn seek_to(&self, secs: f64) {
+        self.seek_pos.store(secs.max(0.0));
+    }
+
+    pub fn set_reverse_scrub(&self, enabled: bool) {
+        self.reverse_scrub.store(enabled, Ordering::Release);
+    }
 }
 
 impl Drop for DecoderThread {
     fn drop(&mut self) { self.stop.store(true, Ordering::Release); }
+}
+
+fn reverse_interleaved_frames(samples: &mut [f32], channels: usize) {
+    if channels == 0 {
+        return;
+    }
+    let frames = samples.len() / channels;
+    if frames < 2 {
+        return;
+    }
+
+    for i in 0..(frames / 2) {
+        let j = frames - 1 - i;
+        let a = i * channels;
+        let b = j * channels;
+        for c in 0..channels {
+            samples.swap(a + c, b + c);
+        }
+    }
 }

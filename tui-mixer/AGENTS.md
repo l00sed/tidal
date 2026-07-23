@@ -1,204 +1,134 @@
-# AGENTS.md — tidal-mixer
+# AGENTS.md - termixer (tui-mixer)
 
-## Project Overview
+This file is the fast onboard for coding agents entering this repo.
+Read it before making changes.
 
-A Rust TUI DJ mixer for live performance with TidalCycles. Controls and mixes audio from MPV players and SuperCollider synthesizers via a terminal interface with vim-like navigation. Real-time DSP with EQ, filtering, crossfading, and sample pads.
+## 1) What This Project Is
 
-## Architecture
+- Rust terminal DJ mixer for live performance workflows with TidalCycles/MPV/SuperCollider.
+- Main capabilities: multi-deck mixing, EQ/filtering, crossfader curves, sample pads, rack recording, source discovery, output-device routing.
+- Runtime model: TUI and control logic on main thread; real-time audio callback in a separate low-latency path.
 
-```
-src/
-├── main.rs              # Entry point, CLI parsing, 20fps render loop
-├── app.rs               # App state machine (8 modes), event handling, sync logic
-├── audio/
-│   ├── discovery.rs     # Auto-discover MPV, SC, PulseAudio, PipeWire, JACK sources
-│   ├── mpv.rs           # Sync MPV IPC client (Unix socket, lavfi filters)
-│   ├── sample_cache.rs  # Rodio-based sample preloader, 16-voice polyphony
-│   ├── source.rs        # Async MPV source abstraction (tokio)
-│   └── supercollider.rs # OSC client, SynthDef routing, bus mapping
-├── state/
-│   ├── mixer.rs         # MixerChannel, DjSection, MasterChannel, ChannelControl enum
-│   └── sampler.rs       # 4x4 pad grid, play modes (OneShot/Gate/Toggle/Loop)
-└── ui/
-    ├── colors.rs        # Centralized color constants (use these everywhere)
-    ├── channel.rs       # Channel strip + master strip widgets
-    ├── mixer.rs         # Main layout (Deck A | DjCenter | Deck B | CUE | Master)
-    ├── sampler.rs       # Pad grid widget
-    └── widgets.rs       # Fader, Knob, Crossfader, LevelMeter, Button, DeckIndicator
-```
+## 2) Core Tech Stack (What You Must Understand)
 
-## Key Patterns
+- Language/build: Rust edition 2024 (`Cargo.toml`).
+- TUI: `ratatui` + `crossterm` + custom widgets in `src/ui/`.
+- Audio I/O and playback:
+  - `cpal` for output device access and stream callback.
+  - `rodio` for sample pad/rack playback and mixing.
+  - MPV JSON IPC (Unix socket) for deck control and telemetry.
+  - Optional SuperCollider OSC control via UDP.
+- DSP and analysis:
+  - Custom DSP in `src/audio/dsp.rs` + engine filters in `src/audio/engine.rs`.
+  - BPM/key analysis via `stratum-dsp` + `symphonia`.
+- Concurrency primitives used intentionally for RT safety:
+  - `triple_buffer` for UI -> audio snapshot state.
+  - `rtrb` for SPSC command/sample rings.
+  - atomics + lock-free data structures in decoder/metering paths.
 
-- **3-level nav**: PaneSelect → ControlSelect → Edit (vim hjkl, Esc to go back)
-- **State machine** in `app.rs`: 8 modes handling keyboard + mouse input
-- **Channel controls**: 15 variants in `ChannelControl` enum, 9 in `GlobalControl`
-- **Crossfader**: 4 curves (Linear, Smooth, Cut, ConstantPower) in `state/mixer.rs`
-- **SynthDefs**: Custom SuperCollider synths in `synthdefs/mixerChannel.scd`
+## 3) Repo Layout and Responsibilities
 
-## Navigation Model
+- `src/main.rs`: entrypoint, CLI parsing, terminal setup/teardown, render loop.
+- `src/app.rs`: primary controller/state machine and all keyboard/mouse behavior.
+- `src/state/`: model state (`mixer.rs`, `sampler.rs`).
+- `src/ui/`: rendering/layout/widgets.
+- `src/audio/`: engine, mpv/sc adapters, discovery, decoding, output devices, BPM analysis.
+- `synthdefs/`: SuperCollider SynthDefs used by SC integration.
+- `build.rs`: linker rpath tweak for local runtime linking.
 
-### Pane Select (default mode)
-When no pane is actively selected, you're in **PaneSelect** mode. Navigation keys move the highlight between panes:
+## 4) High-Value Runtime Concepts
 
-- **h / Left** → horizontal left (DeckA↔Master↔DeckB↔Crossfader)
-- **l / Right** → horizontal right (DeckA↔Crossfader↔DeckB↔Master)
-- **j / Down** → vertical down (DeckA→DjCenter→Loops→Crossfader→DeckB→Master→DjControls)
-- **k / Up** → vertical up (reverse of j)
-- **Tab / Shift+Tab** → next/prev pane (round-robin)
-- **Enter / Space** → enter ControlSelect mode (or Edit for Crossfader)
-- **p** → toggle Pads mode (DJ Center only)
-- **?** → show help
+- Navigation model is mode-driven (`AppMode`): PaneSelect -> ControlSelect -> Edit, plus overlay/picker modes.
+- Deck model is effectively A/B/C (C is CUE-focused) with shared master/crossfader logic.
+- Tick cadence is ~20 FPS (`tick_rate = 50ms`) and drives meter updates/animations.
+- MPV route mode conventions:
+  - socket: `/tmp/tui-mixer.sock`
+  - fifo: `/tmp/tui-mixer.pcm`
+  - wildcard variants: `/tmp/tui-mixer-*.sock` and `/tmp/tui-mixer-*.pcm`
+- Debug pane/logging is gated by `DEBUG=1`. Without it, stderr is redirected to avoid TUI corruption.
 
-Pane order: `Deck A | DjCenter | Loops | Crossfader | Deck B | Master | DjControls`
+## 5) External Dependencies and Expected Environment
 
-### Control Select (sub-navigation mode)
-Pressing **Enter** on a pane enters **ControlSelect** mode. Navigation keys now move between controls *within* that pane:
+- Required: Rust toolchain, MPV with IPC enabled, Nerd Font in terminal.
+- Optional: SuperCollider (`scsynth`/`sclang`) for synth routing.
+- Platform assumptions in current code are Unix-heavy (Unix sockets, `/tmp`, FIFO handling).
+- Discovery shells out to system tools (`pgrep`, `pactl`, `pw-cli`, etc.); guard graceful failure paths.
 
-- **j / k** → move between controls vertically (faders, knobs, pad rows, rack rows)
-- **h / l** → adjust continuous values left/right, or toggle between paired controls (e.g. EQ slider ↔ kill switch)
-- **Enter / Space** → toggle a button, or open a picker (pad → sample picker, loop → playback)
-- **0** → reset control to default
-- **Esc** → return to PaneSelect mode
+## 6) Build, Run, Validate (Agent Default Workflow)
 
-Control behavior by pane:
-| Pane | Controls | h/l behavior |
-|------|----------|--------------|
-| Deck A/B | Fader, EQ, Filters, Pan | Adjust value |
-| DjCenter | Pad grid | Navigate pads |
-| Loops | Rack rows | Navigate racks, toggle playback |
-| Crossfader | Crossfader | Adjust value |
-| Master | Fader, Mute, Dim, Mono | Adjust or toggle |
-| DjControls | CUE, PH, BT sliders | Adjust value |
+- Build/check first:
+  - `cargo check`
+  - `cargo build`
+- Run app:
+  - `cargo run`
+  - or `cargo run -- -s "Deck A" /tmp/mpv-a.sock -s "Deck B" /tmp/mpv-b.sock`
+- Debug mode when touching behavior/state sync:
+  - `DEBUG=1 cargo run`
+- Lint pass before finishing substantial edits:
+  - `cargo clippy -- -D warnings` (if existing codebase warnings allow it; otherwise report blockers clearly).
 
-### Edit mode
-For continuous controls (faders, knobs), pressing **Enter** in ControlSelect enters **Edit** mode:
+## 7) Non-Negotiable Engineering Rules
 
-- **h / j / k / l** → fine adjust the value
-- **0** → reset to default
-- **Enter / Esc** → return to ControlSelect
+- Performance regressions in live-control paths are unacceptable.
+  - Treat UI responsiveness, scrub/seek latency, and timestamp sync as critical-path behavior.
+  - Prefer architectures that avoid repeated reconnects, blocking IPC in hot loops, and cross-deck resource contention.
+  - If a change trades correctness for latency (or vice versa), stop and redesign rather than ship degradation.
+- Keep real-time path allocation-light and lock-averse.
+  - Avoid adding `Mutex`/blocking I/O/log spam in audio callback paths.
+  - Prefer existing lock-free channels/snapshots already in use.
+- Respect module boundaries:
+  - `state` = data model, `ui` = rendering, `audio` = signal/IO backend, `app` = orchestration.
+- Reuse existing control/navigation patterns before introducing new abstractions.
+- Keep changes surgical; do not refactor broad surfaces unless task explicitly requires it.
+- Do not hardcode ad-hoc colors in UI code; centralize through `src/ui/colors.rs`.
 
-### Adding new panes
-When adding a new pane:
-1. Add variant to `SelectedPane` enum in `app.rs`
-2. Update `next()` / `prev()` for Tab navigation
-3. Update `sync_pane_to_mixer()` for focus behavior
-4. Add pane to `navigate_control_down()` / `navigate_control_up()` for j/k
-5. Add pane to `navigate_control_left()` / `navigate_control_right()` for h/l
-6. Add pane handling in `handle_control_select_key()` for Enter/Space
-7. Add render method in `ui/mixer.rs`
-8. Wire up in `render_mixer_full_width()` layout
+## 8) Safe Change Playbooks
 
-## Build & Run
+### A) Add or modify a mixer control
 
-```bash
-cargo build              # debug
-cargo build --release    # release with LTO
-cargo run                # auto-discover sources
-cargo run -- -s "A" /tmp/mpv-a.sock -s "B" /tmp/mpv-b.sock
-DEBUG=1 cargo run        # run with debug panel visible at bottom of screen
-```
+- Update enum + semantics in `src/state/mixer.rs`.
+- Wire key/mouse behavior and mode handling in `src/app.rs`.
+- Render/edit affordance in `src/ui/channel.rs` or `src/ui/widgets.rs`.
+- Sync side effects to backend(s): MPV/SC/audio engine state updates.
+- Verify with `DEBUG=1` and manual interaction.
 
-**Prerequisites**: Rust 2021, [Nerd Fonts](https://www.nerdfonts.com/), MPV, optional SuperCollider.
+### B) Add or modify a pane/layout behavior
 
-The `DEBUG=1` environment variable enables a 5-line debug log panel at the bottom of the TUI, showing MPV IPC results, solo state, and errors. Use it to diagnose audio routing or control issues.
+- Update pane selection/navigation in `src/app.rs` (`SelectedPane`, movement handlers, visibility sync).
+- Update layout/rendering in `src/ui/mixer.rs`.
+- Keep mouse hit-testing aligned with rendered geometry (`calculate_all_areas` in `src/main.rs`).
 
-## Testing
+### C) Touch DSP/audio engine behavior
 
-No test suite currently. Run `cargo check` and `cargo clippy` for validation.
+- Start in `src/audio/engine.rs` and `src/audio/dsp.rs`.
+- Preserve control snapshot flow (`audio/engine/inner.rs`) and command/ring semantics.
+- Validate no obvious glitch regressions (dropouts, zipper noise, unstable meters).
+- Document any unavoidable RT tradeoff in PR/notes.
 
-## Conventions
+## 9) Known Risk Areas (Read Before Editing)
 
-- Rust edition 2021, `anyhow` for errors, `thiserror` for custom types
-- Module re-exports via `mod.rs` files
-- Doc comments on structs/functions, minimal inline comments
-- Follow existing patterns when adding new controls or widgets
+- `src/app.rs` is large and highly coupled; make focused diffs and avoid broad rewrites.
+- MPV + engine hybrid routing has nuanced mute/volume interactions to avoid double-audio.
+- Unix-specific assumptions exist in discovery/routing; avoid silently breaking Linux/macOS compatibility.
+- `unsafe` exists in decoder/ring code (`src/audio/decoder.rs`) and stderr redirection in `src/main.rs`; do not modify casually.
 
-## Code Principles
+## 10) Definition of Done for Agent Changes
 
-### KISS and DRY
-- **Keep it simple** — prefer straightforward code over clever abstractions
-- **Don't repeat yourself** — extract shared logic into reusable functions/structs
-- **No dead code** — remove unused structs, methods, and imports. If it's not called, delete it
-- **No premature generalization** — build what's needed now, refactor when a pattern emerges
+- Change compiles (`cargo check` or better).
+- Keyboard/mouse behavior for touched flows still works in app.
+- Sync path updates are consistent across MPV/SC/engine where relevant.
+- No new obvious warnings, panics, or mode dead-ends.
+- User-facing behavior changes are reflected in `README.md` if controls/options changed.
 
-### Reuse existing components
-- **UI widgets**: Use existing widgets in `ui/widgets.rs` (Fader, LevelMeter, Crossfader, DeckIndicator) before creating new ones
-- **State patterns**: Follow `ChannelControl`/`GlobalControl` enum patterns for new controls
-- **DSP**: Use existing `Biquad` in `audio/sample_cache.rs` for filtering, not custom implementations
-- **Navigation**: Extend existing `navigate_control_*` methods rather than adding parallel nav systems
+## 11) Quick File Index
 
-### Modular structure
-- **One responsibility per module** — `state/` for data, `ui/` for rendering, `audio/` for processing
-- **State exports via `mod.rs`** — keep re-exports clean, avoid deep imports
-- **Widgets are self-contained** — each widget in `ui/` handles its own rendering and area calculation
-- **New panes**: Follow the checklist in "Adding new panes" above
-
-### Cross-platform compatibility
-- **Keep it cross-platform** — the TUI should work on macOS, Linux, and Windows without platform-specific code in core paths
-- **No OS-level input interception** — media keys, global hotkeys, and other OS-grabbed keys are not portable. Use standard keyboard keys that all terminal emulators pass through (letters, numbers, function keys, arrows)
-- **No platform-specific dependencies in core** — if a feature requires OS-specific APIs (e.g., macOS `MediaRemote.framework`, Linux `evdev`), gate it behind `#[cfg(target_os)]` with a fallback, or avoid it entirely
-- **Terminal emulators vary** — not all terminals pass the same escape sequences. Stick to common keys (F1-F12, letters, modifiers) rather than relying on extended key codes
-
-## UI Conventions
-
-### Colors — always use `src/ui/colors.rs`
-All colors are centralized in `src/ui/colors.rs`. **Never** hardcode `Color::Rgb(...)` or named colors directly in widget code. Import from the module instead:
-
-```rust
-use crate::ui::colors::*;
-```
-
-Color groups:
-- **Borders**: `BORDER_DEFAULT`, `BORDER_NAVIGATED`, `BORDER_ACTIVE`
-- **Text**: `TEXT_DEFAULT`, `TEXT_DIM`, `TEXT_BRIGHT`, `TEXT_GHOST`, `TEXT_EDITING`
-- **Deck accents**: `DECK_A`/`DECK_A_BRIGHT`, `DECK_B`/`DECK_B_BRIGHT`, `DECK_C`
-- **Backgrounds**: `BG_DARK`, `BG_DEFAULT`, `BG_LIGHT`
-- **Status**: `STATUS_PLAYING`, `STATUS_MUTED`
-- **Meters/faders**: `METER_TRACK`, `METER_FILL`, `FADER_FILL`
-- **Separators**: `SEPARATOR` (alias for `BORDER_DEFAULT`)
-- **Sampler**: `PAD_ACTIVE_LOW`, `PAD_ACTIVE_HIGH`
-- **Buttons**: `BTN_DM_PURPLE`
-- **Slider**: `SLIDER_MID`
-- **Hints**: `HINT_DEFAULT`
-
-To add a new color: define it in `colors.rs` with a descriptive `SCREAMING_SNAKE` name, then use it everywhere.
-
-### Borders and separators
-The TUI uses a table-cell aesthetic with connected borders. Two approaches:
-
-#### 1. Automatic merging (preferred for adjacent panes)
-Ratatui v0.30+ has built-in border collapsing. Use this when placing blocks adjacent to each other:
-
-```rust
-use ratatui::{layout::{Layout, Constraint, Spacing}, symbols::merge::MergeStrategy, widgets::Block};
-
-let [left, right] = Layout::horizontal([Constraint::Length(20); 2])
-    .spacing(Spacing::Overlap(1))  // borders share the same cell
-    .areas(area);
-
-let block = Block::bordered()
-    .merge_borders(MergeStrategy::Exact)  // auto-merge junction characters
-    .title("My Pane");
-```
-
-This automatically produces correct junctions (├, ┤, ┬, ┴, ┼) where borders meet. **Use this for inter-pane borders** rather than hand-drawing junction characters.
-
-#### 2. Manual separators (for internal controls)
-For drawing separator lines *inside* a pane (e.g., between EQ rows, between M/S/C buttons), use the `draw_separator()` pattern from `ChannelStrip`:
-
-```rust
-// Horizontal line with junction characters connecting to pane borders
-fn draw_separator(&self, area: Rect, buf: &mut Buffer) {
-    let style = Style::default().fg(self.border_color());
-    let y = area.y + area.height.saturating_sub(1);
-    if area.x > 0 {
-        buf.set_string(area.x - 1, y, "├", style);  // left junction
-    }
-    for x in area.x..area.x + area.width {
-        buf.set_string(x, y, "─", style);
-    }
-    buf.set_string(area.x + area.width, y, "┤", style);  // right junction
-}
-```
-
-For vertical separators between elements (like M/S/C buttons), use `┼` to create cross-junctions.
+- App state machine: `src/app.rs`
+- Startup loop + area hit-testing: `src/main.rs`
+- Mixer model and controls: `src/state/mixer.rs`
+- Sample/rack model: `src/state/sampler.rs`
+- Main layout/UI orchestration: `src/ui/mixer.rs`
+- Widgets: `src/ui/widgets.rs`
+- Audio engine: `src/audio/engine.rs`
+- MPV adapter: `src/audio/mpv.rs`
+- Source discovery: `src/audio/discovery.rs`
+- Sample cache/player: `src/audio/sample_cache.rs`

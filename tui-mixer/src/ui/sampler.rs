@@ -7,7 +7,8 @@ use ratatui::{
     widgets::{Block, Borders, Widget},
 };
 
-use crate::state::{PadControl, Rack, SamplePadGrid, SamplePad};
+use crate::state::{PadControl, Sequence, SamplePadGrid, SamplePad, SEQUENCE_STEPS,
+    GlobalSequenceControls, GlobalSequenceControl, EditTarget};
 use crate::ui::colors::*;
 
 /// Configuration pane for a single pad — replaces the pad grid when [c] is pressed
@@ -99,7 +100,7 @@ impl<'a> Widget for PadConfigPane<'a> {
         // Help hint at bottom
         if area.height > inner.height + 2 {
             let hint = if is_editing {
-                "hjkl:adjust │ 0:reset │ Esc:back"
+                "h/j/k/l:adjust │ 0:reset │ Esc:back"
             } else {
                 "j/k:move │ Enter:edit/open │ SPACE:play │ c:close"
             };
@@ -179,15 +180,6 @@ fn render_config_row(
             };
             buf.set_string(control_x, area.y, &name, style);
         }
-        PadControl::PlayMode => {
-            let mode_label = pad.play_mode.label();
-            let style = if selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Cyan)
-            };
-            buf.set_string(control_x, area.y, mode_label, style);
-        }
         PadControl::Mute => {
             let (label, color) = if pad.config.mute {
                 ("ON", Color::Red)
@@ -259,6 +251,125 @@ fn render_config_row(
     }
 }
 
+/// Top bar showing global sequence controls: volume, BPM, mute
+pub struct SequenceTopBar<'a> {
+    global: &'a GlobalSequenceControls,
+    selected: bool,
+    selected_control: GlobalSequenceControl,
+    editing: bool,
+    border_color: Color,
+}
+
+impl<'a> SequenceTopBar<'a> {
+    pub fn new(global: &'a GlobalSequenceControls) -> Self {
+        Self {
+            global,
+            selected: false,
+            selected_control: GlobalSequenceControl::Volume,
+            editing: false,
+            border_color: Color::DarkGray,
+        }
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn selected_control(mut self, control: GlobalSequenceControl) -> Self {
+        self.selected_control = control;
+        self
+    }
+
+    pub fn editing(mut self, editing: bool) -> Self {
+        self.editing = editing;
+        self
+    }
+
+    pub fn border_color(mut self, color: Color) -> Self {
+        self.border_color = color;
+        self
+    }
+}
+
+impl<'a> Widget for SequenceTopBar<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.height < 1 || area.width < 20 {
+            return;
+        }
+
+        let y = area.y;
+        let border_style = Style::default().fg(self.border_color);
+
+        // Color scheme: default=gray, focused=white, editing=yellow
+
+        // --- Play/pause (rightmost cell, with padding) ---
+        let pp_is_target = self.selected && self.selected_control == GlobalSequenceControl::Mute;
+        let pp_active = pp_is_target && self.editing;
+        let (mute_label, mute_fg) = if self.global.mute {
+            ("⏸", if pp_active { Color::Red } else if pp_is_target { Color::Red } else { Color::DarkGray })
+        } else {
+            ("▶", if pp_active { TEXT_EDITING } else if pp_is_target { TEXT_BRIGHT } else { TEXT_DIM })
+        };
+        let mute_style = if pp_is_target {
+            Style::default().fg(mute_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(mute_fg)
+        };
+        let pp_icon_x = area.x + area.width - 2;
+        buf.set_string(pp_icon_x - 1, y, " ", mute_style);
+        buf.set_string(pp_icon_x, y, mute_label, mute_style);
+
+        // --- Separator between BPM and play/pause ---
+        let sep2_x = pp_icon_x - 2;
+        buf.set_string(sep2_x, y, "│", border_style);
+
+        // --- BPM (padded cell) ---
+        let bpm_str = format!("{:.0}", self.global.bpm);
+        let bpm_is_target = self.selected && self.selected_control == GlobalSequenceControl::Bpm;
+        let bpm_active = bpm_is_target && self.editing;
+        let bpm_fg = if bpm_active { TEXT_EDITING } else if bpm_is_target { TEXT_BRIGHT } else { TEXT_DIM };
+        let bpm_style = if bpm_is_target {
+            Style::default().fg(bpm_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(bpm_fg)
+        };
+        let bpm_text_x = sep2_x - bpm_str.len() as u16 - 1;
+        buf.set_string(bpm_text_x - 1, y, " ", bpm_style);
+        buf.set_string(bpm_text_x, y, &bpm_str, bpm_style);
+        buf.set_string(bpm_text_x + bpm_str.len() as u16, y, " ", bpm_style);
+
+        // --- Separator between volume and BPM ---
+        let sep1_x = bpm_text_x - 2;
+        buf.set_string(sep1_x, y, "│", border_style);
+
+        // --- Volume slider (no brackets, fills remaining space) ---
+        let slider_x = area.x + 1;
+        let slider_end = sep1_x - 1;
+        let slider_w = if slider_end > slider_x { slider_end - slider_x } else { 5 };
+        let vol_is_target = self.selected && self.selected_control == GlobalSequenceControl::Volume;
+        let vol_active = vol_is_target && self.editing;
+        let filled = (self.global.volume * slider_w as f32) as usize;
+        let vol_fg = if vol_active { TEXT_EDITING } else if vol_is_target { TEXT_BRIGHT } else { TEXT_DIM };
+        let bar_style = if vol_is_target {
+            Style::default().fg(vol_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(vol_fg)
+        };
+        for i in 0..slider_w as usize {
+            let ch = if i < filled { "━" } else { "─" };
+            buf.set_string(slider_x + i as u16, y, ch, bar_style);
+        }
+
+        // Connect inner separators to the top border with ┬
+        let top_y = area.y.saturating_sub(1);
+        if top_y < area.y {
+            buf.set_string(sep1_x, top_y, "┬", border_style);
+            buf.set_string(sep2_x, top_y, "┬", border_style);
+        }
+    }
+}
+
 /// Format frequency in Hz to a human-readable string
 fn format_hz(hz: f32) -> String {
     if hz >= 1000.0 {
@@ -268,25 +379,29 @@ fn format_hz(hz: f32) -> String {
     }
 }
 
-/// A single rack row: name, volume slider, mute, record, blinking indicator
-pub struct RackRow<'a> {
-    rack: &'a Rack,
+/// A single sequence row: name, 16-step grid, mute, multiplier + real BPM
+pub struct SequenceRow<'a> {
+    sequence: &'a Sequence,
+    global_bpm: f32,
     selected: bool,
-    selected_control: Option<crate::state::RackControl>,
+    editing: bool,
+    cursor: EditTarget,
+    current_play_step: usize,
     frame: u8,
-    recording: bool,
-    count_in: Option<(u8, u8)>,
+    border_color: Color,
 }
 
-impl<'a> RackRow<'a> {
-    pub fn new(rack: &'a Rack) -> Self {
+impl<'a> SequenceRow<'a> {
+    pub fn new(sequence: &'a Sequence) -> Self {
         Self {
-            rack,
+            sequence,
+            global_bpm: 120.0,
             selected: false,
-            selected_control: None,
+            editing: false,
+            cursor: EditTarget::Step(0),
+            current_play_step: 0,
             frame: 0,
-            recording: false,
-            count_in: None,
+            border_color: Color::DarkGray,
         }
     }
 
@@ -295,8 +410,23 @@ impl<'a> RackRow<'a> {
         self
     }
 
-    pub fn selected_control(mut self, control: Option<crate::state::RackControl>) -> Self {
-        self.selected_control = control;
+    pub fn editing(mut self, editing: bool) -> Self {
+        self.editing = editing;
+        self
+    }
+
+    pub fn global_bpm(mut self, bpm: f32) -> Self {
+        self.global_bpm = bpm;
+        self
+    }
+
+    pub fn cursor(mut self, cursor: EditTarget) -> Self {
+        self.cursor = cursor;
+        self
+    }
+
+    pub fn current_play_step(mut self, step: usize) -> Self {
+        self.current_play_step = step;
         self
     }
 
@@ -305,173 +435,103 @@ impl<'a> RackRow<'a> {
         self
     }
 
-    pub fn recording(mut self, recording: bool) -> Self {
-        self.recording = recording;
-        self
-    }
-
-    pub fn count_in_opt(mut self, count_in: Option<(u8, u8)>) -> Self {
-        self.count_in = count_in;
+    pub fn border_color(mut self, color: Color) -> Self {
+        self.border_color = color;
         self
     }
 }
 
-impl<'a> Widget for RackRow<'a> {
+impl<'a> Widget for SequenceRow<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height < 1 || area.width < 10 {
+        if area.height < 1 || area.width < 20 {
             return;
         }
 
         let y = area.y;
 
-        // Border style
-        let border_style = if self.selected {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(80, 80, 80))
-        };
-
-        // Rack name/number (left-aligned)
-        let name = format!(" {} ", self.rack.name);
+        // Name (left-aligned, padded: " X ")
+        let name = format!(" {} ", self.sequence.name);
         let name_style = if self.selected {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(TEXT_DIM)
         };
         buf.set_string(area.x, y, &name, name_style);
 
-        // Right-aligned controls (from right edge, leaving room for right border)
-        let right_edge = area.x + area.width - 1; // -1 for right border
+        let sep_x = area.x + name.len() as u16;
 
-        // Tempo display (rightmost, 4 chars)
-        let tempo_str = format!("{:.0}", self.rack.tempo);
-        let tempo_is_selected = self.selected && self.selected_control == Some(crate::state::RackControl::Tempo);
-        let tempo_style = if tempo_is_selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else if self.selected {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let tempo_w = tempo_str.len() as u16;
-        let tempo_x = right_edge.saturating_sub(tempo_w);
-        buf.set_string(tempo_x, y, &tempo_str, tempo_style);
+        // Vertical separator after name
+        buf.set_string(sep_x, y, "│", Style::default().fg(self.border_color));
 
-        // Indicator (1 char + 1 space gap before tempo)
-        let indicator_x = tempo_x.saturating_sub(2);
-        if self.recording {
-            buf.set_string(indicator_x, y, "●", 
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
-        } else if let Some((step, _total)) = self.count_in {
-            let show = self.frame % 4 < 2;
-            if show {
-                let num = format!("{}", step + 1);
-                buf.set_string(indicator_x, y, &num,
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        // 16-step grid after separator, one space between each toggle
+        let grid_start = sep_x + 2;
+        let mut step_x = grid_start;
+        for step in 0..SEQUENCE_STEPS {
+            if step_x >= area.x + area.width - 1 {
+                break;
             }
-        } else if self.rack.playing && !self.rack.mute {
-            let on = self.frame % 6 < 4;
-            if on {
-                buf.set_string(indicator_x, y, "●",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
-            } else {
-                buf.set_string(indicator_x, y, "●",
-                    Style::default().fg(PAD_ACTIVE_HIGH));
-            }
-        } else if self.rack.playing && self.rack.mute {
-            buf.set_string(indicator_x, y, "●",
-                Style::default().fg(PAD_ACTIVE_LOW));
-        } else {
-            buf.set_string(indicator_x, y, "○",
-                Style::default().fg(Color::DarkGray));
-        }
 
-        // Mute button (3 chars + 1 space gap before indicator)
-        let mute_x = indicator_x.saturating_sub(4);
-        let mute_is_selected = self.selected && self.selected_control == Some(crate::state::RackControl::Mute);
-        let (label, color) = if self.rack.mute {
-            ("[M]", Color::Red)
-        } else {
-            ("[M]", Color::DarkGray)
-        };
-        let mute_style = if mute_is_selected {
-            Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else if self.selected {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(color)
-        };
-        buf.set_string(mute_x, y, label, mute_style);
+            let is_marked = self.sequence.pattern[step];
+            let is_playing = self.sequence.playing && step == self.current_play_step;
+            let is_target = self.selected && self.cursor == EditTarget::Step(step);
+            let step_active = is_target && self.editing;
 
-        // Volume slider (right-aligned before mute, 20 chars: ├ + 18 bars + ┤)
-        let slider_w = 20u16;
-        let slider_x = mute_x.saturating_sub(slider_w + 1);
-        if slider_x > area.x + name.len() as u16 {
-            let filled = (self.rack.volume * (slider_w as f32 - 2.0)) as usize;
-            let volume_is_selected = self.selected && self.selected_control == Some(crate::state::RackControl::Volume);
-            let bar_style = if volume_is_selected {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else if self.selected {
-                Style::default().fg(Color::Green)
+            let (ch, style) = if is_playing && is_marked {
+                ("󱔀", Style::default().fg(STATUS_PLAYING).add_modifier(Modifier::BOLD))
+            } else if is_playing && !is_marked {
+                ("󰝣", Style::default().fg(TEXT_DIM))
+            } else if step_active {
+                (if is_marked { "󱔀" } else { "󰝣" },
+                 Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD))
+            } else if is_target {
+                (if is_marked { "󱔀" } else { "󰝣" },
+                 Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))
+            } else if is_marked {
+                ("󱔀", Style::default().fg(TEXT_DEFAULT))
             } else {
-                Style::default().fg(Color::DarkGray)
+                ("󰝣", Style::default().fg(TEXT_DIM))
             };
-            buf.set_string(slider_x, y, "├", bar_style);
-            for i in 0..(slider_w as usize).saturating_sub(2) {
-                let ch = if i < filled { "━" } else { "─" };
-                buf.set_string(slider_x + 1 + i as u16, y, ch, bar_style);
-            }
-            buf.set_string(slider_x + slider_w - 1, y, "┤", bar_style);
+
+            buf.set_string(step_x, y, ch, style);
+            step_x += 2; // toggle + space
         }
 
-        // Right border
-        if area.width > 1 {
-            buf.set_string(area.x + area.width - 1, y, "│", border_style);
-        }
-    }
-}
+        // Right-aligned controls: mute + multiplier + real BPM
+        let right_edge = area.x + area.width - 1;
 
-/// Count-in overlay that shows 1, 2... slow, then 1, 2, 3, 4 fast, then steady
-pub struct CountInOverlay {
-    step: u8,
-    frame: u8,
-}
+        // Real BPM (rightmost, dim)
+        let real_bpm = self.sequence.actual_bpm(self.global_bpm);
+        let bpm_str = format!("{:.0}", real_bpm);
+        let bpm_style = Style::default().fg(TEXT_DIM);
+        let bpm_x = right_edge.saturating_sub(bpm_str.len() as u16);
+        buf.set_string(bpm_x, y, &bpm_str, bpm_style);
 
-impl CountInOverlay {
-    pub fn new(step: u8, frame: u8) -> Self {
-        Self { step, frame }
-    }
-}
+        // Multiplier (left of BPM)
+        let mult_str = format!("{:.2}x", self.sequence.tempo);
+        let mult_is_target = self.selected && self.cursor == EditTarget::Multiplier;
+        let mult_active = mult_is_target && self.editing;
+        let mult_fg = if mult_active { TEXT_EDITING } else if mult_is_target { TEXT_BRIGHT } else { TEXT_DIM };
+        let mult_style = if mult_is_target {
+            Style::default().fg(mult_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(mult_fg)
+        };
+        let mult_x = bpm_x.saturating_sub(mult_str.len() as u16 + 1);
+        buf.set_string(mult_x, y, &mult_str, mult_style);
 
-impl Widget for CountInOverlay {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.width < 10 || area.height < 3 {
-            return;
-        }
-
-        // Centered overlay box
-        let box_w = 12u16.min(area.width.saturating_sub(2));
-        let box_h = 3u16.min(area.height);
-        let x = area.x + (area.width.saturating_sub(box_w)) / 2;
-        let y = area.y + (area.height.saturating_sub(box_h)) / 2;
-
-        let box_area = Rect::new(x, y, box_w, box_h);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-        let inner = block.inner(box_area);
-        block.render(box_area, buf);
-
-        // Blink: show number on even frames
-        let show = self.frame % 4 < 2;
-        if show && inner.height > 0 {
-            // Display countdown in reverse: 3, 2, 1
-            let num = format!("{}", 3 - self.step);
-            let num_style = Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD);
-            let nx = inner.x + (inner.width.saturating_sub(num.len() as u16)) / 2;
-            buf.set_string(nx, inner.y, &num, num_style);
-        }
+        // Mute button (left of multiplier) — red stays red
+        let mute_x = mult_x.saturating_sub(2);
+        let mute_is_target = self.selected && self.cursor == EditTarget::Mute;
+        let (mute_label, mute_color) = if self.sequence.mute {
+            ("\u{F0581}", Color::Red)
+        } else {
+            ("\u{F057E}", if mute_is_target { TEXT_BRIGHT } else { TEXT_DIM })
+        };
+        let mute_style = if mute_is_target {
+            Style::default().fg(mute_color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(mute_color)
+        };
+        buf.set_string(mute_x, y, mute_label, mute_style);
     }
 }

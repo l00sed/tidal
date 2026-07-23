@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::thread;
 
+use crate::audio::bpm::pitch_class_to_camelot;
+
 /// Audio device entry from MPV's `audio-device-list` property.
 #[derive(Debug, Clone)]
 pub struct AudioDeviceEntry {
@@ -93,9 +95,30 @@ pub struct MpvClient {
     request_id: u64,
     meters: Arc<AtomicMeter>,
     stop_flag: Arc<AtomicBool>,
+    /// UI-side filter smoothing state. `set_lpf`/`set_hpf` update the
+    /// *target*; `tick_smooth_filters` glides `current` toward `target`
+    /// and sends af-command only when the delta exceeds a threshold.
+    /// This turns a burst of coefficient jumps (crackle) into a small
+    /// number of small, evenly-spaced updates ffmpeg can absorb.
+    target_lpf: Option<f32>,
+    target_hpf: Option<f32>,
+    current_lpf: f32,
+    current_hpf: f32,
+    last_sent_lpf: f32,
+    last_sent_hpf: f32,
+    /// Tick counter used to gate af-command sends to ~10 Hz.
+    send_tick: u32,
 }
 
 impl MpvClient {
+    fn value_to_f32(val: &serde_json::Value) -> Option<f32> {
+        val.as_f64()
+            .map(|v| v as f32)
+            .or_else(|| val.as_i64().map(|v| v as f32))
+            .or_else(|| val.as_u64().map(|v| v as f32))
+            .or_else(|| val.as_str().and_then(|s| s.trim().parse::<f32>().ok()))
+    }
+
     pub fn new(socket_path: impl Into<String>) -> Self {
         Self {
             reader: None,
@@ -103,6 +126,13 @@ impl MpvClient {
             request_id: 0,
             meters: Arc::new(AtomicMeter::new()),
             stop_flag: Arc::new(AtomicBool::new(false)),
+            target_lpf: None,
+            target_hpf: None,
+            current_lpf: 20000.0,
+            current_hpf: 20.0,
+            last_sent_lpf: 20000.0,
+            last_sent_hpf: 20.0,
+            send_tick: 0,
         }
     }
 
@@ -121,6 +151,13 @@ impl MpvClient {
                 Ok(())
             }
             Err(e) => Err(format!("Failed to connect: {}", e)),
+        }
+    }
+
+    pub fn set_timeouts(&mut self, read_ms: u64, write_ms: u64) {
+        if let Some(reader) = self.reader.as_mut() {
+            let _ = reader.get_mut().set_read_timeout(Some(Duration::from_millis(read_ms)));
+            let _ = reader.get_mut().set_write_timeout(Some(Duration::from_millis(write_ms)));
         }
     }
 
@@ -360,14 +397,89 @@ impl MpvClient {
 
     /// Get current playback position in seconds.
     pub fn get_time_pos(&mut self) -> Result<f32, String> {
-        let val = self.get_property("time-pos")?;
-        val.as_f64().map(|v| v as f32).ok_or("Invalid time-pos".to_string())
+        self.get_property("time-pos")
+            .ok()
+            .and_then(|v| Self::value_to_f32(&v))
+            .or_else(|| {
+                self.get_property("playback-time")
+                    .ok()
+                    .and_then(|v| Self::value_to_f32(&v))
+            })
+            .ok_or("Invalid time-pos".to_string())
     }
 
     /// Get total duration of current track in seconds.
     pub fn get_duration(&mut self) -> Result<f32, String> {
-        let val = self.get_property("duration")?;
-        val.as_f64().map(|v| v as f32).ok_or("Invalid duration".to_string())
+        if let Some(duration) = self
+            .get_property("duration")
+            .ok()
+            .and_then(|v| Self::value_to_f32(&v))
+            .or_else(|| {
+                self.get_property("duration/full")
+                    .ok()
+                    .and_then(|v| Self::value_to_f32(&v))
+            })
+        {
+            return Ok(duration.max(0.0));
+        }
+
+        if let (Some(time_pos), Some(remaining)) = (
+            self.get_time_pos().ok(),
+            self.get_property("playtime-remaining")
+                .ok()
+                .and_then(|v| Self::value_to_f32(&v)),
+        ) {
+            return Ok((time_pos + remaining).max(0.0));
+        }
+
+        Err("Invalid duration".to_string())
+    }
+
+    pub fn get_playlist_nav_available(&mut self) -> Result<(bool, bool), String> {
+        let to_i64 = |v: &serde_json::Value| -> Option<i64> {
+            v.as_i64()
+                .or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok()))
+                .or_else(|| v.as_f64().map(|n| n as i64))
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+        };
+
+        let playlist = self
+            .get_property("playlist")
+            .ok()
+            .and_then(|v| v.as_array().cloned());
+
+        let pos_from_playlist = playlist.as_ref().and_then(|entries| {
+            entries
+                .iter()
+                .position(|item| {
+                    item.get("current").and_then(|v| v.as_bool()).unwrap_or(false)
+                        || item.get("playing").and_then(|v| v.as_bool()).unwrap_or(false)
+                })
+                .map(|idx| idx as i64)
+        });
+
+        let pos = pos_from_playlist
+            .or_else(|| self.get_property("playlist-pos").ok().and_then(|v| to_i64(&v)))
+            .or_else(|| {
+                self.get_property("playlist-pos-1")
+                    .ok()
+                    .and_then(|v| to_i64(&v))
+                    .map(|v| v - 1)
+            });
+
+        let count = playlist
+            .as_ref()
+            .map(|a| a.len() as i64)
+            .or_else(|| self.get_property("playlist-count").ok().and_then(|v| to_i64(&v)))
+            .unwrap_or(0);
+
+        if count <= 0 {
+            return Ok((false, false));
+        }
+
+        let has_prev = pos.map(|p| p > 0).unwrap_or(false);
+        let has_next = pos.map(|p| p >= 0 && p < count - 1).unwrap_or(count > 1);
+        Ok((has_prev, has_next))
     }
 
     fn has_filter(&mut self, label: &str) -> bool {
@@ -394,45 +506,137 @@ impl MpvClient {
         Ok(())
     }
 
+    /// Store target LPF frequency. Actual af-command is sent later by
+    /// `tick_smooth_filters` at ~20 Hz with a UI-side smoother — this
+    /// eliminates crackle from ffmpeg biquad coefficient jumps that
+    /// happen on every raw af-command.
     pub fn set_lpf(&mut self, freq: f32) -> Result<(), String> {
+        self.target_lpf = Some(freq.clamp(20.0, 20000.0));
+        Ok(())
+    }
+
+    /// Store target HPF frequency. See `set_lpf` for rationale.
+    pub fn set_hpf(&mut self, freq: f32) -> Result<(), String> {
+        self.target_hpf = Some(freq.clamp(20.0, 20000.0));
+        Ok(())
+    }
+
+    /// Immediately send a raw LPF af-command (bypasses smoother). Used at
+    /// startup and when the filter needs to snap (e.g. reset).
+    ///
+    /// The filter is added with `width_type=q:width=0.5` — a lower-than-
+    /// Butterworth Q. This softens the resonant peak that would otherwise
+    /// amplify the coefficient-jump transient whenever `af-command frequency`
+    /// updates the biquad. Trade-off: slightly less "punch" at the knee, in
+    /// exchange for audibly cleaner sweeps.
+    fn send_lpf_raw(&mut self, freq: f32) -> Result<(), String> {
         if freq >= 19000.0 {
-            // Bypass: push cutoff to Nyquist — no audible filtering, no graph rebuild
             if self.has_filter("lpf") {
                 self.af_command("lpf", "frequency", "20000").ok();
             }
         } else if self.has_filter("lpf") {
-            // Subsequent updates: send parameter command — NO graph rebuild
             if self.af_command("lpf", "frequency", &format!("{:.0}", freq)).is_err() {
-                // Filter was removed (e.g. by seek) — rebuild it
                 self.send_command(vec!["af".into(), "remove".into(), "@lpf".into()]).ok();
-                let filter = format!("@lpf:lavfi=[lowpass=f={:.0}]", freq);
+                let filter = format!("@lpf:lavfi=[lowpass=f={:.0}:width_type=q:width=0.5]", freq);
                 self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
             }
         } else {
-            // First use: create the filter graph entry once
-            let filter = format!("@lpf:lavfi=[lowpass=f={:.0}]", freq);
+            let filter = format!("@lpf:lavfi=[lowpass=f={:.0}:width_type=q:width=0.5]", freq);
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
         }
         Ok(())
     }
 
-    pub fn set_hpf(&mut self, freq: f32) -> Result<(), String> {
+    fn send_hpf_raw(&mut self, freq: f32) -> Result<(), String> {
         if freq <= 25.0 {
-            // Bypass: push cutoff to DC level — no audible filtering, no graph rebuild
             if self.has_filter("hpf") {
                 self.af_command("hpf", "frequency", "20").ok();
             }
         } else if self.has_filter("hpf") {
             if self.af_command("hpf", "frequency", &format!("{:.0}", freq)).is_err() {
                 self.send_command(vec!["af".into(), "remove".into(), "@hpf".into()]).ok();
-                let filter = format!("@hpf:lavfi=[highpass=f={:.0}]", freq);
+                let filter = format!("@hpf:lavfi=[highpass=f={:.0}:width_type=q:width=0.5]", freq);
                 self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
             }
         } else {
-            let filter = format!("@hpf:lavfi=[highpass=f={:.0}]", freq);
+            let filter = format!("@hpf:lavfi=[highpass=f={:.0}:width_type=q:width=0.5]", freq);
             self.send_command(vec!["af".into(), "add".into(), filter.into()])?;
         }
         Ok(())
+    }
+
+    /// Glide `current_{lpf,hpf}` toward `target_{lpf,hpf}` and send a
+    /// stepped af-command. Call once per UI tick (~20 Hz).
+    ///
+    /// Design notes:
+    /// - Sends are gated to ~10 Hz (every other tick) — halves ffmpeg
+    ///   biquad coefficient-jump transients per second, and reduces MPV
+    ///   IPC pressure that can stall the MPV audio thread.
+    /// - Smoothing is on **log-frequency** so a 20 Hz → 20 kHz sweep is
+    ///   evenly paced to the ear.
+    /// - `MIN_DELTA_HZ = 5` skips sub-audible micro-updates.
+    /// - When the smoothed value is within a musical threshold of target,
+    ///   we snap and clear the target — no more sends until user moves knob.
+    pub fn tick_smooth_filters(&mut self) {
+        const ALPHA: f32 = 0.30;
+        const MIN_DELTA_HZ: f32 = 5.0;
+        // Musical settle: 1 semitone ≈ ratio 1.06 — below this the sweep
+        // is done to any listener. Snap and stop sending.
+        const SETTLE_RATIO: f32 = 1.02;
+
+        // Rate-limit to every other tick (~10 Hz at 20 fps UI).
+        let should_send = {
+            let n = self.send_tick.wrapping_add(1);
+            self.send_tick = n;
+            n & 1 == 0
+        };
+
+        if let Some(target) = self.target_lpf {
+            let log_cur = self.current_lpf.max(1.0).ln();
+            let log_tar = target.max(1.0).ln();
+            let log_new = log_cur + (log_tar - log_cur) * ALPHA;
+            let new = log_new.exp().clamp(20.0, 20000.0);
+            self.current_lpf = new;
+            let ratio = (new.max(target) / new.min(target)).max(1.0);
+            if ratio < SETTLE_RATIO {
+                // Snap: send the exact target once, then clear.
+                if (target - self.last_sent_lpf).abs() >= MIN_DELTA_HZ
+                    && self.send_lpf_raw(target).is_ok()
+                {
+                    self.last_sent_lpf = target;
+                }
+                self.current_lpf = target;
+                self.target_lpf = None;
+            } else if should_send
+                && (new - self.last_sent_lpf).abs() >= MIN_DELTA_HZ
+                && self.send_lpf_raw(new).is_ok()
+            {
+                self.last_sent_lpf = new;
+            }
+        }
+
+        if let Some(target) = self.target_hpf {
+            let log_cur = self.current_hpf.max(1.0).ln();
+            let log_tar = target.max(1.0).ln();
+            let log_new = log_cur + (log_tar - log_cur) * ALPHA;
+            let new = log_new.exp().clamp(20.0, 20000.0);
+            self.current_hpf = new;
+            let ratio = (new.max(target) / new.min(target)).max(1.0);
+            if ratio < SETTLE_RATIO {
+                if (target - self.last_sent_hpf).abs() >= MIN_DELTA_HZ
+                    && self.send_hpf_raw(target).is_ok()
+                {
+                    self.last_sent_hpf = target;
+                }
+                self.current_hpf = target;
+                self.target_hpf = None;
+            } else if should_send
+                && (new - self.last_sent_hpf).abs() >= MIN_DELTA_HZ
+                && self.send_hpf_raw(new).is_ok()
+            {
+                self.last_sent_hpf = new;
+            }
+        }
     }
 
     pub fn set_eq(&mut self, low: f32, mid: f32, high: f32) -> Result<(), String> {
@@ -525,23 +729,82 @@ impl MpvClient {
         val.as_str().map(|s| s.to_string()).ok_or("Invalid path value".to_string())
     }
 
+    /// Best-effort display title for the currently loaded media.
+    /// Prefers `media-title`, then metadata TITLE fields.
+    pub fn get_media_title(&mut self) -> Option<String> {
+        if let Ok(val) = self.get_property("media-title") {
+            if let Some(s) = val.as_str() {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+        }
+
+        let metadata = self.get_property("metadata").ok()?;
+        let obj = metadata.as_object()?;
+        for key in ["title", "TITLE", "Title"] {
+            if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Get musical key from MPV metadata (TKEY, INITIALKEY, or KEY tags).
     /// Returns Camelot notation (e.g., "8A", "12B") if found and parseable.
     pub fn get_key_from_metadata(&mut self) -> Option<String> {
         let metadata = self.get_property("metadata").ok()?;
         let obj = metadata.as_object()?;
 
-        // Try standard key tag names
-        let key_tags = ["KEY", "INITIALKEY", "TKEY"];
+        tracing::debug!("MPV metadata keys: {:?}", obj.keys().collect::<Vec<_>>());
+
+        // Try standard key tag names (case-insensitive lookup)
+        let key_tags = ["KEY", "INITIALKEY", "TKEY", "key", "initialkey", "tkey"];
         for tag in &key_tags {
             if let Some(val) = obj.get(*tag).and_then(|v| v.as_str()) {
+                tracing::debug!("Found key tag '{}': {}", tag, val);
                 // Try Camelot first
                 if let Some((pc, is_major)) = crate::audio::bpm::parse_camelot(val) {
-                    return Some(crate::audio::bpm::pitch_class_to_camelot(pc, is_major));
+                    let result = pitch_class_to_camelot(pc, is_major);
+                    tracing::debug!("Parsed as Camelot: {}", result);
+                    return Some(result);
                 }
                 // Try standard key names (e.g., "C major", "Am", "Bb")
                 if let Some(camelot) = crate::audio::bpm::parse_key_name(val) {
+                    tracing::debug!("Parsed as key name: {}", camelot);
                     return Some(camelot);
+                }
+                tracing::warn!("Could not parse key tag '{}' value '{}'", tag, val);
+            }
+        }
+        None
+    }
+
+    pub fn get_bpm_from_metadata(&mut self) -> Option<f32> {
+        let metadata = self.get_property("metadata").ok()?;
+        let obj = metadata.as_object()?;
+
+        let bpm_tags = ["TBPM", "bpm", "BPM", "tempo", "TEMPO", "Tempo"];
+        for tag in &bpm_tags {
+            if let Some(val) = obj.get(*tag) {
+                let num = if let Some(n) = val.as_f64() {
+                    Some(n as f32)
+                } else if let Some(s) = val.as_str() {
+                    s.trim().parse::<f32>().ok()
+                } else {
+                    None
+                };
+                if let Some(mut bpm) = num {
+                    while bpm > 400.0 { bpm *= 0.5; }
+                    while bpm > 0.0 && bpm < 40.0 { bpm *= 2.0; }
+                    if (10.0..=400.0).contains(&bpm) {
+                        tracing::debug!("Found BPM from metadata tag '{}': {}", tag, bpm);
+                        return Some(bpm);
+                    }
                 }
             }
         }
@@ -608,6 +871,27 @@ impl MpvClient {
     pub fn get_detected_bpm(&self) -> f32 {
         let raw = self.meters.detected_bpm.load(Ordering::Relaxed);
         raw as f32 / 100.0
+    }
+
+    /// Reset all MPV properties to defaults: volume, mute, pause, speed, filters.
+    pub fn reset_all(&mut self) {
+        let _ = self.set_volume(100.0);
+        let _ = self.set_mute(false);
+        let _ = self.set_pause(false);
+        let _ = self.set_speed(1.0);
+        let _ = self.set_lpf(20000.0);
+        let _ = self.set_hpf(20.0);
+        let _ = self.set_pan(0.0);
+        // Remove all audio filters (eq, astats, pan, lpf, hpf)
+        if let Ok(af) = self.get_property("af") {
+            if let Some(arr) = af.as_array() {
+                for filter in arr {
+                    if let Some(label) = filter.get("label").and_then(|v| v.as_str()) {
+                        let _ = self.send_command(vec!["af".into(), "remove".into(), format!("@{}", label).into()]);
+                    }
+                }
+            }
+        }
     }
 }
 

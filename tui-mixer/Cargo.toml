@@ -30,6 +30,18 @@ rodio = "0.22"
 
 # Audio device enumeration (used by output.rs)
 cpal = "0.17"
+coreaudio-rs = { version = "0.13", optional = true }
+jack = { version = "0.13", optional = true }
+dasp = { version = "0.11", default-features = false, features = ["std", "signal", "slice", "ring_buffer", "rms"] }
+
+# Lock-free primitives for the real-time audio path
+triple_buffer = "8"       # SPSC snapshot: UI writes control state, audio reads latest
+rtrb = "0.3"              # SPSC ring for audio commands (no Mutex)
+arc-swap = "1"            # Atomic Arc swap for per-deck ring buffer handoff
+crossbeam-queue = "0.3"   # Lock-free bounded queue for debug log capture
+
+# Unicode display-width aware string handling
+unicode-width = "0.2"
 
 # BPM detection
 stratum-dsp = "1.0"
@@ -41,6 +53,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Unix process control (for stderr redirect)
 libc = "0.2"
+
+[features]
+default = []
+jack-backend = ["dep:jack"]
+coreaudio-backend = ["dep:coreaudio-rs"]
 
 [profile.release]
 lto = true

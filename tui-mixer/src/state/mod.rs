@@ -9,6 +9,7 @@ pub use mixer::{
 };
 
 pub use sampler::{
-    PadConfig, PadControl, Rack, RackControl, RackMode, RackState, RackTrigger,
-    SamplePad, SamplePadGrid, PAD_KEYS,
+    PadConfig, PadControl, SamplePad, SamplePadGrid, PAD_KEYS,
+    Sequence, SequenceState, SEQUENCE_STEPS,
+    GlobalSequenceControls, GlobalSequenceControl, EditTarget,
 };

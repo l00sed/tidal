@@ -41,7 +41,9 @@ pub const FADER_FILL: Color = Color::Green;
 pub const SEPARATOR: Color = Color::Rgb(30, 30, 30);
 
 // ── Sampler / pads ───────────────────────────────────────────────
+#[allow(dead_code)]
 pub const PAD_ACTIVE_LOW: Color = Color::DarkGray;
+#[allow(dead_code)]
 pub const PAD_ACTIVE_HIGH: Color = Color::DarkGray;
 
 // ── Buttons ──────────────────────────────────────────────────────

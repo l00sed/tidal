@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+const TUI_MIXER_ROUTE_SOCKET: &str = "/tmp/tui-mixer.sock";
+
 /// Types of audio sources we can discover
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceType {
@@ -78,6 +80,17 @@ impl SourceDiscovery {
 
     /// Discover MPV IPC sockets
     fn discover_mpv_sockets(&mut self) {
+        // Route mode: one stable source for the TUI.
+        let route_socket = PathBuf::from(TUI_MIXER_ROUTE_SOCKET);
+        if route_socket.exists() {
+            self.sources.push(DiscoveredSource {
+                name: "tui-mixer route".to_string(),
+                source_type: SourceType::Mpv,
+                identifier: route_socket.to_string_lossy().to_string(),
+            });
+            return;
+        }
+
         // Check known paths
         for path in &self.mpv_socket_paths {
             if path.exists() {
@@ -100,7 +113,10 @@ impl SourceDiscovery {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if (name.starts_with("mpv") && name.ends_with(".sock"))
+                    // Only discover .sock files — .pcm FIFOs are handled
+                    // automatically by the engine when a matching socket is found.
+                    if !name.ends_with(".sock") { continue; }
+                    if name.starts_with("mpv") && name.ends_with(".sock")
                         || (name.starts_with("mpv") && name.contains("socket"))
                     {
                         // Check if we already have this one

@@ -3,8 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::audio::bpm::{parse_camelot, pitch_class_to_camelot};
-
 /// DJ section controls
 #[derive(Debug, Clone)]
 pub struct DjSection {
@@ -136,6 +134,21 @@ pub struct MixerChannel {
     /// Total duration of the current track in seconds
     #[serde(default)]
     pub duration: f32,
+    /// Age of last timeline update in milliseconds (0 = fresh/current tick)
+    #[serde(default)]
+    pub timeline_age_ms: u32,
+    /// Whether playlist has a previous track available
+    #[serde(default)]
+    pub has_prev_track: bool,
+    /// Whether playlist has a next track available
+    #[serde(default)]
+    pub has_next_track: bool,
+    /// Last time PREV action was executed (ms since app start)
+    #[serde(skip)]
+    pub prev_exec_flash_ms: u64,
+    /// Last time NEXT action was executed (ms since app start)
+    #[serde(skip)]
+    pub next_exec_flash_ms: u64,
     /// Scrub direction: -1.0 = reverse, 0.0 = stopped, 1.0 = forward
     #[serde(skip)]
     pub scrub_direction: f32,
@@ -203,6 +216,11 @@ impl MixerChannel {
             key_offset: 0,
             time_pos: 0.0,
             duration: 0.0,
+            timeline_age_ms: 0,
+            has_prev_track: false,
+            has_next_track: false,
+            prev_exec_flash_ms: 0,
+            next_exec_flash_ms: 0,
             scrub_direction: 0.0,
             scrub_speed: 0.0,
             scrub_coarse: false,
@@ -222,12 +240,24 @@ impl MixerChannel {
             20.0 * (self.fader / 0.5).log10()
         }
     }
+
+    /// Whether scrub controls should be available for this channel.
+    ///
+    /// MPV route-mode PCM streams often report no finite duration, so
+    /// visibility can't rely on `duration > 0.0` alone.
+    pub fn scrub_available(&self) -> bool {
+        self.connected
+            && !self.uses_supercollider
+            && (self.duration > 0.0 || self.time_pos > 0.0 || self.playing)
+    }
 }
 
 /// Which control is currently selected within a channel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelControl {
+    PrevTrack,
     PlayPause,
+    NextTrack,
     Scrub,
     Bpm,
     Key,
@@ -255,7 +285,9 @@ impl ChannelControl {
     /// Label for display in control select mode
     pub fn label(&self) -> &'static str {
         match self {
+            ChannelControl::PrevTrack => "PREV",
             ChannelControl::PlayPause => "PLAY",
+            ChannelControl::NextTrack => "NEXT",
             ChannelControl::Scrub => "SCRUB",
             ChannelControl::Bpm => "BPM",
             ChannelControl::Key => "KEY",
@@ -305,7 +337,7 @@ impl ChannelControl {
     pub fn row_index(&self) -> usize {
         match self {
             ChannelControl::Scrub => 0,
-            ChannelControl::PlayPause => 1,
+            ChannelControl::PrevTrack | ChannelControl::PlayPause | ChannelControl::NextTrack => 1,
             ChannelControl::Bpm => 2,
             ChannelControl::Key => 3,
             ChannelControl::EqHigh | ChannelControl::EqHighKill => 4,
@@ -352,6 +384,8 @@ impl ChannelControl {
     /// Get row index for non-deck channels (no PlayPause/Bpm/Key)
     pub fn row_index_no_deck(&self) -> usize {
         match self {
+            ChannelControl::PrevTrack => 0,
+            ChannelControl::NextTrack => 0,
             ChannelControl::PlayPause => 0, // Not used, but fallback
             ChannelControl::Scrub => 0,       // Not used, but fallback
             ChannelControl::Bpm => 0,          // Not used for non-deck, fallback
@@ -707,14 +741,14 @@ impl MixerState {
             self.selected_control.row_index_no_deck()
         };
         
-        // Check if scrubber is visible (track loaded and not SuperCollider source)
+        // Check if scrubber is visible.
         let scrub_visible = self.selected_channel()
-            .map(|ch| ch.connected && ch.duration > 0.0 && !ch.uses_supercollider)
+            .map(MixerChannel::scrub_available)
             .unwrap_or(false);
         
         // Max row indices: CUE=16 (CueOutputSelect), Deck A/B=13 (Solo), Non-deck=10 (Solo)
         let max_row = if is_cue_pane { 16 } else if is_deck { 13 } else { 10 };
-        // Min row: skip Scrub (0) if no track loaded or SC source
+        // Min row: skip Scrub (0) when scrub is unavailable
         let min_row = if scrub_visible { 0 } else { 1 };
         let mut new_row = if current_row <= min_row { max_row } else { current_row - 1 };
         
@@ -741,7 +775,7 @@ impl MixerState {
             new_row = 11;
         }
         
-        // Skip Scrub when no track loaded or SC source
+        // Skip Scrub when scrub is unavailable
         if !scrub_visible && new_row == 0 {
             new_row = max_row;
         }
@@ -763,18 +797,18 @@ impl MixerState {
             self.selected_control.row_index_no_deck()
         };
         
-        // Check if scrubber is visible (track loaded and not SuperCollider source)
+        // Check if scrubber is visible.
         let scrub_visible = self.selected_channel()
-            .map(|ch| ch.connected && ch.duration > 0.0 && !ch.uses_supercollider)
+            .map(MixerChannel::scrub_available)
             .unwrap_or(false);
         
         // Max row indices: CUE=16 (CueOutputSelect), Deck A/B=13 (Solo), Non-deck=10 (Solo)
         let max_row = if is_cue_pane { 16 } else if is_deck { 13 } else { 10 };
-        // Min row: skip Scrub (0) if no track loaded or SC source
+        // Min row: skip Scrub (0) when scrub is unavailable
         let min_row = if scrub_visible { 0 } else { 1 };
         let mut new_row = if current_row >= max_row { min_row } else { current_row + 1 };
         
-        // Skip Scrub when no track loaded or SC source
+        // Skip Scrub when scrub is unavailable
         if !scrub_visible && new_row == 0 {
             new_row = 1;
         }
@@ -835,18 +869,8 @@ impl MixerState {
                             channel.target_bpm = (channel.target_bpm + delta * 20.0).clamp(10.0, 400.0);
                         }
                         ChannelControl::Key => {
-                            // Bump key up/down by 1 semitone through Camelot wheel
-                            if let Some(ref current_key) = channel.key {
-                                if let Some((pc, is_major)) = parse_camelot(current_key) {
-                                    // Shift by 1 semitone (12 semitones = 1 octave = same position on wheel)
-                                    let new_pc = ((pc as i32 + delta.signum() as i32 + 12) % 12) as usize;
-                                    channel.key = Some(pitch_class_to_camelot(new_pc, is_major));
-                                }
-                            }
-                            // Track offset and shift playback speed
+                            // Keep detected key as the base label; edits adjust semitone offset.
                             channel.key_offset += delta.signum() as i32;
-                            let semitone_factor = 2.0_f32.powf(channel.key_offset as f32 / 12.0);
-                            channel.playback_speed = semitone_factor;
                         }
                         ChannelControl::Pan => {
                             channel.pan = (channel.pan + delta).clamp(-1.0, 1.0);
@@ -941,6 +965,7 @@ impl MixerState {
         
         if let Some(channel) = channel {
             match self.selected_control {
+                ChannelControl::PrevTrack | ChannelControl::NextTrack => {}
                 ChannelControl::PlayPause => channel.playing = !channel.playing,
                 ChannelControl::Mute => channel.muted = !channel.muted,
                 ChannelControl::Solo => {
