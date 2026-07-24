@@ -3002,8 +3002,18 @@ impl App {
                                     seq.mute = !seq.mute;
                                 }
                             }
-                            crate::state::EditTarget::Multiplier => {
-                                self.mode = AppMode::Edit;
+                            crate::state::EditTarget::Gear => {
+                                // Open pad config for this sequence's pad
+                                if let Some(seq_idx) = self.sequence_state.selected {
+                                    if let Some(seq) = self.sequence_state.sequences.get(seq_idx) {
+                                        let pad_idx = seq.pad_idx;
+                                        self.selected_pad_idx = Some(pad_idx);
+                                        self.sample_pads.selected_pad = pad_idx;
+                                        self.mode = AppMode::SamplePadConfig;
+                                        self.sample_pads.config_mode = true;
+                                        self.sample_pads.selected_control = PadControl::Sample;
+                                    }
+                                }
                             }
                         }
                         return;
@@ -4414,15 +4424,6 @@ impl App {
             }
             return;
         }
-        // Determine if we're adjusting a multiplier
-        let is_multiplier = self.sequence_state.cursor == crate::state::EditTarget::Multiplier;
-        if is_multiplier {
-            if let Some(seq_idx) = self.sequence_state.selected {
-                if let Some(seq) = self.sequence_state.sequences.get_mut(seq_idx) {
-                    seq.tempo = (seq.tempo + delta).clamp(0.25, 4.0);
-                }
-            }
-        }
     }
 
     /// Reset the currently selected sequence control to its default value
@@ -4439,13 +4440,21 @@ impl App {
             }
             return;
         }
-        let is_multiplier = self.sequence_state.cursor == crate::state::EditTarget::Multiplier;
-        if is_multiplier {
-            if let Some(seq_idx) = self.sequence_state.selected {
-                if let Some(seq) = self.sequence_state.sequences.get_mut(seq_idx) {
-                    seq.tempo = 1.0;
-                }
-            }
+    }
+
+    /// Adjust the tempo multiplier for the sequence associated with the selected pad
+    fn adjust_sequence_tempo(&mut self, delta: f32) {
+        let pad_idx = self.sample_pads.selected_pad;
+        if let Some(seq) = self.sequence_state.sequences.iter_mut().find(|s| s.pad_idx == pad_idx) {
+            seq.tempo = (seq.tempo + delta).clamp(0.25, 4.0);
+        }
+    }
+
+    /// Reset the tempo multiplier for the sequence associated with the selected pad
+    fn reset_sequence_tempo(&mut self) {
+        let pad_idx = self.sample_pads.selected_pad;
+        if let Some(seq) = self.sequence_state.sequences.iter_mut().find(|s| s.pad_idx == pad_idx) {
+            seq.tempo = 1.0;
         }
     }
 
@@ -4537,38 +4546,50 @@ impl App {
 
         if self.sample_pads.editing_control {
             // Level 3: editing a control value
+            let is_bpm_mult = self.sample_pads.selected_control == PadControl::BpmMultiplier;
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     self.sample_pads.editing_control = false;
-                    self.refresh_pad_dsp(self.sample_pads.selected_pad);
+                    if !is_bpm_mult {
+                        self.refresh_pad_dsp(self.sample_pads.selected_pad);
+                    }
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
-                    self.sample_pads.adjust_selected_config(-0.05);
+                    if is_bpm_mult { self.adjust_sequence_tempo(-0.05); }
+                    else { self.sample_pads.adjust_selected_config(-0.05); }
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
-                    self.sample_pads.adjust_selected_config(0.05);
+                    if is_bpm_mult { self.adjust_sequence_tempo(0.05); }
+                    else { self.sample_pads.adjust_selected_config(0.05); }
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.sample_pads.adjust_selected_config(-0.05);
+                    if is_bpm_mult { self.adjust_sequence_tempo(-0.05); }
+                    else { self.sample_pads.adjust_selected_config(-0.05); }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.sample_pads.adjust_selected_config(0.05);
+                    if is_bpm_mult { self.adjust_sequence_tempo(0.05); }
+                    else { self.sample_pads.adjust_selected_config(0.05); }
                 }
                 // Coarse adjustment
                 KeyCode::Char('H') => {
-                    self.sample_pads.adjust_selected_config(-0.2);
+                    if is_bpm_mult { self.adjust_sequence_tempo(-0.2); }
+                    else { self.sample_pads.adjust_selected_config(-0.2); }
                 }
                 KeyCode::Char('L') => {
-                    self.sample_pads.adjust_selected_config(0.2);
+                    if is_bpm_mult { self.adjust_sequence_tempo(0.2); }
+                    else { self.sample_pads.adjust_selected_config(0.2); }
                 }
                 KeyCode::Char('K') => {
-                    self.sample_pads.adjust_selected_config(0.2);
+                    if is_bpm_mult { self.adjust_sequence_tempo(0.2); }
+                    else { self.sample_pads.adjust_selected_config(0.2); }
                 }
                 KeyCode::Char('J') => {
-                    self.sample_pads.adjust_selected_config(-0.2);
+                    if is_bpm_mult { self.adjust_sequence_tempo(-0.2); }
+                    else { self.sample_pads.adjust_selected_config(-0.2); }
                 }
                 KeyCode::Char('0') => {
-                    self.sample_pads.reset_selected_config();
+                    if is_bpm_mult { self.reset_sequence_tempo(); }
+                    else { self.sample_pads.reset_selected_config(); }
                 }
                 _ => {}
             }

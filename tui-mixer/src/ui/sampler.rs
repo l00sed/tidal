@@ -16,11 +16,12 @@ pub struct PadConfigPane<'a> {
     grid: &'a SamplePadGrid,
     editing: bool,
     samples_dir: Option<&'a std::path::Path>,
+    sequence_tempo: f32,
 }
 
 impl<'a> PadConfigPane<'a> {
     pub fn new(grid: &'a SamplePadGrid) -> Self {
-        Self { grid, editing: false, samples_dir: None }
+        Self { grid, editing: false, samples_dir: None, sequence_tempo: 1.0 }
     }
 
     pub fn editing(mut self, editing: bool) -> Self {
@@ -30,6 +31,11 @@ impl<'a> PadConfigPane<'a> {
 
     pub fn samples_dir(mut self, dir: Option<&'a std::path::Path>) -> Self {
         self.samples_dir = dir;
+        self
+    }
+
+    pub fn sequence_tempo(mut self, tempo: f32) -> Self {
+        self.sequence_tempo = tempo;
         self
     }
 }
@@ -80,7 +86,7 @@ impl<'a> Widget for PadConfigPane<'a> {
             let is_selected = control == selected_ctrl;
             let row_area = Rect::new(inner.x, y, inner.width, row_height);
 
-            render_config_row(row_area, buf, control, pad, is_selected, is_editing, self.samples_dir);
+            render_config_row(row_area, buf, control, pad, is_selected, is_editing, self.samples_dir, self.sequence_tempo);
 
             // Add separator after Sample row
             if control == PadControl::Sample {
@@ -124,6 +130,7 @@ fn render_config_row(
     selected: bool,
     editing: bool,
     samples_dir: Option<&std::path::Path>,
+    sequence_tempo: f32,
 ) {
     if area.width < 10 {
         return;
@@ -198,6 +205,10 @@ fn render_config_row(
             // Continuous controls: draw a bar + value
             let (value, display) = match control {
                 PadControl::Volume => (pad.config.volume / 2.0, format!("{:.2}", pad.config.volume)),
+                PadControl::BpmMultiplier => {
+                    let norm = (sequence_tempo - 0.25) / 3.75; // 0.25..4.0 → 0..1
+                    (norm, format!("{:.2}x", sequence_tempo))
+                }
                 PadControl::HighPass => {
                     let norm = (pad.config.high_pass - 20.0) / 19980.0;
                     (norm, format!("{} Hz", format_hz(pad.config.high_pass)))
@@ -379,10 +390,9 @@ fn format_hz(hz: f32) -> String {
     }
 }
 
-/// A single sequence row: name, 16-step grid, mute, multiplier + real BPM
+/// A single sequence row: name, 16-step grid, mute, gear
 pub struct SequenceRow<'a> {
     sequence: &'a Sequence,
-    global_bpm: f32,
     selected: bool,
     editing: bool,
     cursor: EditTarget,
@@ -395,7 +405,6 @@ impl<'a> SequenceRow<'a> {
     pub fn new(sequence: &'a Sequence) -> Self {
         Self {
             sequence,
-            global_bpm: 120.0,
             selected: false,
             editing: false,
             cursor: EditTarget::Step(0),
@@ -412,11 +421,6 @@ impl<'a> SequenceRow<'a> {
 
     pub fn editing(mut self, editing: bool) -> Self {
         self.editing = editing;
-        self
-    }
-
-    pub fn global_bpm(mut self, bpm: f32) -> Self {
-        self.global_bpm = bpm;
         self
     }
 
@@ -463,64 +467,14 @@ impl<'a> Widget for SequenceRow<'a> {
         // Vertical separator after name
         buf.set_string(sep_x, y, "│", Style::default().fg(self.border_color));
 
-        // 16-step grid after separator, one space between each toggle
-        let grid_start = sep_x + 2;
-        let mut step_x = grid_start;
-        for step in 0..SEQUENCE_STEPS {
-            if step_x >= area.x + area.width - 1 {
-                break;
-            }
-
-            let is_marked = self.sequence.pattern[step];
-            let is_playing = self.sequence.playing && step == self.current_play_step;
-            let is_target = self.selected && self.cursor == EditTarget::Step(step);
-            let step_active = is_target && self.editing;
-
-            let (ch, style) = if is_playing && is_marked {
-                ("󱔀", Style::default().fg(STATUS_PLAYING).add_modifier(Modifier::BOLD))
-            } else if is_playing && !is_marked {
-                ("󰝣", Style::default().fg(TEXT_DIM))
-            } else if step_active {
-                (if is_marked { "󱔀" } else { "󰝣" },
-                 Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD))
-            } else if is_target {
-                (if is_marked { "󱔀" } else { "󰝣" },
-                 Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))
-            } else if is_marked {
-                ("󱔀", Style::default().fg(TEXT_DEFAULT))
-            } else {
-                ("󰝣", Style::default().fg(TEXT_DIM))
-            };
-
-            buf.set_string(step_x, y, ch, style);
-            step_x += 2; // toggle + space
-        }
-
-        // Right-aligned controls: mute + multiplier + real BPM
-        let right_edge = area.x + area.width - 1;
-
-        // Real BPM (rightmost, dim)
-        let real_bpm = self.sequence.actual_bpm(self.global_bpm);
-        let bpm_str = format!("{:.0}", real_bpm);
-        let bpm_style = Style::default().fg(TEXT_DIM);
-        let bpm_x = right_edge.saturating_sub(bpm_str.len() as u16);
-        buf.set_string(bpm_x, y, &bpm_str, bpm_style);
-
-        // Multiplier (left of BPM)
-        let mult_str = format!("{:.2}x", self.sequence.tempo);
-        let mult_is_target = self.selected && self.cursor == EditTarget::Multiplier;
-        let mult_active = mult_is_target && self.editing;
-        let mult_fg = if mult_active { TEXT_EDITING } else if mult_is_target { TEXT_BRIGHT } else { TEXT_DIM };
-        let mult_style = if mult_is_target {
-            Style::default().fg(mult_fg).add_modifier(Modifier::BOLD)
+        // --- Right-aligned controls: mute + gear ---
+        let gear_is_target = self.selected && self.cursor == EditTarget::Gear;
+        let gear_style = if gear_is_target {
+            Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(mult_fg)
+            Style::default().fg(TEXT_DIM)
         };
-        let mult_x = bpm_x.saturating_sub(mult_str.len() as u16 + 1);
-        buf.set_string(mult_x, y, &mult_str, mult_style);
 
-        // Mute button (left of multiplier) — red stays red
-        let mute_x = mult_x.saturating_sub(2);
         let mute_is_target = self.selected && self.cursor == EditTarget::Mute;
         let (mute_label, mute_color) = if self.sequence.mute {
             ("\u{F0581}", Color::Red)
@@ -532,6 +486,56 @@ impl<'a> Widget for SequenceRow<'a> {
         } else {
             Style::default().fg(mute_color)
         };
+
+        // Gear icon (rightmost), mute (left of gear)
+        let right_edge = area.x + area.width - 1;
+        let gear_x = right_edge.saturating_sub(1);
+        let mute_x = gear_x.saturating_sub(2);
+
+        // Grid fills the space between name separator and mute icon
+        let grid_start = sep_x + 2;
+        let grid_end_limit = mute_x.saturating_sub(1); // 1 space before mute
+
+        // Render 16-step grid (no scrolling — always show all that fit)
+        const STEP_W: usize = 2;
+        let mut step_x = grid_start;
+        for step in 0..SEQUENCE_STEPS {
+            if step_x + STEP_W as u16 > grid_end_limit {
+                break;
+            }
+            self.render_step(step, step_x, y, buf);
+            step_x += STEP_W as u16;
+        }
+
+        // --- Draw right-aligned controls ---
         buf.set_string(mute_x, y, mute_label, mute_style);
+        buf.set_string(gear_x, y, "\u{F013}", gear_style);
+    }
+}
+
+impl<'a> SequenceRow<'a> {
+    fn render_step(&self, step: usize, x: u16, y: u16, buf: &mut Buffer) {
+        let is_marked = self.sequence.pattern[step];
+        let is_playing = self.sequence.playing && step == self.current_play_step;
+        let is_target = self.selected && self.cursor == EditTarget::Step(step);
+        let step_active = is_target && self.editing;
+
+        let (ch, style) = if is_playing && is_marked {
+            ("󱔀", Style::default().fg(STATUS_PLAYING).add_modifier(Modifier::BOLD))
+        } else if is_playing && !is_marked {
+            ("󰝣", Style::default().fg(TEXT_DIM))
+        } else if step_active {
+            (if is_marked { "󱔀" } else { "󰝣" },
+             Style::default().fg(TEXT_EDITING).add_modifier(Modifier::BOLD))
+        } else if is_target {
+            (if is_marked { "󱔀" } else { "󰝣" },
+             Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD))
+        } else if is_marked {
+            ("󱔀", Style::default().fg(TEXT_DEFAULT))
+        } else {
+            ("󰝣", Style::default().fg(TEXT_DIM))
+        };
+
+        buf.set_string(x, y, ch, style);
     }
 }

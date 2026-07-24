@@ -74,7 +74,6 @@ pub struct SequenceSnapshot {
     pub pad_idx: usize,
     pub volume: f32,
     pub mute: bool,
-    #[allow(dead_code)]
     pub tempo_multiplier: f32,
     pub global_bpm: f32,
     pub pattern: [bool; SEQUENCE_STEPS],

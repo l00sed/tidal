@@ -489,9 +489,15 @@ impl<'a> MixerView<'a> {
             self.render_sample_picker_inline(inner, buf, pad_idx, picker);
         } else if self.pad_config_mode {
             // Config pane replaces pad grid
+            // Look up the tempo for this pad's sequence
+            let seq_tempo = self.sequences
+                .and_then(|ss| ss.sequences.iter().find(|s| s.pad_idx == self.pads.selected_pad))
+                .map(|s| s.tempo)
+                .unwrap_or(1.0);
             PadConfigPane::new(self.pads)
                 .editing(self.pad_config_editing)
                 .samples_dir(self.samples_dir)
+                .sequence_tempo(seq_tempo)
                 .render(inner, buf);
         } else {
             // Pads (centered in the section)
@@ -653,7 +659,6 @@ impl<'a> MixerView<'a> {
         // Sequence rows (scrollable, starting from row 2)
         let rows_area = Rect::new(inner.x, inner.y + 2, inner.width, inner.height.saturating_sub(2));
         let max_visible = rows_area.height as usize;
-        let global_bpm = seq_state.global.bpm;
 
         // Ensure selected row is visible (scroll to keep it in view)
         // We need mutable access to scroll_offset, but seq_state is borrowed immutably.
@@ -685,7 +690,6 @@ impl<'a> MixerView<'a> {
                     .copied()
                     .unwrap_or(0);
                 SequenceRow::new(seq)
-                    .global_bpm(global_bpm)
                     .selected(is_selected)
                     .editing(self.editing && is_selected)
                     .cursor(seq_state.cursor)

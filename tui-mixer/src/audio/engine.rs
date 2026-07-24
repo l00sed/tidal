@@ -1741,6 +1741,18 @@ fn audio_callback(
         LAST_GLOBAL_STEP.store(global_step as u64, Ordering::Relaxed);
     }
 
+    // Per-sequence previous step tracking (for per-sequence tempo)
+    static LAST_SEQ_STEPS: [AtomicU64; 32] = [
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+        AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    ];
+
     // Try to lock pad sample cache (non-blocking — skip if contended)
     let cache_guard = pad_sample_cache.try_lock().ok();
     let cache_ref = cache_guard.as_deref();
@@ -1755,11 +1767,29 @@ fn audio_callback(
             continue;
         }
 
-        // This sequence's step = global_step (all sequences share the same clock)
-        let step = global_step;
+        // Per-sequence step: apply tempo_multiplier to the global clock
+        let seq_bpm = (seq.global_bpm * seq.tempo_multiplier).clamp(20.0, 400.0);
+        let seq_step_interval = (60.0 / seq_bpm / 4.0) * sample_rate;
+        let step = if seq_step_interval > 0.0 {
+            (global_pos as f64 / seq_step_interval as f64) as usize % crate::state::SEQUENCE_STEPS
+        } else {
+            0
+        };
+
+        // Detect per-sequence step boundary crossing
+        let seq_step_crossed = if seq_idx < LAST_SEQ_STEPS.len() {
+            let prev = LAST_SEQ_STEPS[seq_idx].load(Ordering::Relaxed) as usize;
+            let crossed = step != prev;
+            if crossed {
+                LAST_SEQ_STEPS[seq_idx].store(step as u64, Ordering::Relaxed);
+            }
+            crossed
+        } else {
+            step_crossed // fallback to global for sequences beyond array
+        };
 
         // Only trigger once per step boundary crossing
-        if !step_crossed {
+        if !seq_step_crossed {
             continue;
         }
 

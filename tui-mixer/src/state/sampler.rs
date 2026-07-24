@@ -64,6 +64,7 @@ pub enum PadControl {
     Sample,
     Volume,
     Mute,
+    BpmMultiplier,
     HighPass,
     LowPass,
     EqLow,
@@ -82,6 +83,7 @@ impl PadControl {
             PadControl::Sample,
             PadControl::Volume,
             PadControl::Mute,
+            PadControl::BpmMultiplier,
             PadControl::HighPass,
             PadControl::LowPass,
             PadControl::EqLow,
@@ -99,6 +101,7 @@ impl PadControl {
         matches!(
             self,
             PadControl::Volume
+                | PadControl::BpmMultiplier
                 | PadControl::HighPass
                 | PadControl::LowPass
                 | PadControl::EqLow
@@ -121,6 +124,7 @@ impl PadControl {
             PadControl::Sample => "Sample",
             PadControl::Volume => "Volume",
             PadControl::Mute => "Mute",
+            PadControl::BpmMultiplier => "Speed",
             PadControl::HighPass => "High Pass",
             PadControl::LowPass => "Low Pass",
             PadControl::EqLow => "EQ Low",
@@ -480,11 +484,11 @@ impl Sequence {
 pub enum EditTarget {
     Step(usize),
     Mute,
-    Multiplier,
+    Gear,
 }
 
 impl EditTarget {
-    /// Total number of targets: 16 steps + mute + multiplier
+    /// Total number of targets: 16 steps + mute + gear
     pub fn count() -> usize { SEQUENCE_STEPS + 2 }
 
     /// Index of this target in the flat horizontal layout
@@ -492,7 +496,7 @@ impl EditTarget {
         match self {
             EditTarget::Step(s) => *s,
             EditTarget::Mute => SEQUENCE_STEPS,
-            EditTarget::Multiplier => SEQUENCE_STEPS + 1,
+            EditTarget::Gear => SEQUENCE_STEPS + 1,
         }
     }
 
@@ -503,7 +507,7 @@ impl EditTarget {
         } else if i == SEQUENCE_STEPS {
             EditTarget::Mute
         } else {
-            EditTarget::Multiplier
+            EditTarget::Gear
         }
     }
 
@@ -615,7 +619,8 @@ impl SequenceState {
     pub fn select_up(&mut self) {
         if self.sequences.is_empty() { return; }
         if self.global_focused {
-            // Already on global bar, do nothing
+            self.global_focused = false;
+            self.selected = Some(self.sequences.len() - 1);
             return;
         }
         match self.selected {
@@ -642,7 +647,10 @@ impl SequenceState {
         }
         match self.selected {
             Some(i) if i + 1 < self.sequences.len() => self.selected = Some(i + 1),
-            Some(_) => self.selected = Some(0),
+            Some(_) => {
+                self.selected = None;
+                self.global_focused = true;
+            }
             None => {
                 self.selected = Some(0);
                 self.global_focused = false;
