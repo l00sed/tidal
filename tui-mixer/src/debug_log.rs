@@ -5,6 +5,7 @@
 //! stderr redirection to prevent TUI corruption.
 
 use crossbeam_queue::ArrayQueue;
+use std::io::Write;
 use std::sync::OnceLock;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
@@ -71,7 +72,8 @@ impl tracing::field::Visit for QueueVisitor {
 }
 
 /// Initialize the tracing subscriber to route logs to the debug pane.
-/// Also redirects stderr to /dev/null to prevent TUI corruption.
+/// Also redirects stderr to a log file to prevent TUI corruption while
+/// preserving crash diagnostics.
 pub fn init_logging() {
     use tracing_subscriber::EnvFilter;
 
@@ -86,17 +88,65 @@ pub fn init_logging() {
     // The global default can only be set once; ignore errors from repeated calls.
     let _ = tracing::subscriber::set_global_default(subscriber);
 
-    // Always redirect stderr to prevent library warnings from corrupting TUI
-    redirect_stderr_to_devnull();
+    // Install panic hook that writes to the log file before the stderr redirect.
+    install_panic_hook();
+
+    // Redirect stderr to log file to prevent library warnings from corrupting TUI.
+    redirect_stderr_to_logfile();
 }
 
-/// Redirect stderr (fd 2) to /dev/null.
-fn redirect_stderr_to_devnull() {
+/// Install a panic hook that writes panic info to `/tmp/termixer.log`.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let payload = info.payload();
+        let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "Box<dyn Any>".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        let _ = std::fs::write(
+            "/tmp/termixer-panic.log",
+            format!(
+                "PANIC on thread '{}': {}\nLocation: {}\n\nBacktrace:\n{}\n",
+                thread_name, msg, location, backtrace
+            ),
+        );
+
+        // Also call the default hook (prints to stderr if available).
+        default_hook(info);
+    }));
+}
+
+/// Redirect stderr (fd 2) to a log file so crash reports are diagnosable.
+fn redirect_stderr_to_logfile() {
     #[cfg(unix)]
     {
         use std::os::unix::io::AsRawFd;
-        if let Ok(devnull) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
-            let fd = devnull.as_raw_fd();
+        if let Ok(logfile) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/termixer.log")
+        {
+            let _ = writeln!(
+                &logfile,
+                "\n--- termixer started at {:?} ---",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            );
+            let fd = logfile.as_raw_fd();
             unsafe {
                 libc::dup2(fd, 2);
             }

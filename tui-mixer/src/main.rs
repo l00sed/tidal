@@ -26,8 +26,8 @@ use ui::MixerView;
 
 fn main() -> Result<()> {
     // Initialize debug logging. When DEBUG=1, tracing output is routed to
-    // the in-app debug pane and stderr is redirected to /dev/null so it
-    // never corrupts the TUI.
+    // the in-app debug pane and stderr is redirected to a log file so
+    // crash diagnostics are preserved.
     debug_log::init_logging();
 
     // Parse command line arguments for MPV socket paths
@@ -47,11 +47,10 @@ fn main() -> Result<()> {
         app.set_samples_dir(dir);
     }
 
-    // Setup terminal
-    enable_raw_mode()?;
-
     // Initialize Rust-native audio engine before configuring sources,
-    // so engine.load_file() works during auto-load
+    // so engine.load_file() works during auto-load.
+    // This happens BEFORE terminal setup so ALSA/PipeWire errors are
+    // visible if the TUI never starts.
     match crate::audio::engine::AudioEngine::new() {
         Ok(engine) => {
             app.audio_engine = Some(engine);
@@ -70,6 +69,10 @@ fn main() -> Result<()> {
             app.configure_sources(discovered);
         }
     }
+
+    // Setup terminal AFTER audio init — if audio init panics or fails,
+    // the terminal stays in normal mode so error output is visible.
+    enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
@@ -187,7 +190,8 @@ USAGE:
 OPTIONS:
     -s, --source NAME SOCKET    Add an audio source (MPV IPC socket)
     -m, --music-dir PATH        Directory for audio file browser (default: cwd)
-    -S, --samples-dir PATH      Directory for sample pad files (default: ~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples)
+    -S, --samples-dir PATH      Directory for sample pad files (default: macOS ~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples,
+                                                                    Linux ~/.local/share/SuperCollider/downloaded-quarks/Dirt-Samples)
     -d, --discover              Auto-discover audio sources (default if no -s)
     -h, --help                  Show this help message
 

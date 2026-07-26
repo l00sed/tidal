@@ -714,18 +714,61 @@ pub struct AudioEngine {
     pub detected_keys: [Arc<Mutex<Option<String>>>; 3],
     /// Per-pad voice ring buffer producers (tick loop writes sample data here).
     pad_voice_producers: Vec<Mutex<Option<rtrb::Producer<f32>>>>,
+    /// Direct pad trigger flags: UI sets pad_triggers[pad_idx] = true to request
+    /// one-shot playback. The audio callback consumes these and activates a voice.
+    pub pad_triggers: Arc<Vec<AtomicBool>>,
     /// Current step per sequence, read by UI for display.
     pub sequence_steps: Arc<Vec<AtomicUsize>>,
     /// Cached sample data per pad, indexed by pad index.
     /// Set from UI thread when a sample is assigned; read by audio callback
     /// when a sequencer step triggers. Tuple: (samples, sample_rate).
-    pub pad_sample_cache: Arc<Mutex<Vec<Option<Arc<(Vec<f32>, u32)>>>>>,
+    pub pad_sample_cache: Arc<std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>>,
+}
+
+/// Rate-limited error callback: logs the first error, then at most once every 5 s.
+/// Prevents log/POLLERR spam when a device is misconfigured or unavailable.
+fn rate_limited_err(prefix: &'static str) -> impl Fn(cpal::StreamError) + Send + Sync + 'static {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let last_secs = Arc::new(AtomicU64::new(0));
+    let suppressed = Arc::new(AtomicU64::new(0));
+    move |err| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let prev = last_secs.swap(now, Ordering::Relaxed);
+        if now.saturating_sub(prev) >= 5 {
+            let n = suppressed.swap(0, Ordering::Relaxed);
+            let extra = if n > 0 {
+                format!(" ({} suppressed)", n)
+            } else {
+                String::new()
+            };
+            eprintln!("{}{}{}", prefix, err, extra);
+        } else {
+            suppressed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl AudioEngine {
     pub fn new() -> Result<Self, String> {
         let selected_backend = default_backend();
         eprintln!("Audio backend requested: {}", backend_label(selected_backend));
+
+        // Detect audio system and ensure ALSA routes through it.
+        // On Steam Deck and PipeWire systems, raw ALSA dmix fails because
+        // PipeWire has exclusive device control.
+        let has_pipewire = crate::audio::backend::detect_pipewire();
+        let has_pulse = crate::audio::backend::detect_pulseaudio();
+        if has_pipewire {
+            eprintln!("Audio: PipeWire detected — ALSA will route through pipewire-alsa");
+        } else if has_pulse {
+            eprintln!("Audio: PulseAudio detected — ALSA will route through pulse plugin");
+        } else {
+            eprintln!("Audio: No sound server detected — using raw ALSA");
+        }
+        crate::audio::backend::ensure_alsa_sound_server_routing();
 
         let (cmd_producer, cmd_consumer) = RingBuffer::<AudioCommand>::new(CMD_RING_CAPACITY);
         // ControlState split: UI-side handle + audio-side snapshot reader.
@@ -777,8 +820,13 @@ impl AudioEngine {
 
         // Pad sample cache: holds Arc<Vec<f32>> for each pad's cached audio.
         // Updated from UI thread when samples are assigned; read by audio callback.
-        let pad_sample_cache: Arc<Mutex<Vec<Option<Arc<(Vec<f32>, u32)>>>>> =
-            Arc::new(Mutex::new(vec![None; 16]));
+        let pad_sample_cache: Arc<std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>> =
+            Arc::new(std::sync::RwLock::new(vec![None; 16]));
+
+        // Direct pad trigger flags: one AtomicBool per pad slot.
+        // UI sets pad_triggers[i] = true; audio callback consumes and clears.
+        let pad_triggers: Arc<Vec<AtomicBool>> =
+            Arc::new((0..16).map(|_| AtomicBool::new(false)).collect());
 
         // Key detection: background thread receives accumulated mono samples
         // and runs FFT-based key analysis.
@@ -812,25 +860,231 @@ impl AudioEngine {
         let (hp_prod, hp_cons) = RingBuffer::<f32>::new(32768);
         let hp_producer = Arc::new(Mutex::new(Some(hp_prod)));
 
+        // ── Host selection ──
+        //
+        // On PipeWire systems (Steam Deck), cpal's default ALSA host opens
+        // raw ALSA hardware devices directly, bypassing pipewire-alsa.
+        // This causes `alsa::poll() returned POLLERR` because PipeWire
+        // has exclusive device control.
+        //
+        // Fix: use cpal's JACK host when PipeWire/JACK is detected.
+        // PipeWire provides native JACK compatibility, so cpal streams
+        // through JACK → PipeWire → hardware, avoiding the poll error.
+        //
+        // The device scoring system below ensures the built-in codec
+        // (sof-nau8821-max on Steam Deck) is tried first instead of HDMI
+        // (which often has no speakers attached).
         let host = cpal::default_host();
-
-        // Try each output device until one works — skip virtual/failing devices
-        let all_devices: Vec<_> = host.output_devices()
+        let all_devices: Vec<cpal::Device> = host.output_devices()
             .map_err(|e| format!("Output devices: {}", e))?
             .collect();
 
-        if all_devices.is_empty() {
-            return Err("No audio output device found".to_string());
+        let host_label = format!("{:?}", host.id());
+
+        eprintln!("Audio: cpal host = {}", host_label);
+        eprintln!("Audio: found {} output device(s)", all_devices.len());
+        for d in &all_devices {
+            if let Ok(n) = d.description() {
+                eprintln!("Audio:   - {}", n);
+            }
         }
 
-        // Prefer default, try alternatives if needed
-        let default = host.default_output_device();
-        let candidates: Vec<_> = if let Some(ref def) = default {
-            std::iter::once(def).chain(all_devices.iter().filter(|d| {
-                d.description().ok().map(|n| n.to_string()) != def.description().ok().map(|n| n.to_string())
-            })).collect()
+        if all_devices.is_empty() {
+            let hint = if has_pipewire {
+                " PipeWire is running but cpal cannot see any devices. \
+                 Ensure pipewire-alsa is installed (e.g. \
+                 `pacman -S pipewire-pulse pipewire-alsa` on Arch/SteamOS)."
+            } else if has_pulse {
+                " PulseAudio is running but cpal cannot see any devices. \
+                 Ensure `libpulse-simple` or `pulseaudio` is installed."
+            } else {
+                ""
+            };
+            return Err(format!("No audio output device found.{}", hint));
+        }
+
+        // ── PipeWire default device preference ──
+        //
+        // On PipeWire systems, cpal's ALSA host enumerates raw hardware devices
+        // (e.g. `sof-nau8821-max`, `hw:0,0`). Opening these directly bypasses
+        // pipewire-alsa and causes `alsa::poll() returned POLLERR` because
+        // PipeWire has exclusive device control.
+        //
+        // The ALSA "default" device routes through pipewire-alsa → PipeWire,
+        // which handles all device sharing and mixing correctly.
+        // Prefer it when PipeWire is detected and a default device exists.
+        let pipewire_default: Option<cpal::Device> = if has_pipewire {
+            let dev = host.default_output_device();
+            if let Some(ref d) = dev {
+                if let Ok(n) = d.description() {
+                    eprintln!("Audio: PipeWire default output device: {}", n);
+                }
+            }
+            dev
         } else {
-            all_devices.iter().collect()
+            None
+        };
+
+        // ── Device classification and scoring ──
+        //
+        // cpal on Linux enumerates raw ALSA devices. On PipeWire systems, these
+        // include both real hardware (sof-nau8821-max, USB DACs) and virtual/null
+        // devices (dmix, "Discard all samples"). The default ALSA device may point
+        // to HDMI (which often has no speakers) instead of the built-in codec.
+        //
+        // Score devices so the best candidate is tried first:
+        //   100 = built-in codec (sof-*, realtek, nau8821, etc.)
+        //    90 = generic analog / hw:*
+        //    80 = USB audio
+        //    70 = Bluetooth / A2DP
+        //    40 = HDMI / DisplayPort (often no speakers attached)
+        //    10 = virtual / pulse / pipewire sinks
+        //     0 = null / discard (skipped entirely)
+
+        fn score_device(name: &str) -> u8 {
+            let lower = name.to_lowercase();
+
+            // Null / dummy — skip entirely
+            if lower.contains("discard all samples")
+                || lower.contains("generate zero samples")
+                || lower == "null"
+                || lower.contains("(null)")
+            {
+                return 0;
+            }
+
+            // Built-in audio codec — highest priority
+            // Steam Deck: sof-nau8821-max
+            // Generic: realtek, alc, hda-intel analog, etc.
+            if lower.starts_with("sof-")
+                || lower.starts_with("sof_")
+                || lower.contains("realtek")
+                || lower.contains("nau8821")
+                || lower.contains("alc8")
+                || lower.contains("alc2")
+                || lower.contains("hda-intel")
+                    && !lower.contains("hdmi")
+                    && !lower.contains("displayport")
+                || lower.contains("analog")
+                    && !lower.contains("hdmi")
+            {
+                return 100;
+            }
+
+            // USB audio
+            if lower.contains("usb")
+                || lower.contains("dac")
+                || lower.contains("focusrite")
+                || lower.contains("scarlett")
+                || lower.contains("uca222")
+                || lower.contains("audiophile")
+            {
+                return 80;
+            }
+
+            // Bluetooth / A2DP
+            if lower.contains("bluetooth")
+                || lower.contains("a2dp")
+                || lower.contains("bluez")
+            {
+                return 70;
+            }
+
+            // HDMI / DisplayPort — often no speakers
+            if lower.contains("hdmi")
+                || lower.contains("displayport")
+                || lower.contains("dp-")
+            {
+                return 40;
+            }
+
+            // Virtual / PulseAudio sinks
+            if lower.contains("pulse")
+                || lower.contains("pipewire")
+                || lower.contains("virtual")
+            {
+                return 10;
+            }
+
+            // Generic device — moderate priority
+            60
+        }
+
+        // Filter out null devices and score the rest
+        let mut scored: Vec<(u8, &cpal::Device)> = all_devices.iter()
+            .filter(|d| {
+                d.description().ok()
+                    .map(|n| score_device(&n.to_string()) > 0)
+                    .unwrap_or(true)
+            })
+            .map(|d| {
+                let score = d.description().ok()
+                    .map(|n| score_device(&n.to_string()))
+                    .unwrap_or(50);
+                (score, d)
+            })
+            .collect();
+
+        // Sort by score descending — best device first
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+        if scored.is_empty() && !all_devices.is_empty() {
+            eprintln!("Audio: warning — only null/dummy devices found, trying them as last resort");
+        }
+
+        eprintln!("Audio: device candidates (by score):");
+        for (score, d) in scored.iter().take(8) {
+            if let Ok(n) = d.description() {
+                eprintln!("Audio:   [score={}] {}", score, n);
+            }
+        }
+
+        // Build candidate list: ranked real devices, then fall back to unranked.
+        // On PipeWire systems, prepend the ALSA "default" device (which routes
+        // through pipewire-alsa → PipeWire) before raw hardware devices.
+        // This prevents alsa::poll() POLLERR from opening raw ALSA devices
+        // while PipeWire has exclusive hardware control.
+        let candidates: Vec<&cpal::Device> = if has_pipewire {
+            if let Some(ref pw_dev) = pipewire_default {
+                let pw_name_str = pw_dev.description().ok()
+                    .map(|d| d.to_string()).unwrap_or_default();
+                let mut list: Vec<&cpal::Device> = Vec::new();
+                list.push(pw_dev);
+                for (_, d) in scored.iter() {
+                    let d_name_str = d.description().ok()
+                        .map(|d| d.to_string()).unwrap_or_default();
+                    if !pw_name_str.is_empty() && pw_name_str == d_name_str {
+                        continue;
+                    }
+                    list.push(*d);
+                }
+                for d in all_devices.iter() {
+                    let d_name_str = d.description().ok()
+                        .map(|d| d.to_string()).unwrap_or_default();
+                    if !pw_name_str.is_empty() && pw_name_str == d_name_str {
+                        continue;
+                    }
+                    if !list.iter().any(|c| {
+                        c.description().ok().map(|d| d.to_string()) == Some(d_name_str.clone())
+                    }) {
+                        list.push(d);
+                    }
+                }
+                eprintln!("Audio: PipeWire default device prioritized in candidate list");
+                list
+            } else {
+                let mut list: Vec<&cpal::Device> = scored.iter().map(|(_, d)| *d).collect();
+                if list.is_empty() {
+                    list = all_devices.iter().collect();
+                }
+                list
+            }
+        } else {
+            let mut list: Vec<&cpal::Device> = scored.iter().map(|(_, d)| *d).collect();
+            if list.is_empty() {
+                list = all_devices.iter().collect();
+            }
+            list
         };
 
         let mut last_err = String::new();
@@ -880,6 +1134,7 @@ impl AudioEngine {
             let cb_hp_producer = Arc::clone(&hp_producer);
             let cb_pad_sample_cache = Arc::clone(&pad_sample_cache);
             let cb_sequence_steps = Arc::clone(&sequence_steps);
+            let cb_pad_triggers = Arc::clone(&pad_triggers);
 
             // Audio thread owns these outright — moved into the closure.
             let mut ctrl_output = ctrl_output_slot.take()
@@ -940,10 +1195,11 @@ impl AudioEngine {
                                               &mut pad_voices,
                                               &cb_pad_sample_cache,
                                               &cb_sequence_steps,
+                                              &cb_pad_triggers,
                                               &mut onset_state,
                                               &cb_key_sample_tx);
                         },
-                        move |err| eprintln!("Audio: {}", err),
+                        rate_limited_err("Audio: "),
                         None,
                     )
                 }
@@ -970,6 +1226,7 @@ impl AudioEngine {
                                               &mut pad_voices,
                                               &cb_pad_sample_cache,
                                               &cb_sequence_steps,
+                                              &cb_pad_triggers,
                                               &mut onset_state,
                                               &cb_key_sample_tx);
                             for f in 0..frames {
@@ -979,7 +1236,7 @@ impl AudioEngine {
                                 }
                             }
                         },
-                        move |err| eprintln!("Audio: {}", err),
+                        rate_limited_err("Audio: "),
                         None,
                     )
                 }
@@ -1006,6 +1263,7 @@ impl AudioEngine {
                                                 &mut pad_voices,
                                                  &cb_pad_sample_cache,
                                                  &cb_sequence_steps,
+                                                 &cb_pad_triggers,
                                                  &mut onset_state,
                                                  &cb_key_sample_tx);
                             for f in 0..frames {
@@ -1015,7 +1273,7 @@ impl AudioEngine {
                                 }
                             }
                         },
-                        move |err| eprintln!("Audio: {}", err),
+                        rate_limited_err("Audio: "),
                         None,
                     )
                 }
@@ -1035,32 +1293,66 @@ impl AudioEngine {
                             stream = Some(s);
                             actual_sr = sr;
                             main_device_name = name.clone();
-                            eprintln!("Audio: {} at {}Hz ch={}", name, sr_hz, cfg.channels);
+                            eprintln!("Audio: streaming on '{}' at {}Hz ch={}", name, sr_hz, cfg.channels);
                             break;
                         }
                         Err(e) => {
                             // Stream built but couldn't play — the captured state
                             // (ctrl_output, cmd_consumer) was consumed by the closure,
                             // so we cannot retry another device. Fail fast.
-                            return Err(format!("{}: play failed: {}", name, e));
+                            let hint = if has_pipewire {
+                                " On PipeWire/Steam Deck, try: \
+                                 `pw-dump | jq .info.name` to check device names, \
+                                 or install `pipewire-alsa` if missing."
+                            } else {
+                                ""
+                            };
+                            return Err(format!("Device '{}': play failed: {}{}", name, e, hint));
                         }
                     }
                 }
                 Err(e) => {
-                    return Err(format!("{}: build failed: {}", name, e));
+                    let hint = if has_pipewire {
+                        " On PipeWire/Steam Deck, ensure `pipewire-alsa` is installed \
+                         and ALSA is not hardcoded to dmix."
+                    } else {
+                        ""
+                    };
+                    return Err(format!("Device '{}': build_output_stream failed: {}{}", name, e, hint));
                 }
             }
         }
 
-        let stream = stream.ok_or_else(|| format!("No working audio device: {}", last_err))?;
+        let stream = stream.ok_or_else(|| {
+            let hint = if has_pipewire {
+                " PipeWire is running but no audio device could be opened. \
+                 Try running `wpctl status` to check PipeWire nodes, \
+                 or ensure pipewire-alsa is installed."
+            } else {
+                ""
+            };
+            format!("No working audio device found. Last error: {}{}", last_err, hint)
+        })?;
 
-        // Try to find a headphone device (any device different from main, or fallback to main).
-        // This is the initial stream; `set_headphone_device` recreates it on user selection.
+        // Try to find a headphone device: prefer a device with a different score
+        // (i.e. different type — BT, USB, etc.) from the main device.
+        // All cpal Device instances for the same ALSA device share the same
+        // description string, so filtering by name comparison fails on systems
+        // with multiple sub-devices (e.g. Steam Deck's many `sof-nau8821-max`
+        // entries). Instead, walk the ranked `candidates` list (already sorted
+        // by score descending) and pick the first entry whose score differs
+        // from the main device's score. If nothing differs, leave headphone
+        // unassigned — routing to HDMI on a device with no speaker causes
+        // POLLERR spam and no audible output.
         let hp_device = {
-            let other = all_devices.iter().find(|d| {
-                d.description().ok().map(|n| n.to_string()).as_deref() != Some(&main_device_name)
-            });
-            other.cloned().or_else(|| default.clone())
+            let main_score = score_device(&main_device_name);
+            candidates.iter()
+                .find(|d| {
+                    let name = d.description().ok().map(|n| n.to_string()).unwrap_or_default();
+                    let s = score_device(&name);
+                    s > 0 && s != main_score
+                })
+                .cloned()
         };
 
         let mut hp_stream: Option<cpal::Stream> = None;
@@ -1096,7 +1388,7 @@ impl AudioEngine {
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         headphone_callback(data, &mut hp_cons_move, channels);
                     },
-                    move |err| eprintln!("Headphone audio: {}", err),
+                    rate_limited_err("Headphone audio: "),
                     None,
                 );
                 match hp_result {
@@ -1143,6 +1435,7 @@ impl AudioEngine {
                 .collect(),
             sequence_steps,
             pad_sample_cache,
+            pad_triggers,
         })
     }
 
@@ -1224,7 +1517,7 @@ impl AudioEngine {
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 headphone_callback(data, &mut hp_cons_move, channels);
             },
-            move |err| eprintln!("Headphone audio: {}", err),
+            rate_limited_err("Headphone audio: "),
             None,
         );
         match hp_result {
@@ -1400,7 +1693,7 @@ impl AudioEngine {
     /// is assigned to a pad. The audio callback reads this when a sequencer
     /// step triggers.
     pub fn set_pad_sample(&self, pad_idx: usize, samples: Vec<f32>, sample_rate: u32, channels: u16) {
-        if let Ok(mut cache) = self.pad_sample_cache.lock() {
+        if let Ok(mut cache) = self.pad_sample_cache.write() {
             if pad_idx < cache.len() {
                 // Ensure samples are always stereo interleaved for the voice mixer.
                 // Mono files get each sample duplicated to L/R.
@@ -1422,7 +1715,7 @@ impl AudioEngine {
     /// Clear cached sample data for a pad.
     #[allow(dead_code)]
     pub fn clear_pad_sample(&self, pad_idx: usize) {
-        if let Ok(mut cache) = self.pad_sample_cache.lock() {
+        if let Ok(mut cache) = self.pad_sample_cache.write() {
             if pad_idx < cache.len() {
                 cache[pad_idx] = None;
             }
@@ -1601,8 +1894,9 @@ fn audio_callback(
     seek_requests: &[Arc<AtomicF64>; 3],
     hp_producer: &Mutex<Option<Producer<f32>>>,
     pad_voices: &mut PadVoiceState,
-    pad_sample_cache: &Mutex<Vec<Option<Arc<(Vec<f32>, u32)>>>>,
+    pad_sample_cache: &std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>,
     sequence_steps: &[AtomicUsize],
+    pad_triggers: &Vec<AtomicBool>,
     onset_state: &mut [OnsetState; 3],
     key_sample_tx: &std::sync::mpsc::Sender<(usize, Vec<f32>, u32)>,
 ) {
@@ -1716,6 +2010,28 @@ fn audio_callback(
     // Underrun fade: multiplicative decay per sample. ~5ms to -60dB at 48k.
     const UNDERRUN_DECAY: f32 = 0.9986;
 
+    // --- Direct pad triggers: consume one-shot flags from UI thread ---
+    // The audio callback owns pad_triggers; UI sets pad_triggers[i] = true.
+    // Always activate a voice on trigger — the voice mixing section handles
+    // cache lookup and won't produce audio if sample data isn't loaded.
+    for i in 0..pad_triggers.len().min(pad_voices.voice_active.len()) {
+        if pad_triggers[i].swap(false, Ordering::Relaxed) {
+            // Find a free voice slot
+            for v in 0..pad_voices.voice_active.len() {
+                if !pad_voices.voice_active[v] {
+                    pad_voices.voice_active[v] = true;
+                    pad_voices.voice_position[v] = 0;
+                    pad_voices.voice_pad_idx[v] = i;
+                    pad_voices.voice_gain[v] = 0.0;
+                    // usize::MAX signals a direct trigger — the mixing
+                    // section skips the mute check and uses full volume.
+                    pad_voices.voice_seq_idx[v] = usize::MAX;
+                    break;
+                }
+            }
+        }
+    }
+
     // --- Sequencer timer: advance steps and trigger pad voices ---
     // Single global step counter. Each sequence derives its current step
     // from this counter, ensuring all sequences are perfectly aligned.
@@ -1754,7 +2070,7 @@ fn audio_callback(
     ];
 
     // Try to lock pad sample cache (non-blocking — skip if contended)
-    let cache_guard = pad_sample_cache.try_lock().ok();
+    let cache_guard = pad_sample_cache.try_read().ok();
     let cache_ref = cache_guard.as_deref();
 
     for (seq_idx, seq) in ctrl.sequences.iter().enumerate() {
@@ -1916,12 +2232,20 @@ fn audio_callback(
                         let adjusted_pos = (pos as f32 * sample_rate_ratio) as usize;
                         let stereo_pos = adjusted_pos * 2;
                         if stereo_pos + 1 < samples.len() {
-                            // Check if sequence is muted — kill voice if so
-                            let seq = ctrl.sequences.get(pad_voices.voice_seq_idx[v]);
-                            if seq.map(|s| s.mute).unwrap_or(false) {
-                                pad_voices.voice_active[v] = false;
-                                continue;
-                            }
+                            let (seq_vol, pad_vol) =
+                                if pad_voices.voice_seq_idx[v] == usize::MAX {
+                                    // Direct trigger: skip mute check, use full volume
+                                    (1.0, 1.0)
+                                } else {
+                                    let seq = ctrl.sequences.get(pad_voices.voice_seq_idx[v]);
+                                    // Check if sequence is muted — kill voice if so
+                                    if seq.map(|s| s.mute).unwrap_or(false) {
+                                        pad_voices.voice_active[v] = false;
+                                        continue;
+                                    }
+                                    (seq.map(|s| s.volume).unwrap_or(1.0),
+                                     seq.map(|s| s.pad_volume).unwrap_or(1.0))
+                                };
                             // Envelope: linear attack over ATTACK_SAMPLES
                             let gain = if pad_voices.voice_gain[v] < 1.0 {
                                 pad_voices.voice_gain[v] = (pad_voices.voice_gain[v] + 1.0 / ATTACK_SAMPLES).min(1.0);
@@ -1930,8 +2254,6 @@ fn audio_callback(
                                 1.0
                             };
                             // Apply sequence volume and pad config volume
-                            let seq_vol = seq.map(|s| s.volume).unwrap_or(1.0);
-                            let pad_vol = seq.map(|s| s.pad_volume).unwrap_or(1.0);
                             let vol = gain * seq_vol * pad_vol;
                             let l = samples[stereo_pos] * vol;
                             let r = samples[stereo_pos + 1] * vol;

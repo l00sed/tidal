@@ -86,8 +86,8 @@ impl Source for CachedSampleSource {
 }
 
 pub struct SampleEngine {
-    _device: MixerDeviceSink,
-    mixer: Mixer,
+    _device: Option<MixerDeviceSink>,
+    mixer: Option<Mixer>,
     pub cache: HashMap<PathBuf, CachedSample>,
     players: Vec<Player>,
     max_voices: usize,
@@ -104,12 +104,12 @@ pub struct SampleEngine {
 
 impl SampleEngine {
     pub fn new() -> Result<Self, String> {
-        let device = DeviceSinkBuilder::open_default_sink()
-            .map_err(|e| format!("Failed to open audio output: {}", e))?;
-        let mixer = device.mixer().clone();
+        // Defer audio device opening — the device is only needed for
+        // preview/playback, not for caching. Opening it here would race
+        // with AudioEngine's cpal device on the same output.
         Ok(Self {
-            _device: device,
-            mixer,
+            _device: None,
+            mixer: None,
             cache: HashMap::new(),
             players: Vec::new(),
             max_voices: 16,
@@ -119,6 +119,19 @@ impl SampleEngine {
             pad_recording_buffers: vec![None; 16],
             per_pad_recording: false,
         })
+    }
+
+    /// Lazily open the audio device on first playback request.
+    fn ensure_device(&mut self) -> Result<(), String> {
+        if self.mixer.is_some() {
+            return Ok(());
+        }
+        let device = DeviceSinkBuilder::open_default_sink()
+            .map_err(|e| format!("Failed to open audio output: {}", e))?;
+        let mixer = device.mixer().clone();
+        self._device = Some(device);
+        self.mixer = Some(mixer);
+        Ok(())
     }
 
     /// Start per-pad recording - records each pad's audio separately
@@ -212,6 +225,8 @@ impl SampleEngine {
     }
 
     pub fn play(&mut self, path: &Path) -> Result<(), String> {
+        self.ensure_device()?;
+
         if !self.cache.contains_key(path) {
             self.preload(path)?;
         }
@@ -224,7 +239,8 @@ impl SampleEngine {
             .get(path)
             .ok_or_else(|| "Sample not in cache".to_string())?;
         let source = CachedSampleSource::new(cached);
-        let player = Player::connect_new(&self.mixer);
+        let mixer = self.mixer.as_ref().ok_or("Audio device not open")?;
+        let player = Player::connect_new(mixer);
         self.append_source(&player, source);
         self.players.push(player);
         Ok(())
@@ -241,6 +257,8 @@ impl SampleEngine {
             }
         }
 
+        self.ensure_device()?;
+
         if !self.cache.contains_key(path) {
             self.preload(path)?;
         }
@@ -248,7 +266,8 @@ impl SampleEngine {
         self.cleanup();
         self.evict_oldest();
 
-        let player = Player::connect_new(&self.mixer);
+        let mixer = self.mixer.as_ref().ok_or("Audio device not open")?;
+        let player = Player::connect_new(mixer);
 
         if let Some(cfg) = config {
             player.set_volume(cfg.volume);
@@ -289,6 +308,8 @@ impl SampleEngine {
             }
         }
 
+        self.ensure_device()?;
+
         if !self.cache.contains_key(path) {
             self.preload(path)?;
         }
@@ -296,7 +317,8 @@ impl SampleEngine {
         self.cleanup();
         self.evict_oldest();
 
-        let player = Player::connect_new(&self.mixer);
+        let mixer = self.mixer.as_ref().ok_or("Audio device not open")?;
+        let player = Player::connect_new(mixer);
 
         if let Some(cfg) = config {
             player.set_volume(cfg.volume);
@@ -400,8 +422,8 @@ impl SampleEngine {
     }
 
     #[allow(dead_code)]
-    pub fn mixer(&self) -> &Mixer {
-        &self.mixer
+    pub fn mixer(&self) -> Option<&Mixer> {
+        self.mixer.as_ref()
     }
 
     #[allow(dead_code)]
