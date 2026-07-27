@@ -246,54 +246,6 @@ impl SampleEngine {
         Ok(())
     }
 
-    pub fn play_with_config(
-        &mut self,
-        path: &Path,
-        config: Option<&crate::state::PadConfig>,
-    ) -> Result<(), String> {
-        if let Some(cfg) = config {
-            if cfg.mute {
-                return Ok(());
-            }
-        }
-
-        self.ensure_device()?;
-
-        if !self.cache.contains_key(path) {
-            self.preload(path)?;
-        }
-
-        self.cleanup();
-        self.evict_oldest();
-
-        let mixer = self.mixer.as_ref().ok_or("Audio device not open")?;
-        let player = Player::connect_new(mixer);
-
-        if let Some(cfg) = config {
-            player.set_volume(cfg.volume);
-
-            let cached = self
-                .cache
-                .get(path)
-                .ok_or_else(|| "Sample not in cache".to_string())?;
-            let source = CachedSampleSource::new(cached);
-
-            // Apply effects chain
-            let src = apply_dsp_chain(source, cfg);
-            self.append_source(&player, src);
-        } else {
-            let cached = self
-                .cache
-                .get(path)
-                .ok_or_else(|| "Sample not in cache".to_string())?;
-            let source = CachedSampleSource::new(cached);
-            self.append_source(&player, source);
-        }
-
-        self.players.push(player);
-        Ok(())
-    }
-
     /// Play a sample with DSP effects and per-pad recording support for rack recording
     #[allow(dead_code)]
     pub fn play_with_config_and_recording(

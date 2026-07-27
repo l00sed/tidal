@@ -473,10 +473,6 @@ impl Sequence {
         60.0 / actual_bpm.clamp(20.0, 400.0) / 4.0
     }
 
-    /// Actual BPM = global * multiplier
-    pub fn actual_bpm(&self, global_bpm: f32) -> f32 {
-        (global_bpm * self.tempo).clamp(20.0, 400.0)
-    }
 }
 
 /// Horizontal cursor target within a sequence row

@@ -1,6 +1,6 @@
 //! Application state and event handling
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::path::PathBuf;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -1438,7 +1438,7 @@ impl App {
         None
     }
 
-    fn attach_fifo_capture_to_deck(&mut self, deck: Deck, fifo: &std::path::Path, label: Option<String>) -> bool {
+    fn attach_fifo_capture_to_deck(&mut self, deck: Deck, fifo: &std::path::Path, label: Option<String>) -> Result<(), String> {
         let ch_idx = match deck {
             Deck::A => self.mixer.dj.deck_a_channel,
             Deck::B => self.mixer.dj.deck_b_channel,
@@ -1453,42 +1453,38 @@ impl App {
 
         if let Some(ref engine) = self.audio_engine {
             engine.stop_decoder(ch_idx);
-            match engine.attach_capture(ch_idx, fifo) {
-                Ok(_) => {
-                    if deck == Deck::C {
-                        self.mixer.cue_channel.connected = true;
-                        self.mixer.cue_channel.playing = true;
-                        self.mixer.cue_channel.uses_supercollider = false;
-                        self.mixer.cue_channel.source_id = Some(fifo.to_string_lossy().to_string());
-                        if let Some(name) = label {
-                            self.mixer.cue_channel.name = name;
-                        }
-                        if self.mixer.cue_channel.fader < 0.01 {
-                            self.mixer.cue_channel.fader = 0.5;
-                        }
-                    } else if let Some(channel) = self.mixer.channels.get_mut(ch_idx) {
-                        channel.connected = true;
-                        channel.playing = true;
-                        channel.uses_supercollider = false;
-                        channel.source_id = Some(fifo.to_string_lossy().to_string());
-                        if let Some(name) = label {
-                            channel.name = name;
-                        }
-                        if channel.fader < 0.01 {
-                            channel.fader = 0.5;
-                        }
-                    }
-                    self.sync_volume_to_mpv(ch_idx);
-                    self.route_meta_poll_counter = 0;
-                    true
+            engine.attach_capture(ch_idx, fifo).map_err(|e| {
+                eprintln!("Audio: attach_capture failed ({}): {}", fifo.display(), e);
+                e
+            })?;
+            if deck == Deck::C {
+                self.mixer.cue_channel.connected = true;
+                self.mixer.cue_channel.playing = true;
+                self.mixer.cue_channel.uses_supercollider = false;
+                self.mixer.cue_channel.source_id = Some(fifo.to_string_lossy().to_string());
+                if let Some(name) = label {
+                    self.mixer.cue_channel.name = name;
                 }
-                Err(e) => {
-                    eprintln!("Audio: attach_capture failed ({}): {}", fifo.display(), e);
-                    false
+                if self.mixer.cue_channel.fader < 0.01 {
+                    self.mixer.cue_channel.fader = 0.5;
+                }
+            } else if let Some(channel) = self.mixer.channels.get_mut(ch_idx) {
+                channel.connected = true;
+                channel.playing = true;
+                channel.uses_supercollider = false;
+                channel.source_id = Some(fifo.to_string_lossy().to_string());
+                if let Some(name) = label {
+                    channel.name = name;
+                }
+                if channel.fader < 0.01 {
+                    channel.fader = 0.5;
                 }
             }
+            self.sync_volume_to_mpv(ch_idx);
+            self.route_meta_poll_counter = 0;
+            Ok(())
         } else {
-            false
+            Err("no audio engine".to_string())
         }
     }
 
@@ -1636,7 +1632,7 @@ impl App {
             let fifo_opt = Self::find_tui_mixer_route_fifo();
             if let Some(ref fifo) = fifo_opt {
                 let route_name = sources.first().map(|(name, _)| name.clone());
-                if self.attach_fifo_capture_to_deck(Deck::A, fifo, route_name) {
+                if self.attach_fifo_capture_to_deck(Deck::A, fifo, route_name).is_ok() {
                     loaded_channels.push(0);
                     true
                 } else {
@@ -2123,8 +2119,6 @@ impl App {
         };
         let deck_a_ch = self.mixer.dj.deck_a_channel;
         let deck_b_ch = self.mixer.dj.deck_b_channel;
-        let deck_c_ch = self.mixer.dj.deck_c_channel;
-
         // Deck A
         if self.mpv_deck_a.is_none() {
             let pos = engine.time_pos[0].load() as f32;
@@ -2531,10 +2525,21 @@ impl App {
                 self.should_quit = true;
                 return;
             }
+            // Copy visible debug log to clipboard
+            KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) && !self.debug_log.is_empty() => {
+                self.copy_debug_log_to_clipboard();
+                return;
+            }
             // Debug log scrolling (only when log is non-empty)
             KeyCode::Char('[') if !self.debug_log.is_empty() => {
-                let max_scroll = self.debug_log.len().saturating_sub(1);
-                self.debug_scroll = (self.debug_scroll + 1).min(max_scroll);
+                if self.debug_scroll == 0 {
+                    // Entering scroll mode from follow: start at current top line
+                    let inner_height = 8usize;
+                    self.debug_scroll = self.debug_log.len().saturating_sub(inner_height).max(1);
+                } else {
+                    let max_top = self.debug_log.len().saturating_sub(8);
+                    self.debug_scroll = (self.debug_scroll + 1).min(max_top);
+                }
                 return;
             }
             KeyCode::Char(']') if !self.debug_log.is_empty() => {
@@ -2543,8 +2548,13 @@ impl App {
             }
             KeyCode::PageUp if !self.debug_log.is_empty() => {
                 let page = 10usize;
-                let max_scroll = self.debug_log.len().saturating_sub(1);
-                self.debug_scroll = (self.debug_scroll + page).min(max_scroll);
+                if self.debug_scroll == 0 {
+                    let inner_height = 8usize;
+                    self.debug_scroll = self.debug_log.len().saturating_sub(inner_height + page).max(1);
+                } else {
+                    let max_top = self.debug_log.len().saturating_sub(8);
+                    self.debug_scroll = (self.debug_scroll + page).min(max_top);
+                }
                 return;
             }
             KeyCode::PageDown if !self.debug_log.is_empty() => {
@@ -2553,7 +2563,7 @@ impl App {
                 return;
             }
             KeyCode::Home if !self.debug_log.is_empty() => {
-                self.debug_scroll = self.debug_log.len().saturating_sub(1);
+                self.debug_scroll = 1;
                 return;
             }
             KeyCode::End if !self.debug_log.is_empty() => {
@@ -5213,11 +5223,8 @@ impl App {
     }
 
     fn scan_mpv_sockets(&mut self) {
-        let route_label = Self::route_meta_label(Some(std::path::Path::new(TUI_MIXER_ROUTE_FIFO)))
-            .unwrap_or_else(|| "tui-mixer route".to_string());
-
-        // Expose route FIFO sources directly so they can be attached to Deck A/B/C
-        // without requiring IPC connection or app restart.
+        // Route FIFOs: named pipes created by MPV for audio routing.
+        // MPV writes PCM into these; the Rust engine captures from them.
         if let Ok(paths) = glob::glob(TUI_MIXER_ROUTE_FIFO_GLOB) {
             for entry in paths.flatten() {
                 if entry.exists() {
@@ -5244,7 +5251,7 @@ impl App {
         let canonical_fifo = PathBuf::from(TUI_MIXER_ROUTE_FIFO);
         if canonical_fifo.exists() {
             self.source_picker.items.push(SourcePickerItem {
-                name: Self::route_meta_label(Some(&canonical_fifo)).unwrap_or_else(|| route_label.clone()),
+                name: Self::route_meta_label(Some(&canonical_fifo)).unwrap_or_else(|| "tui-mixer route".to_string()),
                 path: canonical_fifo.clone(),
                 is_socket: false,
                 is_pcm_fifo: true,
@@ -5910,6 +5917,10 @@ impl App {
         }
 
         if let Some(item) = self.source_picker.selected_item().cloned() {
+            self.log_debug(format!(
+                "select_source_for_deck: deck={:?} item_name='{}' path={} is_socket={} is_pcm_fifo={} is_udp={} is_dir={}",
+                deck, item.name, item.path.display(), item.is_socket, item.is_pcm_fifo, item.is_udp, item.is_dir
+            ));
             // Deck::C uses cue_channel which is not in the channels Vec
             if deck == Deck::C {
                 self.select_source_for_deck_c(&item);
@@ -5982,19 +5993,25 @@ impl App {
             }
 
             if item.is_pcm_fifo {
-                let attached = self.attach_fifo_capture_to_deck(deck, &item.path, Some(item.name.clone()));
-            if !attached {
-                self.log_debug(format!("Failed to attach PCM FIFO: {}", item.path.display()));
-            } else {
-                self.route_scrub_last_ms[channel_idx] = 0;
-                self.route_duration_last_ms[channel_idx] = 0;
-            }
+                match self.attach_fifo_capture_to_deck(deck, &item.path, Some(item.name.clone())) {
+                    Ok(()) => {
+                        self.route_scrub_last_ms[channel_idx] = 0;
+                        self.route_duration_last_ms[channel_idx] = 0;
+                    }
+                    Err(e) => {
+                        self.log_debug(format!("Failed to attach PCM FIFO: {} — {}", item.path.display(), e));
+                    }
+                }
             } else if item.is_socket {
                 // MPV socket - create and connect client
                 let socket_path = item.path.to_string_lossy().to_string();
                 let mut client = MpvClient::new(&socket_path);
 
-                let connected = client.connect().is_ok();
+                let connect_result = client.connect();
+                let connected = connect_result.is_ok();
+                if !connected {
+                    self.log_debug(format!("MPV connect failed for {}: {:?}", socket_path, connect_result.err()));
+                }
 
                 // Update channel state
                 if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
@@ -6062,11 +6079,18 @@ impl App {
                 self.audio_manager.add_source(source);
 
                 // Load file into Rust audio engine decoder (always want engine processing)
+                if file_path.is_some() {
+                    self.log_debug(format!("MPV loading into engine ch{}: {:?}", channel_idx, file_path));
+                } else {
+                    self.log_debug(format!("MPV no file_path for ch{}, skipping engine load", channel_idx));
+                }
                 if let Some(ref engine) = self.audio_engine {
                     if let Some(ref path) = file_path {
                         let path_str = path.to_string_lossy().to_string();
                         engine.load_file(channel_idx, path_str);
                     }
+                } else {
+                    self.log_debug(format!("MPV no audio_engine for ch{}", channel_idx));
                 }
 
                 // Sync crossfader/volume state to engine for new source
@@ -6198,6 +6222,10 @@ impl App {
                 if let Some(ref engine) = self.audio_engine {
                     engine.load_file(channel_idx, path_str.clone());
                 }
+                // Sync crossfader/volume state to engine for new source
+                self.sync_volume_to_mpv(channel_idx);
+                self.sync_mute_to_mpv(channel_idx);
+                self.sync_playpause_to_mpv(channel_idx);
                 // Trigger BPM+key analysis
                 if item.path.exists() {
                     let pending = self.pending_bpm.clone();
@@ -6240,14 +6268,16 @@ impl App {
         }
 
         if item.is_pcm_fifo {
-            let attached = self.attach_fifo_capture_to_deck(Deck::C, &item.path, Some(item.name.clone()));
-            if !attached {
-                self.log_debug(format!("Failed to attach PCM FIFO: {}", item.path.display()));
-            } else {
-                self.route_nav_cache[channel_idx] = None;
-                self.route_nav_last_ms[channel_idx] = 0;
-                self.route_scrub_last_ms[channel_idx] = 0;
-                self.route_duration_last_ms[channel_idx] = 0;
+            match self.attach_fifo_capture_to_deck(Deck::C, &item.path, Some(item.name.clone())) {
+                Ok(()) => {
+                    self.route_nav_cache[channel_idx] = None;
+                    self.route_nav_last_ms[channel_idx] = 0;
+                    self.route_scrub_last_ms[channel_idx] = 0;
+                    self.route_duration_last_ms[channel_idx] = 0;
+                }
+                Err(e) => {
+                    self.log_debug(format!("Failed to attach PCM FIFO: {} — {}", item.path.display(), e));
+                }
             }
         } else if item.is_socket {
             let socket_path = item.path.to_string_lossy().to_string();
@@ -8119,9 +8149,10 @@ impl App {
         if self.debug_log.len() > 500 {
             self.debug_log.remove(0);
         }
-        // Auto-scroll to bottom when new messages arrive (unless user is scrolling)
-        if self.debug_scroll > 0 {
-            self.debug_scroll = 0;
+        // Only auto-scroll to bottom if already at the bottom.
+        // If user has scrolled up to read, leave them there.
+        if self.debug_scroll == 0 {
+            // Already at bottom — new messages are visible automatically
         }
     }
     
@@ -8129,5 +8160,42 @@ impl App {
     #[allow(dead_code)]
     pub fn is_debug_enabled() -> bool {
         std::env::var("DEBUG").is_ok()
+    }
+
+    /// Copy the visible debug log lines to the system clipboard.
+    fn copy_debug_log_to_clipboard(&mut self) {
+        let text = self.debug_log.join("\n");
+        if text.is_empty() {
+            return;
+        }
+        let copied = if cfg!(target_os = "macos") {
+            std::process::Command::new("pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    child.stdin.take().unwrap().write_all(text.as_bytes())?;
+                    child.wait()?;
+                    Ok(())
+                })
+                .is_ok()
+        } else if cfg!(target_os = "linux") {
+            std::process::Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    child.stdin.take().unwrap().write_all(text.as_bytes())?;
+                    child.wait()?;
+                    Ok(())
+                })
+                .is_ok()
+        } else {
+            false
+        };
+        if copied {
+            self.log_debug("Debug log copied to clipboard".to_string());
+        }
     }
 }

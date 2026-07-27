@@ -1227,7 +1227,8 @@ impl<'a> MixerView<'a> {
                 };
 
                 let truncated_name = if line.len() > name_width {
-                    format!("{}…", &line[..name_width - 1])
+                    let truncated: String = line.chars().take(name_width.saturating_sub(1)).collect();
+                    format!("{}…", truncated)
                 } else {
                     format!("{:width$}", line, width = name_width)
                 };
@@ -1334,7 +1335,7 @@ impl<'a> MixerView<'a> {
                 let icon = if item.is_dir { "\u{f07b}" } else { "\u{f001}" };
                 let line = format!("{} {}", icon, item.name);
                 let display = if line.len() > list_area.width as usize {
-                    let truncated: String = line.chars().take(list_area.width as usize - 1).collect();
+                    let truncated: String = line.chars().take(list_area.width.saturating_sub(1) as usize).collect();
                     format!("{}…", truncated)
                 } else {
                     format!("{:width$}", line, width = list_area.width as usize)
@@ -1414,7 +1415,8 @@ impl<'a> MixerView<'a> {
             };
 
             let display = if device.len() > list_area.width as usize {
-                format!("{}…", &device[..list_area.width as usize - 1])
+                let truncated: String = device.chars().take(list_area.width.saturating_sub(1) as usize).collect();
+                format!("{}…", truncated)
             } else {
                 format!("{:width$}", device, width = list_area.width as usize)
             };
@@ -1464,8 +1466,12 @@ impl<'a> MixerView<'a> {
             .map(|msg| Line::from(Span::styled(msg.as_str(), Style::default().fg(TEXT_DEFAULT))))
             .collect();
 
-        let scroll_offset = if total_lines > inner_height {
-            (total_lines - inner_height).saturating_sub(self.debug_scroll)
+        let scroll_offset = if self.debug_scroll > 0 {
+            // Absolute position: debug_scroll IS the top-line index (frozen)
+            self.debug_scroll.min(total_lines.saturating_sub(1))
+        } else if total_lines > inner_height {
+            // Follow mode: show latest lines
+            total_lines - inner_height
         } else {
             0
         };
@@ -1482,7 +1488,7 @@ impl<'a> MixerView<'a> {
                 height: inner.height,
             };
             let mut state = ScrollbarState::new(total_lines)
-                .position(total_lines.saturating_sub(self.debug_scroll + inner_height));
+                .position(scroll_offset);
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .render(scrollbar_area, buf, &mut state);
         }

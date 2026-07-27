@@ -1543,6 +1543,9 @@ impl AudioEngine {
         if ch >= MAX_DECKS {
             return Err(format!("bad deck index {}", ch));
         }
+        if !path.exists() {
+            return Err(format!("FIFO not found: {}", path.display()));
+        }
         // Detach any existing decoder/capture on this deck first.
         *self.decoders[ch].lock().unwrap() = None;
         self.detach_capture(ch);
@@ -1558,10 +1561,22 @@ impl AudioEngine {
         let producer = self.capture_producers[ch].lock().unwrap().take()
             .ok_or_else(|| format!("capture producer for ch {} already taken", ch))?;
 
-        let cap = PipeCaptureThread::open_with_producer(path, producer)?;
-        *self.captures[ch].lock().unwrap() = Some(cap);
-        eprintln!("Audio: capture attached ch={} path={}", ch, path.display());
-        Ok(())
+        match PipeCaptureThread::open_with_producer(path, producer) {
+            Ok(cap) => {
+                *self.captures[ch].lock().unwrap() = Some(cap);
+                eprintln!("Audio: capture attached ch={} path={}", ch, path.display());
+                Ok(())
+            }
+            Err(e) => {
+                // open_with_producer consumed the producer on failure — we can't
+                // get it back, so create a fresh ring buffer pair for future use.
+                let (prod, _cons) = rtrb::RingBuffer::<f32>::new(32768);
+                *self.capture_producers[ch].lock().unwrap() = Some(prod);
+                // Note: the audio callback's consumer is stale now; it will stop
+                // receiving samples. A re-attach is needed to fully recover.
+                Err(e)
+            }
+        }
     }
 
     pub fn scrub_relative(&self, ch: usize, delta_secs: f64) {

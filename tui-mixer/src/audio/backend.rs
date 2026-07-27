@@ -7,7 +7,7 @@ pub enum AudioBackendKind {
 }
 
 pub fn available_backends() -> Vec<AudioBackendKind> {
-    let out = vec![AudioBackendKind::Cpal];
+    let mut out = vec![AudioBackendKind::Cpal];
 
     #[cfg(target_os = "macos")]
     {
@@ -78,30 +78,6 @@ pub fn detect_pulseaudio() -> bool {
     }
     std::process::Command::new("pgrep")
         .args(["-x", "pulseaudio"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Detect whether JACK (or PipeWire's JACK compat layer) is available.
-///
-/// PipeWire provides a full JACK implementation via `pipewire-jack` / `pw-jack`.
-/// When JACK is available, cpal can use it directly — this bypasses ALSA dmix
-/// entirely and gives PipeWire full control of audio routing.
-pub fn detect_jack() -> bool {
-    // Check for PipeWire's JACK compat (pw-jack sets this)
-    if std::env::var("PIPEWIRE_JACK").is_ok() {
-        return true;
-    }
-    // Check for JACK server environment
-    if std::env::var("JACK_PROMISCUOUS_SERVER").is_ok() {
-        return true;
-    }
-    // Check if pipewire-jack or jackd is running
-    std::process::Command::new("pgrep")
-        .args(["-x", "pipewire"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
