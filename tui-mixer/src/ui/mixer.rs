@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget, Wrap},
 };
 
-use crate::state::{MixerState, SequenceState, SelectionFocus, GlobalControl, ChannelControl, SamplePadGrid, PAD_KEYS};
+use crate::state::{MixerState, SequenceState, SelectionFocus, GlobalControl, ChannelControl, SamplePadGrid, PAD_KEYS, GlobalSequenceControl, EditTarget};
 use crate::ui::channel::{ChannelStrip, MasterStrip};
 use crate::ui::colors::*;
 use crate::ui::sampler::{PadConfigPane, SequenceRow, SequenceTopBar};
@@ -316,6 +316,53 @@ impl<'a> MixerView<'a> {
             // Skip the control name for Crossfader pane (it's redundant)
             if matches!(self.selected_pane, SelectedPane::Crossfader) {
                 pane_label.to_string()
+            } else if matches!(self.selected_pane, SelectedPane::DjCenter) {
+                // PADS pane: show pad number or CONFIG
+                if self.pad_config_mode {
+                    if let Some(pad_idx) = self.selected_pad_idx {
+                        format!("{} | CONFIG {}", pane_label, pad_idx + 1)
+                    } else {
+                        format!("{} | CONFIG", pane_label)
+                    }
+                } else if let Some(pad_idx) = self.selected_pad_idx {
+                    format!("{} | {}", pane_label, pad_idx + 1)
+                } else {
+                    pane_label.to_string()
+                }
+            } else if matches!(self.selected_pane, SelectedPane::Loops) {
+                // SEQUENCES pane: derive label from sequence state
+                if let Some(seq_state) = self.sequences {
+                    if seq_state.global_focused {
+                        // Global bar focused: show Volume/Bpm/Play/Pause
+                        let ctrl_label = match seq_state.global_control {
+                            GlobalSequenceControl::Volume => "VOLUME",
+                            GlobalSequenceControl::Bpm => "BPM",
+                            GlobalSequenceControl::Mute => {
+                                if seq_state.global.mute { "PAUSE" } else { "PLAY" }
+                            }
+                        };
+                        format!("{} | {}", pane_label, ctrl_label)
+                    } else if let Some(seq_idx) = seq_state.selected {
+                        // Sequence row focused: show pad and cursor target
+                        if let Some(seq) = seq_state.sequences.get(seq_idx) {
+                            let pad_num = seq.pad_idx + 1;
+                            let ctrl_label = match seq_state.cursor {
+                                EditTarget::Step(step) => {
+                                    format!("TRIGGER {}", step)
+                                }
+                                EditTarget::Mute => "MUTE".to_string(),
+                                EditTarget::Gear => "CONFIG".to_string(),
+                            };
+                            format!("{} | {} | {}", pane_label, pad_num, ctrl_label)
+                        } else {
+                            pane_label.to_string()
+                        }
+                    } else {
+                        pane_label.to_string()
+                    }
+                } else {
+                    pane_label.to_string()
+                }
             } else {
                 match self.state.focus {
                     SelectionFocus::Channel(_) => {
@@ -1167,7 +1214,7 @@ impl<'a> MixerView<'a> {
                     Style::default().fg(TEXT_BRIGHT)
                 };
 
-                let icon = if item.is_socket { "⚡" } else if item.is_udp { "◉ " } else { "♪ " };
+                let icon = if item.is_dir { "📁" } else if item.is_socket { "⚡" } else if item.is_udp { "◉ " } else { "♪ " };
                 let line = format!("{} {}", icon, item.name);
 
                 // Right-align key column if available (3 chars: "12B")

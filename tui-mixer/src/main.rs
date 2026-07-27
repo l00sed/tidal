@@ -162,6 +162,13 @@ fn parse_args(args: &[String]) -> CliArgs {
         auto_discover = true;
     }
 
+    // Default music dir to ~/Music when not provided
+    if music_dir.is_none() {
+        if let Ok(home) = std::env::var("HOME") {
+            music_dir = Some(PathBuf::from(home).join("Music"));
+        }
+    }
+
     CliArgs { sources, auto_discover, music_dir, samples_dir }
 }
 
@@ -186,7 +193,7 @@ USAGE:
 
 OPTIONS:
     -s, --source NAME SOCKET    Add an audio source (MPV IPC socket)
-    -m, --music-dir PATH        Directory for audio file browser (default: cwd)
+    -m, --music-dir PATH        Directory for audio file browser (default: ~/Music)
     -S, --samples-dir PATH      Directory for sample pad files (default: ~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples)
     -d, --discover              Auto-discover audio sources (default if no -s)
     -h, --help                  Show this help message

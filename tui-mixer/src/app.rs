@@ -1793,6 +1793,7 @@ impl App {
         self.mpv_poll_counter = self.mpv_poll_counter.wrapping_add(1);
         if self.mpv_poll_counter % 25 == 0 {
             self.poll_mpv_state();
+            self.poll_engine_positions();
         }
 
         self.tidal_bpm_poll_counter = self.tidal_bpm_poll_counter.wrapping_add(1);
@@ -2103,6 +2104,50 @@ impl App {
         // Clear dead/ended decks (outside borrow scope)
         for deck in decks_to_clear {
             self.clear_deck(deck);
+        }
+    }
+
+    /// Sync time_pos and duration from the Rust audio engine into mixer channels.
+    /// This covers files loaded directly via engine.load_file() (no MPV client).
+    fn poll_engine_positions(&mut self) {
+        let engine = match self.audio_engine.as_ref() {
+            Some(e) => e,
+            None => return,
+        };
+        let deck_a_ch = self.mixer.dj.deck_a_channel;
+        let deck_b_ch = self.mixer.dj.deck_b_channel;
+        let deck_c_ch = self.mixer.dj.deck_c_channel;
+
+        // Deck A
+        if self.mpv_deck_a.is_none() {
+            let pos = engine.time_pos[0].load() as f32;
+            let dur = engine.duration[0].load() as f32;
+            if let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
+                if pos > 0.0 || dur > 0.0 {
+                    ch.time_pos = pos;
+                    ch.duration = dur;
+                }
+            }
+        }
+        // Deck B
+        if self.mpv_deck_b.is_none() {
+            let pos = engine.time_pos[1].load() as f32;
+            let dur = engine.duration[1].load() as f32;
+            if let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
+                if pos > 0.0 || dur > 0.0 {
+                    ch.time_pos = pos;
+                    ch.duration = dur;
+                }
+            }
+        }
+        // Deck C
+        if self.mpv_deck_c.is_none() {
+            let pos = engine.time_pos[2].load() as f32;
+            let dur = engine.duration[2].load() as f32;
+            if pos > 0.0 || dur > 0.0 {
+                self.mixer.cue_channel.time_pos = pos;
+                self.mixer.cue_channel.duration = dur;
+            }
         }
     }
 
@@ -4990,6 +5035,7 @@ impl App {
     /// Open source picker for specified deck
     fn open_source_picker(&mut self, deck: Deck) {
         self.source_picker = SourcePickerState::new();
+        self.source_picker.set_root(self.music_dir.clone());
         self.scan_sources();
         self.mode = AppMode::SourcePicker(deck);
     }
@@ -5261,19 +5307,55 @@ impl App {
     }
 
     fn scan_audio_files(&mut self) {
-        let extensions = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "opus", "aiff"];
+        let extensions = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "opus", "aiff", "aif"];
 
-        if let Ok(entries) = std::fs::read_dir(&self.music_dir) {
+        self.source_picker.items.clear();
+
+        // Add ".." entry if not at root
+        if self.source_picker.can_go_up() {
+            self.source_picker.items.push(SourcePickerItem {
+                name: "..".to_string(),
+                path: self.source_picker.current_dir.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| self.source_picker.root_dir.clone()),
+                is_socket: false,
+                is_pcm_fifo: false,
+                is_udp: false,
+                is_dir: true,
+                camelot_key: None,
+            });
+        }
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(&self.source_picker.current_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_file() {
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                // Skip hidden files/folders
+                if name.starts_with('.') {
+                    continue;
+                }
+
+                if path.is_dir() {
+                    dirs.push(SourcePickerItem {
+                        name: format!("{}/", name),
+                        path,
+                        is_socket: false,
+                        is_pcm_fifo: false,
+                        is_udp: false,
+                        is_dir: true,
+                        camelot_key: None,
+                    });
+                } else if path.is_file() {
                     if let Some(ext) = path.extension() {
                         let ext_lower = ext.to_string_lossy().to_lowercase();
                         if extensions.contains(&ext_lower.as_str()) {
-                            let name = path.file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            self.source_picker.items.push(SourcePickerItem {
+                            files.push(SourcePickerItem {
                                 name,
                                 path,
                                 is_socket: false,
@@ -5288,8 +5370,13 @@ impl App {
             }
         }
 
-        // Sort alphabetically
-        self.source_picker.items.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        // Sort directories and files alphabetically
+        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        // Add directories first, then files
+        self.source_picker.items.extend(dirs);
+        self.source_picker.items.extend(files);
     }
 
     fn scan_supercollider_sources(&mut self) {
@@ -5413,6 +5500,14 @@ impl App {
         self.source_picker.current_dir = path;
         self.source_picker.query.clear();
         self.scan_sample_files();
+    }
+
+    /// Navigate into a directory in source picker
+    fn enter_source_directory(&mut self, path: PathBuf) {
+        self.source_picker.current_dir = path;
+        self.source_picker.query.clear();
+        self.scan_audio_files();
+        self.source_picker.filter();
     }
 
     /// Preview (play) the currently selected sample without assigning it
@@ -5584,12 +5679,31 @@ impl App {
                     self.source_picker.move_up();
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
-                    self.source_picker.prev_tab();
-                    self.scan_sources();
+                    if self.source_picker.tab == SourcePickerTab::AudioFiles
+                        && self.source_picker.can_go_up()
+                    {
+                        if let Some(parent) = self.source_picker.current_dir.parent() {
+                            self.enter_source_directory(parent.to_path_buf());
+                        }
+                    } else {
+                        self.source_picker.prev_tab();
+                        self.scan_sources();
+                    }
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
-                    self.source_picker.next_tab();
-                    self.scan_sources();
+                    if self.source_picker.tab == SourcePickerTab::AudioFiles {
+                        if let Some(item) = self.source_picker.selected_item().cloned() {
+                            if item.is_dir {
+                                self.enter_source_directory(item.path);
+                            } else {
+                                self.source_picker.next_tab();
+                                self.scan_sources();
+                            }
+                        }
+                    } else {
+                        self.source_picker.next_tab();
+                        self.scan_sources();
+                    }
                 }
                 KeyCode::Char('g') => {
                     self.source_picker.selected = 0;
@@ -5610,9 +5724,15 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let AppMode::SourcePicker(deck) = self.mode {
-                        self.select_source_for_deck(deck);
+                        if let Some(item) = self.source_picker.selected_item().cloned() {
+                            if item.is_dir {
+                                self.enter_source_directory(item.path);
+                            } else {
+                                self.select_source_for_deck(deck);
+                                self.mode = AppMode::PaneSelect;
+                            }
+                        }
                     }
-                    self.mode = AppMode::PaneSelect;
                 }
                 _ => {}
             },
@@ -5622,9 +5742,15 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if let AppMode::SourcePicker(deck) = self.mode {
-                        self.select_source_for_deck(deck);
+                        if let Some(item) = self.source_picker.selected_item().cloned() {
+                            if item.is_dir {
+                                self.enter_source_directory(item.path);
+                            } else {
+                                self.select_source_for_deck(deck);
+                                self.mode = AppMode::PaneSelect;
+                            }
+                        }
                     }
-                    self.mode = AppMode::PaneSelect;
                 }
                 KeyCode::Backspace => {
                     self.source_picker.query.pop();
@@ -6050,11 +6176,36 @@ impl App {
                     Deck::C => self.sc_deck_c = Some(client),
                 }
             } else {
-                // Audio file - would launch MPV with socket
-                // TODO: Spawn mpv --input-ipc-server=/tmp/mpv-deck-{a|b}.sock <file>
+                // Audio file — load directly into the Rust audio engine
+                let path_str = item.path.to_string_lossy().to_string();
                 if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
-                    channel.name = item.name;
+                    channel.name = item.name.clone();
+                    channel.connected = true;
+                    channel.playing = true;
                     channel.uses_supercollider = false;
+                    channel.source_id = Some(path_str.clone());
+                }
+                if let Some(ref engine) = self.audio_engine {
+                    engine.load_file(channel_idx, path_str.clone());
+                }
+                // Trigger BPM+key analysis
+                if item.path.exists() {
+                    let pending = self.pending_bpm.clone();
+                    let on_result = Arc::new(Mutex::new(move |result: Result<crate::audio::BpmResult, String>| {
+                        match result {
+                            Ok(r) => {
+                                if let Ok(mut queue) = pending.lock() {
+                                    queue.push((channel_idx, r.bpm, r.key));
+                                }
+                            }
+                            Err(e) => {
+                                if let Ok(mut queue) = pending.lock() {
+                                    queue.push((usize::MAX, 0.0, Some(e)));
+                                }
+                            }
+                        }
+                    }));
+                    BpmAnalyzer::analyze_file(&item.path, on_result);
                 }
             }
         }
@@ -6237,9 +6388,35 @@ impl App {
 
             self.sc_deck_c = Some(client);
         } else {
+            // Audio file — load directly into the Rust audio engine
+            let path_str = item.path.to_string_lossy().to_string();
             self.mixer.cue_channel.name = item.name.clone();
-            self.mixer.cue_channel.source_id = None;
+            self.mixer.cue_channel.connected = true;
+            self.mixer.cue_channel.playing = true;
             self.mixer.cue_channel.uses_supercollider = false;
+            self.mixer.cue_channel.source_id = Some(path_str.clone());
+            if let Some(ref engine) = self.audio_engine {
+                engine.load_file(channel_idx, path_str);
+            }
+            // Trigger BPM+key analysis
+            if item.path.exists() {
+                let pending = self.pending_bpm.clone();
+                let on_result = Arc::new(Mutex::new(move |result: Result<crate::audio::BpmResult, String>| {
+                    match result {
+                        Ok(r) => {
+                            if let Ok(mut queue) = pending.lock() {
+                                queue.push((channel_idx, r.bpm, r.key));
+                            }
+                        }
+                        Err(e) => {
+                            if let Ok(mut queue) = pending.lock() {
+                                queue.push((usize::MAX, 0.0, Some(e)));
+                            }
+                        }
+                    }
+                }));
+                BpmAnalyzer::analyze_file(&item.path, on_result);
+            }
         }
     }
 
