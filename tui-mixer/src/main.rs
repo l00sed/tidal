@@ -26,8 +26,8 @@ use ui::MixerView;
 
 fn main() -> Result<()> {
     // Initialize debug logging. When DEBUG=1, tracing output is routed to
-    // the in-app debug pane and stderr is redirected to /dev/null so it
-    // never corrupts the TUI.
+    // the in-app debug pane and stderr is redirected to a log file so
+    // crash diagnostics are preserved.
     debug_log::init_logging();
 
     // Parse command line arguments for MPV socket paths
@@ -36,22 +36,21 @@ fn main() -> Result<()> {
 
     // Create application
     let mut app = App::new(2); // Start with 2 channels
-    
+
     // Set music directory if provided
     if let Some(dir) = cli.music_dir {
         app.set_music_dir(dir);
     }
-    
+
     // Set samples directory if provided
     if let Some(dir) = cli.samples_dir {
         app.set_samples_dir(dir);
     }
 
-    // Setup terminal
-    enable_raw_mode()?;
-
     // Initialize Rust-native audio engine before configuring sources,
-    // so engine.load_file() works during auto-load
+    // so engine.load_file() works during auto-load.
+    // This happens BEFORE terminal setup so ALSA/PipeWire errors are
+    // visible if the TUI never starts.
     match crate::audio::engine::AudioEngine::new() {
         Ok(engine) => {
             app.audio_engine = Some(engine);
@@ -70,6 +69,10 @@ fn main() -> Result<()> {
             app.configure_sources(discovered);
         }
     }
+
+    // Setup terminal AFTER audio init — if audio init panics or fails,
+    // the terminal stays in normal mode so error output is visible.
+    enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
@@ -176,7 +179,7 @@ fn parse_args(args: &[String]) -> CliArgs {
 fn discover_sources() -> Vec<(String, String)> {
     let mut discovery = SourceDiscovery::new();
     let sources = discovery.discover_all();
-    
+
     sources
         .iter()
         .filter(|s| s.source_type == SourceType::Mpv)  // Start with MPV only
@@ -186,24 +189,26 @@ fn discover_sources() -> Vec<(String, String)> {
 
 fn print_help() {
     println!(
-        r#"Tidal Mixer - TUI Audio Mixer
+        r#"Termixer - Terminal DJ Mixer
 
 USAGE:
-    tidal-mixer [OPTIONS]
+    termixer [OPTIONS]
 
 OPTIONS:
     -s, --source NAME SOCKET    Add an audio source (MPV IPC socket)
     -m, --music-dir PATH        Directory for audio file browser (default: ~/Music)
-    -S, --samples-dir PATH      Directory for sample pad files (default: ~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples)
+    -S, --samples-dir PATH      Directory for sample pad files
+                                (default: macOS ~/Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples,
+                                          Linux ~/.local/share/SuperCollider/downloaded-quarks/Dirt-Samples)
     -d, --discover              Auto-discover audio sources (default if no -s)
     -h, --help                  Show this help message
 
 EXAMPLES:
     # Start with two MPV instances
-    tidal-mixer -s "Music" /tmp/mpv-music.sock -s "Effects" /tmp/mpv-fx.sock
-    
+    termixer -s "Music" /tmp/mpv-music.sock -s "Effects" /tmp/mpv-fx.sock
+
     # Start with music and samples directories
-    tidal-mixer -m ~/Music -S ~/Samples
+    termixer -m ~/Music -S ~/Samples
 
     # Route MPV through tui-mixer (stable socket/fifo names):
     TUI_MIXER_ROUTE=1 mpv \
@@ -246,7 +251,7 @@ MOUSE:
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> where <B as Backend>::Error: Send + Sync + 'static {
     let mut frame_counter: u8 = 0;
     let mut next_tick = Instant::now() + app.tick_rate;
-    
+
     loop {
         // Update terminal dimensions for scroll calculations
         let terminal_size = terminal.size()?;
@@ -260,11 +265,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             let pad_config = app.mode == app::AppMode::SamplePadConfig;
             let confirm_action = if let app::AppMode::ConfirmAction(a) = app.mode { Some(a) } else { None };
             let confirm_selected = app.confirm_selected;
-            
+
             // Bind device lists to extend lifetime
             let master_devices = app.master_output.devices();
             let cue_devices = app.cue_output.devices();
-            
+
             let play_steps: Vec<usize> = app.sequence_state.sequences.iter().map(|s| s.current_step).collect();
             let mut view = MixerView::new(&app.mixer, &app.sample_pads)
                 .show_help(app.show_help())
@@ -293,17 +298,17 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .debug_log(&app.debug_log)
                 .debug_scroll(app.debug_scroll)
                 .samples_dir(Some(&app.samples_dir));
-            
+
             // Add source picker if active
             if let app::AppMode::SourcePicker(deck) = app.mode {
                 view = view.source_picker(deck, &app.source_picker);
             }
-            
+
             // Add sample picker if active
             if let app::AppMode::SamplePicker(pad_idx) = app.mode {
                 view = view.sample_picker(pad_idx, &app.source_picker);
             }
-            
+
             frame.render_widget(view, frame.area());
 
             // Keep mixer window in sync with viewport (handles resize)

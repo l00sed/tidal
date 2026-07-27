@@ -1504,7 +1504,14 @@ impl App {
 
         // Default samples directory: SuperCollider Dirt-Samples
         let default_samples_dir = std::env::var("HOME")
-            .map(|home| PathBuf::from(home).join("Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples"))
+            .map(|home| {
+                let base = PathBuf::from(&home);
+                if cfg!(target_os = "linux") {
+                    base.join(".local/share/SuperCollider/downloaded-quarks/Dirt-Samples")
+                } else {
+                    base.join("Library/Application Support/SuperCollider/downloaded-quarks/Dirt-Samples")
+                }
+            })
             .unwrap_or_else(|_| cwd.clone());
 
         // Initialize sample engine for instant playback
@@ -4409,16 +4416,19 @@ impl App {
         }
     }
 
-    /// Play a sample using cached audio engine (instant playback)
+    /// Play a sample using the audio engine's pad voice system (routes through cpal output)
     fn play_sample(&mut self, pad_idx: usize) {
         if let Some(pad) = self.sample_pads.pads.get(pad_idx) {
-            if let Some(sample_path) = &pad.sample_path {
-                if sample_path.exists() {
-                    let config = pad.config.clone();
-                    if let Some(ref mut engine) = self.sample_engine {
-                        let _ = engine.play_with_config(sample_path, Some(&config));
-                    } else {
-                        // Fallback to mpv if sample engine unavailable
+            if pad.sample_path.is_some() {
+                if let Some(ref engine) = self.audio_engine {
+                    if pad_idx < engine.pad_triggers.len() {
+                        engine.pad_triggers[pad_idx].store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                }
+                // Fallback to mpv if audio engine unavailable
+                if let Some(sample_path) = &pad.sample_path {
+                    if sample_path.exists() {
                         let _ = std::process::Command::new("mpv")
                             .arg("--no-video")
                             .arg("--really-quiet")
