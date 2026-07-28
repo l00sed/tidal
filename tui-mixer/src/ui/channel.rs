@@ -156,7 +156,7 @@ impl<'a> Widget for ChannelStrip<'a> {
 
         // Minimalist layout
         let has_deck = self.deck_label.is_some();
-        
+
         let constraints = if has_deck {
             vec![
                 Constraint::Length(1),  // Scrubber (hidden until track loaded)
@@ -368,7 +368,7 @@ impl<'a> ChannelStrip<'a> {
         }
         let style = Style::default().fg(SEPARATOR);
         let y = area.y + area.height.saturating_sub(1);
-        
+
         // Plain horizontal line - no junction characters
         for x in area.x..area.x + area.width {
             buf.set_string(x, y, "─", style);
@@ -382,7 +382,7 @@ impl<'a> ChannelStrip<'a> {
         }
         let style = Style::default().fg(SEPARATOR);
         let y = area.y + area.height.saturating_sub(1);
-        
+
         for x in area.x..area.x + area.width {
             if x == junction_x {
                 buf.set_string(x, y, junction_char, style);
@@ -428,7 +428,7 @@ impl<'a> ChannelStrip<'a> {
         } else {
             Style::default().fg(TEXT_GHOST)
         };
-        
+
         // Left label
         buf.set_string(area.x, y, "L", label_style);
 
@@ -439,25 +439,25 @@ impl<'a> ChannelStrip<'a> {
             let center = bar_width / 2;
             let normalized = (value + 1.0) / 2.0; // -1..+1 -> 0..1
             let fill_pos = (normalized * bar_width as f32) as usize;
-            
+
             for i in 0..bar_width {
                 let ch = if i == center { '│' } else { '─' };
-                
+
                 let color = if editing || selected {
                     if (fill_pos > center && i > center && i <= fill_pos) ||
                        (fill_pos < center && i < center && i >= fill_pos) {
                         if editing {
                             TEXT_BRIGHT
-                        } else if fill_pos > center { 
-                            STATUS_PLAYING 
-                        } else { 
-                            STATUS_MUTED 
+                        } else if fill_pos > center {
+                            STATUS_PLAYING
+                        } else {
+                            STATUS_MUTED
                         }
                     } else if editing { TEXT_DIM } else { METER_TRACK }
                 } else {
                     METER_TRACK
                 };
-                
+
                 buf.set_string(bar_start + i as u16, y, ch.to_string(), Style::default().fg(color));
             }
         }
@@ -465,7 +465,7 @@ impl<'a> ChannelStrip<'a> {
         // Right label
         buf.set_string(area.x + area.width - 1, y, "R", label_style);
     }
-    
+
     /// Render the EQ section with vertical bars (H/M/L) and filter/LFO controls
     /// Returns the x-position of the vertical separator for junction drawing
     fn render_eq_section(&self, area: Rect, buf: &mut Buffer) -> Vec<u16> {
@@ -477,7 +477,7 @@ impl<'a> ChannelStrip<'a> {
         // Remaining space goes to filter column
         let eq_total = 5u16; // bar gap bar gap bar
         let filter_width = area.width.saturating_sub(eq_total + 1); // +1 for filter separator
-        
+
         let sections = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -670,8 +670,8 @@ impl<'a> ChannelStrip<'a> {
             buf.set_string(knob_x, knob_y, knob_char, knob_style);
         }
     }
-    
-    
+
+
     /// Render scrub slider showing elapsed/total time with position bar
     fn render_scrub_bar(&self, area: Rect, buf: &mut Buffer, selected: bool) {
         if area.width < 4 || area.height < 1 {
@@ -737,14 +737,14 @@ impl<'a> ChannelStrip<'a> {
 
         // Center each letter within its half (with 1-cell padding on each side)
         let m_x = area.x + 1 + (left_w - 2) / 2;
-        
+
         // For CUE deck, right side shows "-> A" instead of "S"
         let (right_label, right_control, right_active) = if is_cue {
             ("-> A", ChannelControl::CueSendToA, false)
         } else {
             ("S", ChannelControl::Solo, self.channel.solo)
         };
-        
+
         // Calculate position for right label
         let s_x = if is_cue {
             // "-> A" is 4 chars, shift left by 1 (one less padding on left)
@@ -753,7 +753,7 @@ impl<'a> ChannelStrip<'a> {
             // "S" is 1 char, centered
             sep_x + 2 + (right_w - 2) / 2
         };
-        
+
         let sep_style = Style::default().fg(SEPARATOR);
         // ┬ on the separator line above, connecting downward into the M|S split
         // │ on the button row between M and S/-> A
@@ -762,7 +762,7 @@ impl<'a> ChannelStrip<'a> {
             buf.set_string(sep_x, area.y - 1, "┬", sep_style);
         }
         buf.set_string(sep_x, area.y, "│", sep_style);
-        
+
         // Highlight background for active toggles (with 1-cell padding on edges)
         let active_m_bg = if self.channel.muted { Some(STATUS_MUTED) } else { None };
         let active_s_bg = if right_active { Some(BORDER_ACTIVE) } else { None };
@@ -779,7 +779,7 @@ impl<'a> ChannelStrip<'a> {
                 buf.set_string(x, area.y, " ", Style::default().bg(bg));
             }
         }
-        
+
         // M - Mute
         let m_style = if self.channel.muted {
             Style::default().fg(Color::Black).bg(STATUS_MUTED)
@@ -961,10 +961,10 @@ impl<'a> Widget for MasterStrip<'a> {
 
         // Border: yellow if pane selected, dim otherwise
         let border_style = if self.pane_selected {
-            if self.selected { 
-                Style::default().fg(BORDER_ACTIVE) 
-            } else { 
-                Style::default().fg(BORDER_NAVIGATED) 
+            if self.selected {
+                Style::default().fg(BORDER_ACTIVE)
+            } else {
+                Style::default().fg(BORDER_NAVIGATED)
             }
         } else {
             Style::default().fg(BTN_DM_PURPLE)
@@ -1075,7 +1075,7 @@ impl<'a> Widget for MasterStrip<'a> {
         }
 
         // Center: play / pause icon
-        let center_char = if playing { "▶" } else { "⏸" };
+        let center_char = if playing { "▶" } else { "󰏤" };
         let center_style = if pp_selected {
             Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
         } else if playing {

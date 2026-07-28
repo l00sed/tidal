@@ -76,7 +76,7 @@ impl Widget for Fader {
             if y >= track_top && y <= track_bottom {
                 let is_zero_db = (pos - 0.5).abs() < 0.01;  // 0dB at center (0.5)
                 let is_top = (pos - 1.0).abs() < 0.01;
-                
+
                 let (ch, style) = if is_zero_db {
                     // 0dB mark: bright white, wider
                     ("─", Style::default().fg(Color::White))
@@ -85,7 +85,7 @@ impl Widget for Fader {
                 } else {
                     ("─", track_style)
                 };
-                
+
                 // Draw left tick
                 if track_x > area.x {
                     buf.set_string(track_x - 1, y, ch, style);
@@ -94,7 +94,7 @@ impl Widget for Fader {
                         buf.set_string(track_x - 2, y, ch, style);
                     }
                 }
-                
+
                 // Draw right tick
                 if track_x + 1 < area.x + area.width {
                     buf.set_string(track_x + 1, y, ch, style);
@@ -215,17 +215,17 @@ impl DeckIndicator {
         self.color = color;
         self
     }
-    
+
     pub fn source_name(mut self, name: Option<String>) -> Self {
         self.source_name = name;
         self
     }
-    
+
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
     }
-    
+
     pub fn connected(mut self, connected: bool) -> Self {
         self.connected = connected;
         self
@@ -260,7 +260,7 @@ impl Widget for DeckIndicator {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width < 5 || area.height < 3 {
             // Ultra-minimal: just show play state
-            let symbol = if self.playing { "▶" } else { "⏸" };
+            let symbol = if self.playing { "▶" } else { "󰏤" };
             let style = if self.playing {
                 Style::default().fg(self.color)
             } else {
@@ -275,7 +275,7 @@ impl Widget for DeckIndicator {
 
         // Futuristic ring animation - 8 segments around center
         // When playing, one segment is highlighted and rotates
-        
+
         // Calculate which segment to highlight based on frame and speed
         let highlight_pos = if self.playing {
             let base = self.frame as f32;
@@ -319,7 +319,7 @@ impl Widget for DeckIndicator {
         for (i, (dx, dy, ch)) in positions.iter().enumerate() {
             let x = (cx as i16 + dx) as u16;
             let y = (cy as i16 + dy) as u16;
-            
+
             let style = if self.selected {
                 // When selected, show ring in yellow
                 if self.playing && i == highlight_pos {
@@ -339,7 +339,7 @@ impl Widget for DeckIndicator {
             } else {
                 dim_style
             };
-            
+
             buf.set_string(x, y, ch, style);
         }
 
@@ -353,13 +353,13 @@ impl Widget for DeckIndicator {
             } else if self.playing {
                 "▶"
             } else {
-                "⏸"
+                "󰏤"
             }
         } else {
             // No source - show deck label dimmed
             &self.label.to_string()
         };
-        
+
         let center_style = if self.selected {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
         } else if self.playing {
@@ -412,7 +412,7 @@ impl Widget for DeckIndicator {
             let speed_style = Style::default().fg(Color::Rgb(80, 80, 80));
             buf.set_string(speed_x, speed_y, &speed_str, speed_style);
         }
-        
+
         // Source name below ring (1 row below ring bottom, leaving last row for separator)
         if let Some(ref name) = self.source_name {
             use unicode_width::UnicodeWidthChar;
@@ -516,7 +516,7 @@ impl Widget for Crossfader {
         // Draw track
         let track_style = Style::default().fg(METER_TRACK);
         buf.set_string(track_left, track_y, "─".repeat(track_width as usize), track_style);
-        
+
         // Draw end caps (junction characters)
         buf.set_string(track_left - 1, track_y, "├", track_style);
         buf.set_string(track_right, track_y, "┤", track_style);
@@ -528,7 +528,7 @@ impl Widget for Crossfader {
             if x >= track_left && x <= track_right {
                 let is_center = pos.abs() < 0.01;  // Center position (0.0)
                 let is_end = (pos + 1.0).abs() < 0.01 || (pos - 1.0).abs() < 0.01;  // -1.0 or 1.0
-                
+
                 // Skip the left end tick (would be at track_left, overlapping junction)
                 // Instead draw it one position to the right
                 let adjusted_x = if (pos + 1.0).abs() < 0.01 {
@@ -536,7 +536,7 @@ impl Widget for Crossfader {
                 } else {
                     x
                 };
-                
+
                 if is_center {
                     // Center: 3 characters tall (above, on, below) in bright white
                     let center_style = Style::default().fg(Color::White);

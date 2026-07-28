@@ -318,7 +318,7 @@ impl<'a> Widget for SequenceTopBar<'a> {
         let pp_is_target = self.selected && self.selected_control == GlobalSequenceControl::Mute;
         let pp_active = pp_is_target && self.editing;
         let (mute_label, mute_fg) = if self.global.mute {
-            ("⏸", if pp_active { Color::Red } else if pp_is_target { Color::Red } else { Color::DarkGray })
+            ("󰏤", if pp_active { Color::Red } else if pp_is_target { Color::Red } else { Color::DarkGray })
         } else {
             ("▶", if pp_active { TEXT_EDITING } else if pp_is_target { TEXT_BRIGHT } else { TEXT_DIM })
         };

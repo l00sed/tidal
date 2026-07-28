@@ -6212,6 +6212,10 @@ impl App {
             } else {
                 // Audio file — load directly into the Rust audio engine
                 let path_str = item.path.to_string_lossy().to_string();
+                self.log_debug(format!(
+                    "Audio file branch: ch{} path='{}' exists={}",
+                    channel_idx, path_str, item.path.exists()
+                ));
                 if let Some(channel) = self.mixer.channels.get_mut(channel_idx) {
                     channel.name = item.name.clone();
                     channel.connected = true;
@@ -6221,11 +6225,24 @@ impl App {
                 }
                 if let Some(ref engine) = self.audio_engine {
                     engine.load_file(channel_idx, path_str.clone());
+                    self.log_debug(format!(
+                        "Audio file loaded: ch{} has_decoder={} duration={:.1}",
+                        channel_idx,
+                        engine.has_decoder(channel_idx),
+                        engine.duration[channel_idx].load()
+                    ));
+                } else {
+                    self.log_debug(format!("Audio file: no audio_engine for ch{}", channel_idx));
                 }
                 // Sync crossfader/volume state to engine for new source
                 self.sync_volume_to_mpv(channel_idx);
                 self.sync_mute_to_mpv(channel_idx);
                 self.sync_playpause_to_mpv(channel_idx);
+                self.log_debug(format!(
+                    "Audio file sync done: ch{} playing={}",
+                    channel_idx,
+                    self.mixer.get_channel(channel_idx).map(|c| c.playing).unwrap_or(false)
+                ));
                 // Trigger BPM+key analysis
                 if item.path.exists() {
                     let pending = self.pending_bpm.clone();

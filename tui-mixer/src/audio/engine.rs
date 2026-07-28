@@ -954,19 +954,24 @@ impl AudioEngine {
             }
 
             // Built-in audio codec — highest priority
+            // macOS: "MacBook Pro Speakers", "Mac mini Speakers", etc.
             // Steam Deck: sof-nau8821-max
             // Generic: realtek, alc, hda-intel analog, etc.
-            if lower.starts_with("sof-")
+            if lower.contains("macbook")
+                || lower.contains("mac mini")
+                || lower.contains("imac")
+                || lower.starts_with("sof-")
                 || lower.starts_with("sof_")
                 || lower.contains("realtek")
                 || lower.contains("nau8821")
                 || lower.contains("alc8")
                 || lower.contains("alc2")
-                || lower.contains("hda-intel")
+                || lower.contains("built-in")
+                || (lower.contains("hda-intel")
                     && !lower.contains("hdmi")
-                    && !lower.contains("displayport")
-                || lower.contains("analog")
-                    && !lower.contains("hdmi")
+                    && !lower.contains("displayport"))
+                || (lower.contains("analog")
+                    && !lower.contains("hdmi"))
             {
                 return 100;
             }
@@ -982,6 +987,12 @@ impl AudioEngine {
                 return 80;
             }
 
+            // Thunderbolt audio
+            if lower.contains("thunderbolt") || lower.contains("caldigit")
+            {
+                return 75;
+            }
+
             // Bluetooth / A2DP
             if lower.contains("bluetooth")
                 || lower.contains("a2dp")
@@ -990,10 +1001,19 @@ impl AudioEngine {
                 return 70;
             }
 
-            // HDMI / DisplayPort — often no speakers
+            // HDMI / DisplayPort / external monitors — often no speakers
             if lower.contains("hdmi")
                 || lower.contains("displayport")
                 || lower.contains("dp-")
+                || lower.starts_with("phl ")    // Philips monitors
+                || lower.starts_with("dell ")   // Dell monitors
+                || lower.starts_with("lg ")     // LG monitors
+                || lower.starts_with("samsung ") // Samsung monitors
+                || lower.starts_with("benq ")   // BenQ monitors
+                || lower.starts_with("asus ")   // ASUS monitors
+                || lower.starts_with("acer ")   // Acer monitors
+                || lower.starts_with("hp ")     // HP monitors
+                || lower.starts_with("viewsonic") // ViewSonic monitors
             {
                 return 40;
             }
@@ -1137,10 +1157,17 @@ impl AudioEngine {
             let cb_pad_triggers = Arc::clone(&pad_triggers);
 
             // Audio thread owns these outright — moved into the closure.
-            let mut ctrl_output = ctrl_output_slot.take()
-                .ok_or_else(|| "control output already consumed".to_string())?;
-            let mut cmd_consumer = cmd_consumer_slot.take()
-                .ok_or_else(|| "cmd consumer already consumed".to_string())?;
+            // If a previous device's build_output_stream failed, the state was
+            // consumed by its closure. Detect that and skip remaining devices.
+            let Some(mut ctrl_output) = ctrl_output_slot.take() else {
+                last_err = "internal state consumed by previous stream build failure".to_string();
+                continue;
+            };
+            let Some(mut cmd_consumer) = cmd_consumer_slot.take() else {
+                ctrl_output_slot = Some(ctrl_output);
+                last_err = "internal state consumed by previous stream build failure".to_string();
+                continue;
+            };
             // rtrb consumers for FIFO capture — moved into the closure.
             let mut cap_consumers: [Option<rtrb::Consumer<f32>>; 3] = [
                 capture_consumers[0].take(),
@@ -1299,7 +1326,7 @@ impl AudioEngine {
                         Err(e) => {
                             // Stream built but couldn't play — the captured state
                             // (ctrl_output, cmd_consumer) was consumed by the closure,
-                            // so we cannot retry another device. Fail fast.
+                            // so the next iteration will detect missing state and skip.
                             let hint = if has_pipewire {
                                 " On PipeWire/Steam Deck, try: \
                                  `pw-dump | jq .info.name` to check device names, \
@@ -1307,7 +1334,9 @@ impl AudioEngine {
                             } else {
                                 ""
                             };
-                            return Err(format!("Device '{}': play failed: {}{}", name, e, hint));
+                            last_err = format!("Device '{}': play failed: {}{}", name, e, hint);
+                            eprintln!("Audio: {}", last_err);
+                            continue;
                         }
                     }
                 }
@@ -1318,7 +1347,9 @@ impl AudioEngine {
                     } else {
                         ""
                     };
-                    return Err(format!("Device '{}': build_output_stream failed: {}{}", name, e, hint));
+                    last_err = format!("Device '{}': build_output_stream failed: {}{}", name, e, hint);
+                    eprintln!("Audio: {}", last_err);
+                    continue;
                 }
             }
         }
@@ -2301,7 +2332,7 @@ fn audio_callback(
     for d in 0..3 {
         let (pl, pr, rl, rr) = dm[d].read();
         meters[d].store(pl, pr, rl, rr);
-        if deck_has_any_data[d] {
+        if deck_has_any_data[d] && ctrl.decks[d].playing {
             let delta = (frames as f64) / (sample_rate as f64);
             let rate = ctrl.decks[d].playback_rate.clamp(0.1, 4.0) as f64;
             let dur = duration[d].load();
