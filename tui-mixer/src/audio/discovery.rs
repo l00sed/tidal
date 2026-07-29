@@ -137,8 +137,8 @@ impl SourceDiscovery {
     /// Discover SuperCollider servers
     fn discover_supercollider(&mut self) {
         // Check if scsynth is running
-        if let Ok(output) = Command::new("pgrep").arg("-x").arg("scsynth").output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("pgrep").arg("-x").arg("scsynth").output()
+            && output.status.success() {
                 // scsynth typically listens on UDP 57110
                 self.sources.push(DiscoveredSource {
                     name: "SuperCollider (scsynth)".to_string(),
@@ -146,29 +146,26 @@ impl SourceDiscovery {
                     identifier: "udp://127.0.0.1:57110".to_string(),
                 });
             }
-        }
 
         // Check for sclang (might have custom server)
-        if let Ok(output) = Command::new("pgrep").arg("-x").arg("sclang").output() {
-            if output.status.success() && !self.sources.iter().any(|s| s.source_type == SourceType::SuperCollider) {
+        if let Ok(output) = Command::new("pgrep").arg("-x").arg("sclang").output()
+            && output.status.success() && !self.sources.iter().any(|s| s.source_type == SourceType::SuperCollider) {
                 self.sources.push(DiscoveredSource {
                     name: "SuperCollider (sclang)".to_string(),
                     source_type: SourceType::SuperCollider,
                     identifier: "sclang".to_string(),
                 });
             }
-        }
     }
 
     /// Discover PulseAudio sink inputs
     fn discover_pulseaudio(&mut self) {
         // Use pactl to list sink inputs
-        if let Ok(output) = Command::new("pactl").arg("list").arg("sink-inputs").output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("pactl").arg("list").arg("sink-inputs").output()
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 self.parse_pulseaudio_output(&stdout);
             }
-        }
     }
 
     fn parse_pulseaudio_output(&mut self, output: &str) {
@@ -211,12 +208,11 @@ impl SourceDiscovery {
     /// Discover PipeWire nodes
     fn discover_pipewire(&mut self) {
         // Use pw-cli to list nodes
-        if let Ok(output) = Command::new("pw-cli").arg("list-objects").output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("pw-cli").arg("list-objects").output()
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 self.parse_pipewire_output(&stdout);
             }
-        }
     }
 
     fn parse_pipewire_output(&mut self, output: &str) {
@@ -251,12 +247,11 @@ impl SourceDiscovery {
     /// Discover JACK connections
     fn discover_jack(&mut self) {
         // Check if JACK is running
-        if let Ok(output) = Command::new("jack_lsp").output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("jack_lsp").output()
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 self.parse_jack_output(&stdout);
             }
-        }
     }
 
     fn parse_jack_output(&mut self, output: &str) {
@@ -286,8 +281,8 @@ impl SourceDiscovery {
     /// Discover microphones/input devices
     fn discover_microphones(&mut self) {
         // Try PulseAudio sources first
-        if let Ok(output) = Command::new("pactl").arg("list").arg("sources").arg("short").output() {
-            if output.status.success() {
+        if let Ok(output) = Command::new("pactl").arg("list").arg("sources").arg("short").output()
+            && output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
                     let parts: Vec<&str> = line.split('\t').collect();
@@ -306,7 +301,6 @@ impl SourceDiscovery {
                     }
                 }
             }
-        }
 
         // Fallback: check /proc/asound for ALSA devices (Linux)
         #[cfg(target_os = "linux")]
@@ -336,26 +330,22 @@ impl SourceDiscovery {
                 .arg("SPAudioDataType")
                 .arg("-json")
                 .output()
-            {
-                if output.status.success() {
+                && output.status.success() {
                     // Parse JSON output for input devices
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                        if let Some(audio_data) = json.get("SPAudioDataType").and_then(|v| v.as_array()) {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                        && let Some(audio_data) = json.get("SPAudioDataType").and_then(|v| v.as_array()) {
                             for device in audio_data {
-                                if let Some(name) = device.get("_name").and_then(|v| v.as_str()) {
-                                    if device.get("coreaudio_input_source").is_some() {
+                                if let Some(name) = device.get("_name").and_then(|v| v.as_str())
+                                    && device.get("coreaudio_input_source").is_some() {
                                         self.sources.push(DiscoveredSource {
                                             name: name.to_string(),
                                             source_type: SourceType::Microphone,
                                             identifier: format!("coreaudio:{}", name),
                                         });
                                     }
-                                }
                             }
                         }
-                    }
                 }
-            }
         }
     }
 }

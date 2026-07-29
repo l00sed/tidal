@@ -3,6 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use std::path::PathBuf;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -12,7 +13,9 @@ use std::time::{Duration, Instant};
 use crate::audio::{AudioSource, AudioSourceManager, AudioOutput, BpmAnalyzer, MpvClient, SampleEngine, SuperColliderClient};
 use crate::audio::bpm::{parse_camelot, parse_key_name, pitch_class_to_camelot};
 use crate::audio::engine::AudioEngine;
-use crate::state::{ChannelControl, GlobalControl, MixerState, PadControl, SequenceState, SamplePadGrid, SendTarget, SelectionFocus};
+use crate::state::{ChannelControl, GlobalControl, MixerState, PadControl, SequenceState, SamplePadGrid, SendTarget, SelectionFocus, SessionState};
+
+type PendingBpm = Arc<Mutex<Vec<(usize, f32, Option<String>)>>>;
 
 const SC_GAIN_BOOST: f32 = 8.0;
 const SC_DEFAULT_BPM: f32 = 135.0;
@@ -95,6 +98,7 @@ pub enum SourcePickerTab {
 #[derive(Debug, Clone)]
 pub struct SourcePickerState {
     pub tab: SourcePickerTab,
+    pub tab_focused: bool,     // When true, h/l navigates tabs instead of entering dirs
     pub input_mode: PickerInputMode,
     pub query: String,
     pub items: Vec<SourcePickerItem>,
@@ -122,7 +126,8 @@ pub struct SourcePickerItem {
 impl SourcePickerState {
     pub fn new() -> Self {
         Self {
-            tab: SourcePickerTab::AudioFiles,
+            tab: SourcePickerTab::MpvSockets,
+            tab_focused: true,
             input_mode: PickerInputMode::Normal,
             query: String::new(),
             items: Vec::new(),
@@ -155,7 +160,7 @@ impl SourcePickerState {
             })
             .map(|(i, _)| i)
             .collect();
-        self.selected = 0;
+        self.selected = self.filtered.len(); // sentinel: no item selected
         self.scroll_offset = 0;
     }
 
@@ -164,22 +169,30 @@ impl SourcePickerState {
     }
 
     pub fn move_up(&mut self) {
-        if self.selected > 0 {
+        if self.filtered.is_empty() {
+            return;
+        }
+        if self.selected == 0 || self.selected >= self.filtered.len() {
+            self.selected = self.filtered.len() - 1;
+        } else {
             self.selected -= 1;
-            // Scroll up if cursor goes above visible area
-            if self.selected < self.scroll_offset {
-                self.scroll_offset = self.selected;
-            }
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
         }
     }
 
     pub fn move_down(&mut self) {
-        if self.selected + 1 < self.filtered.len() {
+        if self.filtered.is_empty() {
+            return;
+        }
+        if self.selected + 1 >= self.filtered.len() {
+            self.selected = 0;
+        } else {
             self.selected += 1;
-            // Scroll down if cursor goes below visible area
-            if self.selected >= self.scroll_offset + self.visible_height {
-                self.scroll_offset = self.selected.saturating_sub(self.visible_height - 1);
-            }
+        }
+        if self.selected >= self.scroll_offset + self.visible_height {
+            self.scroll_offset = self.selected.saturating_sub(self.visible_height - 1);
         }
     }
 
@@ -207,6 +220,7 @@ impl SourcePickerState {
             SourcePickerTab::SuperCollider => SourcePickerTab::DeckActions,
             SourcePickerTab::DeckActions => SourcePickerTab::MpvSockets,
         };
+        self.tab_focused = true;
         self.scroll_tab_into_view(60);
     }
 
@@ -218,18 +232,19 @@ impl SourcePickerState {
             SourcePickerTab::SuperCollider => SourcePickerTab::AudioFiles,
             SourcePickerTab::AudioFiles => SourcePickerTab::MpvSockets,
         };
+        self.tab_focused = true;
         self.scroll_tab_into_view(60);
     }
 
     /// Ensure the selected tab is visible within the given viewport width.
     /// Adjusts tab_scroll_offset so the active tab label fits on screen.
     fn scroll_tab_into_view(&mut self, viewport_width: usize) {
-        // Tab labels: active uses brackets (extra 2 chars), inactive padded to same width
+        // Tab labels: active uses padding (12-14 chars), inactive is just the label (12-13 chars)
         let tab_widths: Vec<(SourcePickerTab, usize)> = vec![
-            (SourcePickerTab::MpvSockets, 16),   // " [MPV Sockets] " or "  MPV Sockets  "
-            (SourcePickerTab::AudioFiles, 16),    // " [Audio Files] " or "  Audio Files  "
-            (SourcePickerTab::SuperCollider, 18), // " [SuperCollider] " or "  SuperCollider  "
-            (SourcePickerTab::DeckActions, 17),   // " [Deck Actions] " or "  Deck Actions  "
+            (SourcePickerTab::MpvSockets, 14),   // " MPV Sockets "
+            (SourcePickerTab::AudioFiles, 14),    // " Audio Files "
+            (SourcePickerTab::SuperCollider, 16), // " SuperCollider "
+            (SourcePickerTab::DeckActions, 15),   // " Deck Actions "
         ];
 
         // Compute x-position of each tab label
@@ -335,8 +350,9 @@ impl MixerLayout {
         const DECK_MAX: u16 = 21;
         const DECK_MIN: u16 = 13;
         const MASTER: u16 = 21;
-        const DJ_MIN: u16 = 25;
-        const MIN_CORE: u16 = DECK_MIN * 3 + DJ_MIN; // 64
+        // Must fit 16 sequence toggles (32 cells) + name (9 cells) + right controls (5 cells) + borders (2)
+        const DJ_MIN: u16 = 48;
+        const MIN_CORE: u16 = DECK_MIN * 3 + DJ_MIN;
 
         // Minimum widths of the 5 columns, left to right.
         let mins = [DECK_MIN, DJ_MIN, DECK_MIN, DECK_MIN, MASTER];
@@ -580,7 +596,7 @@ pub struct App {
     pub output_picker_active: bool,
     pub output_picker_target: OutputPickerTarget,
     // Debug log messages (circular buffer, last 100 messages)
-    pub debug_log: Vec<String>,
+    pub debug_log: VecDeque<String>,
     // Scroll offset for debug log (0 = latest, higher = older messages)
     pub debug_scroll: usize,
     // Confirm dialog selection (true = Y focused, false = N focused)
@@ -597,7 +613,7 @@ pub struct App {
     // Consecutive poll failures per deck (A=0, B=1, C=2) — cleared deck after threshold
     consecutive_poll_failures: [u8; 3],
     // Pending BPM+key results from background analysis (channel_idx, bpm, key)
-    pending_bpm: Arc<Mutex<Vec<(usize, f32, Option<String>)>>>,
+    pending_bpm: PendingBpm,
     // Last detected key per deck (0=A, 1=B, 2=C) for stability check on mid-track changes
     last_detected_keys: [Option<String>; 3],
 }
@@ -855,7 +871,7 @@ impl App {
             let mut connected = false;
 
             let mut duration_cache: Option<f32> = None;
-            let mut duration_tick: u32 = 0;
+            let mut prev_time_pos: Option<f32> = None;
             let mut miss_count: u32 = 0;
 
             loop {
@@ -871,10 +887,18 @@ impl App {
 
                 let time_pos = client.get_time_pos().ok();
 
-                duration_tick = duration_tick.wrapping_add(1);
-                if duration_cache.is_none() || duration_tick % 50 == 0 {
-                    duration_cache = client.get_duration().ok();
-                }
+                // Only poll duration when we don't have it yet, or when
+                // time_pos jumps backward >5s (track change / seek-to-start).
+                let need_duration = duration_cache.is_none()
+                    || matches!(
+                        (prev_time_pos, time_pos),
+                        (Some(prev), Some(cur)) if cur + 5.0 < prev
+                    );
+                if need_duration
+                    && let Ok(dur) = client.get_duration() {
+                        duration_cache = Some(dur);
+                    }
+                prev_time_pos = time_pos;
 
                 let snapshot = RouteTimelineSnapshot {
                     time_pos,
@@ -943,11 +967,10 @@ impl App {
                     }
                 });
 
-                if let Some(pair) = nav {
-                    if resp_tx.send(pair).is_err() {
+                if let Some(pair) = nav
+                    && resp_tx.send(pair).is_err() {
                         break;
                     }
-                }
             }
         });
 
@@ -1264,8 +1287,8 @@ impl App {
             }
         }
 
-        if let Some(engine) = self.audio_engine.as_ref() {
-            if engine.has_capture(ch_idx) {
+        if let Some(engine) = self.audio_engine.as_ref()
+            && engine.has_capture(ch_idx) {
                 self.route_nav_cache[ch_idx] = None;
                 self.route_nav_last_ms[ch_idx] = 0;
                 let cmd = if next { "playlist-next" } else { "playlist-prev" };
@@ -1273,18 +1296,16 @@ impl App {
                     ch_idx,
                     vec![serde_json::json!(cmd), serde_json::json!("force")],
                 );
-                if sent {
-                    if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                if sent
+                    && let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
                         if next {
                             ch.has_prev_track = true;
                         } else {
                             ch.has_next_track = true;
                         }
                     }
-                }
                 return;
             }
-        }
 
         if let Some(client) = self.mpv_for_channel(ch_idx) {
             let cmd = if next { "playlist-next" } else { "playlist-prev" };
@@ -1521,7 +1542,7 @@ impl App {
             selected_pane: SelectedPane::DeckA,
             should_quit: false,
             last_tick: Instant::now(),
-            tick_rate: Duration::from_millis(10), // 100 FPS for low-latency control updates
+            tick_rate: Duration::from_millis(20), // 50 FPS — sufficient for meter updates and control
             drag_start_y: None,
             drag_start_x: None,
             drag_start_value: None,
@@ -1588,7 +1609,7 @@ impl App {
             selected_cue_output_idx: 0,
             output_picker_active: false,
             output_picker_target: OutputPickerTarget::Master,
-            debug_log: Vec::new(),
+            debug_log: VecDeque::new(),
             debug_scroll: 0,
             confirm_selected: false,
             help_scroll: 0,
@@ -1689,8 +1710,8 @@ impl App {
                     }
                 }
 
-                if let Some(path) = file_path {
-                    if path.exists() {
+                if let Some(path) = file_path
+                    && path.exists() {
                         let pending = self.pending_bpm.clone();
                         let channel_idx = i;
                         let on_result = Arc::new(Mutex::new(move |result: Result<crate::audio::BpmResult, String>| {
@@ -1709,7 +1730,6 @@ impl App {
                         }));
                         BpmAnalyzer::analyze_file(&path, on_result);
                     }
-                }
 
                 match i {
                     0 => self.mpv_deck_a = Some(client),
@@ -1823,15 +1843,14 @@ impl App {
                 self.scan_sources();
 
                 // Restore selection if the previously selected item still exists
-                if let Some(path) = prev_path {
-                    if let Some(new_idx) = self.source_picker.items.iter().position(|item| item.path == path) {
+                if let Some(path) = prev_path
+                    && let Some(new_idx) = self.source_picker.items.iter().position(|item| item.path == path) {
                         // Re-filter to find the new index in filtered list
                         self.source_picker.filter();
                         if let Some(filtered_idx) = self.source_picker.filtered.iter().position(|&idx| idx == new_idx) {
                             self.source_picker.selected = filtered_idx;
                         }
                     }
-                }
             }
         }
 
@@ -1911,15 +1930,14 @@ impl App {
                 playing = !paused;
                 pause_ok = true;
             }
-            if !solo_active && now.saturating_sub(self.last_volume_push_ms[0]) >= cooldown_ms {
-                if let Ok(vol) = client.get_volume() {
+            if !solo_active && now.saturating_sub(self.last_volume_push_ms[0]) >= cooldown_ms
+                && let Ok(vol) = client.get_volume() {
                     let divisor = gain_a * master * 2.0 * 200.0;
                     if divisor > 0.0 {
                         fader = (vol / divisor).clamp(0.0, 1.0);
                         volume_ok = true;
                     }
                 }
-            }
             let time_pos = client.get_time_pos().ok();
             let duration = client.get_duration().ok();
             let (has_prev_track, has_next_track) = client.get_playlist_nav_available()
@@ -1949,15 +1967,14 @@ impl App {
                 playing = !paused;
                 pause_ok = true;
             }
-            if !solo_active && now.saturating_sub(self.last_volume_push_ms[1]) >= cooldown_ms {
-                if let Ok(vol) = client.get_volume() {
+            if !solo_active && now.saturating_sub(self.last_volume_push_ms[1]) >= cooldown_ms
+                && let Ok(vol) = client.get_volume() {
                     let divisor = gain_b * master * 2.0 * 200.0;
                     if divisor > 0.0 {
                         fader = (vol / divisor).clamp(0.0, 1.0);
                         volume_ok = true;
                     }
                 }
-            }
             let time_pos = client.get_time_pos().ok();
             let duration = client.get_duration().ok();
             let (has_prev_track, has_next_track) = client.get_playlist_nav_available()
@@ -1987,15 +2004,14 @@ impl App {
                 playing = !paused;
                 pause_ok = true;
             }
-            if !solo_active && now.saturating_sub(self.last_volume_push_ms[2]) >= cooldown_ms {
-                if let Ok(vol) = client.get_volume() {
+            if !solo_active && now.saturating_sub(self.last_volume_push_ms[2]) >= cooldown_ms
+                && let Ok(vol) = client.get_volume() {
                     let divisor = master * 2.0 * 200.0;
                     if divisor > 0.0 {
                         fader = (vol / divisor).clamp(0.0, 1.0);
                         volume_ok = true;
                     }
                 }
-            }
             let time_pos = client.get_time_pos().ok();
             let duration = client.get_duration().ok();
             let (has_prev_track, has_next_track) = client.get_playlist_nav_available()
@@ -2123,23 +2139,21 @@ impl App {
         if self.mpv_deck_a.is_none() {
             let pos = engine.time_pos[0].load() as f32;
             let dur = engine.duration[0].load() as f32;
-            if let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
-                if pos > 0.0 || dur > 0.0 {
+            if let Some(ch) = self.mixer.get_channel_mut(deck_a_ch)
+                && (pos > 0.0 || dur > 0.0) {
                     ch.time_pos = pos;
                     ch.duration = dur;
                 }
-            }
         }
         // Deck B
         if self.mpv_deck_b.is_none() {
             let pos = engine.time_pos[1].load() as f32;
             let dur = engine.duration[1].load() as f32;
-            if let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
-                if pos > 0.0 || dur > 0.0 {
+            if let Some(ch) = self.mixer.get_channel_mut(deck_b_ch)
+                && (pos > 0.0 || dur > 0.0) {
                     ch.time_pos = pos;
                     ch.duration = dur;
                 }
-            }
         }
         // Deck C
         if self.mpv_deck_c.is_none() {
@@ -2157,13 +2171,11 @@ impl App {
     /// active track title instead of a generic source name.
     fn refresh_deck_titles(&mut self) {
         let try_update = |client_opt: &mut Option<MpvClient>, channel_opt: Option<&mut crate::state::MixerChannel>| {
-            if let (Some(client), Some(channel)) = (client_opt.as_mut(), channel_opt) {
-                if let Some(title) = client.get_media_title() {
-                    if channel.name != title {
+            if let (Some(client), Some(channel)) = (client_opt.as_mut(), channel_opt)
+                && let Some(title) = client.get_media_title()
+                    && channel.name != title {
                         channel.name = title;
                     }
-                }
-            }
         };
 
         let deck_a_ch = self.mixer.dj.deck_a_channel;
@@ -2172,13 +2184,11 @@ impl App {
         try_update(&mut self.mpv_deck_a, self.mixer.get_channel_mut(deck_a_ch));
         try_update(&mut self.mpv_deck_b, self.mixer.get_channel_mut(deck_b_ch));
 
-        if let Some(client) = self.mpv_deck_c.as_mut() {
-            if let Some(title) = client.get_media_title() {
-                if self.mixer.cue_channel.name != title {
+        if let Some(client) = self.mpv_deck_c.as_mut()
+            && let Some(title) = client.get_media_title()
+                && self.mixer.cue_channel.name != title {
                     self.mixer.cue_channel.name = title;
                 }
-            }
-        }
     }
 
     /// Refresh route-mode label from metadata file emitted by mpv Lua.
@@ -2223,8 +2233,8 @@ impl App {
             };
 
             let mut should_sync_speed = false;
-            if let Some(meta_path) = Self::resolve_route_meta_path(source_path) {
-                if let Ok(raw) = std::fs::read_to_string(meta_path)
+            if let Some(meta_path) = Self::resolve_route_meta_path(source_path)
+                && let Ok(raw) = std::fs::read_to_string(meta_path)
                     && let Ok(data) = serde_json::from_str::<serde_json::Value>(&raw)
                     && let Some(obj) = data.as_object()
                 {
@@ -2238,23 +2248,21 @@ impl App {
                         }
                     }
                 }
-            }
 
             let Some(channel) = self.mixer.get_channel_mut(ch_idx) else {
                 continue;
             };
 
-            if let Some(label) = Self::route_meta_label(source_path) {
-                if channel.name != label {
+            if let Some(label) = Self::route_meta_label(source_path)
+                && channel.name != label {
                     channel.name = label;
                 }
-            }
 
             let mut nav_from_meta = false;
-            if let Some(meta_path) = Self::resolve_route_meta_path(source_path) {
-                if let Ok(raw) = std::fs::read_to_string(meta_path) {
-                    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&raw) {
-                        if let Some(obj) = data.as_object() {
+            if let Some(meta_path) = Self::resolve_route_meta_path(source_path)
+                && let Ok(raw) = std::fs::read_to_string(meta_path)
+                    && let Ok(data) = serde_json::from_str::<serde_json::Value>(&raw)
+                        && let Some(obj) = data.as_object() {
                             let pick_num = |keys: &[&str]| -> Option<f32> {
                                 keys.iter().find_map(|k| {
                                     let v = obj.get(*k)?;
@@ -2344,9 +2352,6 @@ impl App {
                             }
 
                         }
-                    }
-                }
-            }
 
             if !nav_from_meta
                 && let Some((has_prev, has_next)) = route_nav
@@ -2694,6 +2699,81 @@ impl App {
         }
     }
 
+    /// Open native save dialog and persist session state
+    fn save_session(&mut self) {
+        let dialog = rfd::FileDialog::new()
+            .set_title("Save Session")
+            .add_filter("JSON", &["json"])
+            .set_file_name("session.json");
+
+        if let Some(path) = dialog.save_file() {
+            let session = SessionState::from_current(&self.sample_pads.pads, &self.sequence_state);
+            if let Err(e) = session.save_to_file(&path) {
+                self.log_debug(format!("Save failed: {}", e));
+            } else {
+                self.log_debug(format!("Session saved to {}", path.display()));
+            }
+        }
+    }
+
+    /// Open native load dialog and restore session state
+    fn load_session(&mut self) {
+        let dialog = rfd::FileDialog::new()
+            .set_title("Load Session")
+            .add_filter("JSON", &["json"]);
+
+        if let Some(path) = dialog.pick_file() {
+            match SessionState::load_from_file(&path) {
+                Ok(session) => {
+                    self.sample_pads.pads = session.pads;
+                    self.sequence_state.sequences = session.sequences;
+                    // playing is #[serde(skip)] — derive from pattern
+                    for seq in &mut self.sequence_state.sequences {
+                        seq.playing = seq.any_marked();
+                    }
+                    self.sequence_state.global = session.global;
+                    self.sequence_state.selected = None;
+                    self.sequence_state.global_focused = true;
+                    self.sequence_state.scroll_offset = 0;
+
+                    // Start paused after loading a session
+                    self.mixer.master.playing = false;
+                    self.sync_all_playpause();
+
+                    // Reload pad samples into the audio engine
+                    for (pad_idx, pad) in self.sample_pads.pads.iter().enumerate() {
+                        if let Some(ref path) = pad.sample_path
+                            && path.exists() {
+                                if let Some(ref mut engine) = self.sample_engine {
+                                    let _ = engine.preload(path);
+                                }
+                                let pad_cfg = pad.config.clone();
+                                if let Some(ref engine) = self.audio_engine {
+                                    let mut loaded = false;
+                                    if let Some(ref sample_eng) = self.sample_engine
+                                        && let Some(cached) = sample_eng.cache.get(path) {
+                                            let processed = crate::audio::sample_cache::apply_dsp_to_buffer(&cached.samples, &pad_cfg);
+                                            engine.set_pad_sample(pad_idx, processed, cached.sample_rate, cached.channels);
+                                            loaded = true;
+                                        }
+                                    if !loaded
+                                        && let Ok(cached) = crate::audio::sample_cache::CachedSample::load(path) {
+                                            let processed = crate::audio::sample_cache::apply_dsp_to_buffer(&cached.samples, &pad_cfg);
+                                            engine.set_pad_sample(pad_idx, processed, cached.sample_rate, cached.channels);
+                                        }
+                                }
+                            }
+                    }
+
+                    self.log_debug(format!("Session loaded from {}", path.display()));
+                }
+                Err(e) => {
+                    self.log_debug(format!("Load failed: {}", e));
+                }
+            }
+        }
+    }
+
     /// Mode 1: Pane Select - navigate between panes with Tab/hjkl
     fn handle_pane_select_key(&mut self, key: KeyEvent) {
         match key.code {
@@ -2941,7 +3021,7 @@ impl App {
     /// Recompute the mixer window to ensure the selected pane is visible.
     /// Called after rendering to keep the window in sync with viewport size.
     pub fn ensure_mixer_pane_visible(&mut self) {
-        let viewport_w = self.term_width.max(1) as u16;
+        let viewport_w = self.term_width.max(1);
         let layout = MixerLayout::compute(
             viewport_w,
             self.selected_pane,
@@ -3050,6 +3130,12 @@ impl App {
                             crate::state::GlobalSequenceControl::Mute => {
                                 self.sequence_state.global.mute = !self.sequence_state.global.mute;
                             }
+                            crate::state::GlobalSequenceControl::Save => {
+                                self.save_session();
+                            }
+                            crate::state::GlobalSequenceControl::Load => {
+                                self.load_session();
+                            }
                         }
                         return;
                     }
@@ -3066,8 +3152,8 @@ impl App {
                             }
                             crate::state::EditTarget::Gear => {
                                 // Open pad config for this sequence's pad
-                                if let Some(seq_idx) = self.sequence_state.selected {
-                                    if let Some(seq) = self.sequence_state.sequences.get(seq_idx) {
+                                if let Some(seq_idx) = self.sequence_state.selected
+                                    && let Some(seq) = self.sequence_state.sequences.get(seq_idx) {
                                         let pad_idx = seq.pad_idx;
                                         self.selected_pad_idx = Some(pad_idx);
                                         self.sample_pads.selected_pad = pad_idx;
@@ -3075,7 +3161,6 @@ impl App {
                                         self.sample_pads.config_mode = true;
                                         self.sample_pads.selected_control = PadControl::Sample;
                                     }
-                                }
                             }
                         }
                         return;
@@ -3221,8 +3306,8 @@ impl App {
                     }
 
                     // If PlayPause on an empty deck, open source picker instead of toggling
-                    if self.mixer.selected_control == ChannelControl::PlayPause {
-                        if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
+                    if self.mixer.selected_control == ChannelControl::PlayPause
+                        && let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
                             let is_empty = self.mixer.get_channel(ch_idx)
                                 .map(|c| !c.connected)
                                 .unwrap_or(true);
@@ -3240,18 +3325,16 @@ impl App {
                                 return;
                             }
                         }
-                    }
                     self.toggle_current_control();
                 }
             }
 
             // r/R: reset deck (with confirmation) — no more recording
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                if self.selected_pane == SelectedPane::DeckA
+                if (self.selected_pane == SelectedPane::DeckA
                     || self.selected_pane == SelectedPane::DeckB
-                    || self.selected_pane == SelectedPane::DeckC
-                {
-                    if key.code == KeyCode::Char('R') {
+                    || self.selected_pane == SelectedPane::DeckC)
+                    && key.code == KeyCode::Char('R') {
                         let deck = match self.selected_pane {
                             SelectedPane::DeckA => Deck::A,
                             SelectedPane::DeckB => Deck::B,
@@ -3261,7 +3344,6 @@ impl App {
                         self.confirm_selected = false;
                         self.mode = AppMode::ConfirmAction(ConfirmAction::ResetDeck(deck));
                     }
-                }
             }
 
             // (a and x shortcuts disabled — sequences auto-created on pad sample load)
@@ -3319,8 +3401,8 @@ impl App {
 
             // c: open pad config if pad selected, else center pan/crossfader
             KeyCode::Char('c') | KeyCode::Char('C') => {
-                if self.selected_pane == SelectedPane::DjCenter {
-                    if let Some(pad_idx) = self.selected_pad_idx {
+                if self.selected_pane == SelectedPane::DjCenter
+                    && let Some(pad_idx) = self.selected_pad_idx {
                         self.sample_pads.selected_pad = pad_idx;
                         self.mode = AppMode::SamplePadConfig;
                         self.sample_pads.config_mode = true;
@@ -3328,14 +3410,12 @@ impl App {
                         self.sample_pads.selected_control = PadControl::Sample;
                         return;
                     }
-                }
                 match self.mixer.focus {
                     SelectionFocus::Channel(_) => {
-                        if self.mixer.selected_control == ChannelControl::Pan {
-                            if let Some(channel) = self.mixer.selected_channel_mut() {
+                        if self.mixer.selected_control == ChannelControl::Pan
+                            && let Some(channel) = self.mixer.selected_channel_mut() {
                                 channel.pan = 0.0;
                             }
-                        }
                     }
                     SelectionFocus::Global => {
                         if self.mixer.selected_global == GlobalControl::Crossfader {
@@ -3379,7 +3459,7 @@ impl App {
                 } else {
                     match self.mixer.selected_control {
                         ChannelControl::Bpm => {
-                            self.mixer.selected_control = ChannelControl::Key;
+                            self.mixer.selected_control = ChannelControl::FilterCutoff;
                         }
                         ChannelControl::Key => {
                             self.mixer.selected_control = ChannelControl::FilterCutoff;
@@ -3479,6 +3559,9 @@ impl App {
                     match self.selected_pane {
                         SelectedPane::DeckA | SelectedPane::DeckB => {
                             match self.mixer.selected_control {
+                                ChannelControl::Bpm | ChannelControl::Key => {
+                                    self.mixer.selected_control = ChannelControl::PlayPause;
+                                }
                                 ChannelControl::Mute | ChannelControl::Solo => {
                                     self.mixer.selected_control = ChannelControl::Fader;
                                 }
@@ -3487,7 +3570,7 @@ impl App {
                         }
                         SelectedPane::DeckC => {
                             match self.mixer.selected_control {
-                                ChannelControl::Bpm => {
+                                ChannelControl::Bpm | ChannelControl::Key => {
                                     self.mixer.selected_control = ChannelControl::PlayPause;
                                 }
                                 ChannelControl::PlayPause
@@ -3569,8 +3652,8 @@ impl App {
 
     /// Navigate left within DJ center (CUE/PH/BT are horizontal, pads too)
     fn navigate_control_left(&mut self) {
-        if self.selected_pane == SelectedPane::Loops {
-            if self.sequence_state.selected.is_some() || self.sequence_state.global_focused {
+        if self.selected_pane == SelectedPane::Loops
+            && (self.sequence_state.selected.is_some() || self.sequence_state.global_focused) {
                 if !self.sequence_state.global_focused {
                     self.sequence_state.cursor = self.sequence_state.cursor.left();
                 } else {
@@ -3578,7 +3661,6 @@ impl App {
                 }
                 return;
             }
-        }
         if self.selected_pane == SelectedPane::Master {
             if self.mixer.selected_global.eq_band_index().is_some() {
                 let eq_variants = GlobalControl::all_eq_variants();
@@ -3691,6 +3773,12 @@ impl App {
                 };
             } else {
                 match self.mixer.selected_control {
+                    ChannelControl::Bpm => {
+                        self.mixer.selected_control = ChannelControl::Key;
+                    }
+                    ChannelControl::Key => {
+                        self.mixer.selected_control = ChannelControl::Bpm;
+                    }
                     ChannelControl::Mute | ChannelControl::Solo => {
                         // Toggle between Mute and Solo
                         self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
@@ -3707,8 +3795,8 @@ impl App {
 
     /// Navigate right within DJ center
     fn navigate_control_right(&mut self) {
-        if self.selected_pane == SelectedPane::Loops {
-            if self.sequence_state.selected.is_some() || self.sequence_state.global_focused {
+        if self.selected_pane == SelectedPane::Loops
+            && (self.sequence_state.selected.is_some() || self.sequence_state.global_focused) {
                 if !self.sequence_state.global_focused {
                     self.sequence_state.cursor = self.sequence_state.cursor.right();
                 } else {
@@ -3716,7 +3804,6 @@ impl App {
                 }
                 return;
             }
-        }
         if self.selected_pane == SelectedPane::Master {
             if self.mixer.selected_global.eq_band_index().is_some() {
                 let eq_variants = GlobalControl::all_eq_variants();
@@ -3827,6 +3914,12 @@ impl App {
                 };
             } else {
                 match self.mixer.selected_control {
+                    ChannelControl::Bpm => {
+                        self.mixer.selected_control = ChannelControl::Key;
+                    }
+                    ChannelControl::Key => {
+                        self.mixer.selected_control = ChannelControl::Bpm;
+                    }
                     ChannelControl::Mute | ChannelControl::Solo => {
                         self.mixer.selected_control = if self.mixer.selected_control == ChannelControl::Mute {
                             ChannelControl::Solo
@@ -4344,11 +4437,9 @@ impl App {
             self.sync_mute_to_mpv(i);
         }
         // Reset MPV instances fully
-        for client in [&mut self.mpv_deck_a, &mut self.mpv_deck_b, &mut self.mpv_deck_c] {
-            if let Some(c) = client {
-                c.reset_all();
-                let _ = c.ensure_astats();
-            }
+        for c in [&mut self.mpv_deck_a, &mut self.mpv_deck_b, &mut self.mpv_deck_c].into_iter().flatten() {
+            c.reset_all();
+            let _ = c.ensure_astats();
         }
         // Reset Rust audio engine state
         if let Some(ref engine) = self.audio_engine {
@@ -4428,17 +4519,16 @@ impl App {
 
     /// Play a sample using the audio engine's pad voice system (routes through cpal output)
     fn play_sample(&mut self, pad_idx: usize) {
-        if let Some(pad) = self.sample_pads.pads.get(pad_idx) {
-            if pad.sample_path.is_some() {
-                if let Some(ref engine) = self.audio_engine {
-                    if pad_idx < engine.pad_triggers.len() {
+        if let Some(pad) = self.sample_pads.pads.get(pad_idx)
+            && pad.sample_path.is_some() {
+                if let Some(ref engine) = self.audio_engine
+                    && pad_idx < engine.pad_triggers.len() {
                         engine.pad_triggers[pad_idx].store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
-                }
                 // Fallback to mpv if audio engine unavailable
-                if let Some(sample_path) = &pad.sample_path {
-                    if sample_path.exists() {
+                if let Some(sample_path) = &pad.sample_path
+                    && sample_path.exists() {
                         let _ = std::process::Command::new("mpv")
                             .arg("--no-video")
                             .arg("--really-quiet")
@@ -4446,9 +4536,7 @@ impl App {
                             .arg(sample_path)
                             .spawn();
                     }
-                }
             }
-        }
     }
 
     /// Stop all playing samples
@@ -4487,7 +4575,6 @@ impl App {
                 }
                 _ => {}
             }
-            return;
         }
     }
 
@@ -4503,7 +4590,6 @@ impl App {
                 }
                 _ => {}
             }
-            return;
         }
     }
 
@@ -4527,16 +4613,13 @@ impl App {
     /// Called when pad config changes (filter, EQ, distortion)
     fn refresh_pad_dsp(&self, pad_idx: usize) {
         let pad_cfg = self.sample_pads.pads[pad_idx].config.clone();
-        if let Some(ref engine) = self.audio_engine {
-            if let Some(ref sample_eng) = self.sample_engine {
-                if let Some(path) = &self.sample_pads.pads[pad_idx].sample_path {
-                    if let Some(cached) = sample_eng.cache.get(path) {
+        if let Some(ref engine) = self.audio_engine
+            && let Some(ref sample_eng) = self.sample_engine
+                && let Some(path) = &self.sample_pads.pads[pad_idx].sample_path
+                    && let Some(cached) = sample_eng.cache.get(path) {
                         let processed = crate::audio::sample_cache::apply_dsp_to_buffer(&cached.samples, &pad_cfg);
                         engine.set_pad_sample(pad_idx, processed, cached.sample_rate, cached.channels);
                     }
-                }
-            }
-        }
     }
 
     /// Update sequence state (called from tick)
@@ -4826,8 +4909,8 @@ impl App {
 
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Handle crossfader horizontal drag
-                if self.selected_pane == SelectedPane::Crossfader {
-                    if let (Some(start_x), Some(start_value), Some(area)) =
+                if self.selected_pane == SelectedPane::Crossfader
+                    && let (Some(start_x), Some(start_value), Some(area)) =
                         (self.drag_start_x, self.drag_start_value, &self.crossfader_area)
                     {
                         let delta = (mouse.column as i16 - start_x as i16) as f32;
@@ -4836,13 +4919,11 @@ impl App {
                             (start_value + delta * sensitivity).clamp(-1.0, 1.0);
                         return;
                     }
-                }
 
                 // Handle master fader vertical drag
                 if self.selected_pane == SelectedPane::Master
                     && self.mixer.selected_global == GlobalControl::MasterFader
-                {
-                    if let (Some(start_y), Some(start_value)) =
+                    && let (Some(start_y), Some(start_value)) =
                         (self.drag_start_y, self.drag_start_value)
                     {
                         let delta = (start_y as i16 - mouse.row as i16) as f32;
@@ -4851,13 +4932,11 @@ impl App {
                             (start_value + delta * sensitivity).clamp(0.0, 1.0);
                         return;
                     }
-                }
 
                 // Handle CUE fader vertical drag
                 if self.selected_pane == SelectedPane::DeckC
                     && self.mixer.selected_control == ChannelControl::Fader
-                {
-                    if let (Some(start_y), Some(start_value)) =
+                    && let (Some(start_y), Some(start_value)) =
                         (self.drag_start_y, self.drag_start_value)
                     {
                         let delta = (start_y as i16 - mouse.row as i16) as f32;
@@ -4868,7 +4947,6 @@ impl App {
                         }
                         return;
                     }
-                }
 
                 // Channel strip drag
                 if let (Some(start_y), Some(start_value)) = (self.drag_start_y, self.drag_start_value) {
@@ -4992,29 +5070,25 @@ impl App {
             }
         }
         // Check crossfader
-        if let Some(area) = &self.crossfader_area {
-            if area.contains(x, y) {
+        if let Some(area) = &self.crossfader_area
+            && area.contains(x, y) {
                 return Some(HitResult::Crossfader);
             }
-        }
         // Check master
-        if let Some(area) = &self.master_area {
-            if area.contains(x, y) {
+        if let Some(area) = &self.master_area
+            && area.contains(x, y) {
                 return Some(HitResult::Master);
             }
-        }
         // Check CUE
-        if let Some(area) = &self.cue_area {
-            if area.contains(x, y) {
+        if let Some(area) = &self.cue_area
+            && area.contains(x, y) {
                 return Some(HitResult::Cue);
             }
-        }
         // Check loops
-        if let Some(area) = &self.loops_area {
-            if area.contains(x, y) {
+        if let Some(area) = &self.loops_area
+            && area.contains(x, y) {
                 return Some(HitResult::Loops);
             }
-        }
         None
     }
 
@@ -5055,6 +5129,7 @@ impl App {
     /// Open source picker for specified deck
     fn open_source_picker(&mut self, deck: Deck) {
         self.source_picker = SourcePickerState::new();
+        self.source_picker.tab_focused = true;
         self.source_picker.set_root(self.music_dir.clone());
         self.scan_sources();
         self.mode = AppMode::SourcePicker(deck);
@@ -5136,25 +5211,22 @@ impl App {
             // Master → Deck A + Deck B (main speakers)
             // CUE → Deck C only (headphone preview)
             // Always route cpal headphone stream for CUE target (works with or without MPV)
-            if self.output_picker_target == OutputPickerTarget::Cue {
-                if let Some(ref engine) = self.audio_engine {
+            if self.output_picker_target == OutputPickerTarget::Cue
+                && let Some(ref engine) = self.audio_engine {
                     engine.set_headphone_device(display_name);
                 }
-            }
 
             if let Some(ref mpv_dev) = mpv_name {
                 match self.output_picker_target {
                     OutputPickerTarget::Master => {
-                        if let Some(client) = self.mpv_deck_a.as_mut() {
-                            if let Err(e) = client.set_audio_device(mpv_dev) {
+                        if let Some(client) = self.mpv_deck_a.as_mut()
+                            && let Err(e) = client.set_audio_device(mpv_dev) {
                                 tracing::warn!("Failed to set master audio device on deck_a: {}", e);
                             }
-                        }
-                        if let Some(client) = self.mpv_deck_b.as_mut() {
-                            if let Err(e) = client.set_audio_device(mpv_dev) {
+                        if let Some(client) = self.mpv_deck_b.as_mut()
+                            && let Err(e) = client.set_audio_device(mpv_dev) {
                                 tracing::warn!("Failed to set master audio device on deck_b: {}", e);
                             }
-                        }
                     }
                     OutputPickerTarget::Cue => {
                         // Also tell MPV directly (for socket mode)
@@ -5368,8 +5440,8 @@ impl App {
                         is_dir: true,
                         camelot_key: None,
                     });
-                } else if path.is_file() {
-                    if let Some(ext) = path.extension() {
+                } else if path.is_file()
+                    && let Some(ext) = path.extension() {
                         let ext_lower = ext.to_string_lossy().to_lowercase();
                         if extensions.contains(&ext_lower.as_str()) {
                             files.push(SourcePickerItem {
@@ -5383,7 +5455,6 @@ impl App {
                             });
                         }
                     }
-                }
             }
         }
 
@@ -5434,6 +5505,7 @@ impl App {
         self.source_picker.tab = SourcePickerTab::AudioFiles;
         self.source_picker.set_root(self.samples_dir.clone());
         self.scan_sample_files();
+        self.source_picker.selected = 0;
         self.mode = AppMode::SamplePicker(pad_idx);
     }
 
@@ -5482,8 +5554,8 @@ impl App {
                         is_dir: true,
                         camelot_key: None,
                     });
-                } else if path.is_file() {
-                    if let Some(ext) = path.extension() {
+                } else if path.is_file()
+                    && let Some(ext) = path.extension() {
                         let ext_lower = ext.to_string_lossy().to_lowercase();
                         if extensions.contains(&ext_lower.as_str()) {
                             files.push(SourcePickerItem {
@@ -5497,7 +5569,6 @@ impl App {
                             });
                         }
                     }
-                }
             }
         }
 
@@ -5529,8 +5600,8 @@ impl App {
 
     /// Preview (play) the currently selected sample without assigning it
     fn preview_sample(&mut self) {
-        if let Some(item) = self.source_picker.selected_item() {
-            if !item.is_dir && item.path.exists() {
+        if let Some(item) = self.source_picker.selected_item()
+            && !item.is_dir && item.path.exists() {
                 if let Some(ref mut engine) = self.sample_engine {
                     // Use cached engine for instant preview
                     let _ = engine.play(&item.path);
@@ -5544,7 +5615,6 @@ impl App {
                             .spawn();
                 }
             }
-        }
     }
 
     /// Handle keys in sample picker mode
@@ -5568,11 +5638,10 @@ impl App {
                     self.source_picker.move_up();
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
-                    if self.source_picker.can_go_up() {
-                        if let Some(parent) = self.source_picker.current_dir.parent() {
+                    if self.source_picker.can_go_up()
+                        && let Some(parent) = self.source_picker.current_dir.parent() {
                             self.enter_sample_directory(parent.to_path_buf());
                         }
-                    }
                 }
                 KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
                     if let Some(item) = self.source_picker.selected_item().cloned() {
@@ -5614,11 +5683,10 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     if self.source_picker.query.is_empty() {
-                        if self.source_picker.can_go_up() {
-                            if let Some(parent) = self.source_picker.current_dir.parent() {
+                        if self.source_picker.can_go_up()
+                            && let Some(parent) = self.source_picker.current_dir.parent() {
                                 self.enter_sample_directory(parent.to_path_buf());
                             }
-                        }
                     } else {
                         self.source_picker.query.pop();
                         self.source_picker.filter();
@@ -5653,19 +5721,17 @@ impl App {
             let pad_cfg = self.sample_pads.pads[pad_idx].config.clone();
             if let Some(ref engine) = self.audio_engine {
                 let mut loaded = false;
-                if let Some(ref sample_eng) = self.sample_engine {
-                    if let Some(cached) = sample_eng.cache.get(&item.path) {
+                if let Some(ref sample_eng) = self.sample_engine
+                    && let Some(cached) = sample_eng.cache.get(&item.path) {
                         let processed = crate::audio::sample_cache::apply_dsp_to_buffer(&cached.samples, &pad_cfg);
                         engine.set_pad_sample(pad_idx, processed, cached.sample_rate, cached.channels);
                         loaded = true;
                     }
-                }
-                if !loaded {
-                    if let Ok(cached) = crate::audio::sample_cache::CachedSample::load(&item.path) {
+                if !loaded
+                    && let Ok(cached) = crate::audio::sample_cache::CachedSample::load(&item.path) {
                         let processed = crate::audio::sample_cache::apply_dsp_to_buffer(&cached.samples, &pad_cfg);
                         engine.set_pad_sample(pad_idx, processed, cached.sample_rate, cached.channels);
                     }
-                }
             }
 
             // Auto-create a sequence for this pad if one doesn't already exist
@@ -5687,16 +5753,40 @@ impl App {
                     self.mode = AppMode::PaneSelect;
                 }
                 KeyCode::Char('i') => {
-                    self.source_picker.input_mode = PickerInputMode::Insert;
+                    if !self.source_picker.tab_focused {
+                        self.source_picker.input_mode = PickerInputMode::Insert;
+                    }
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    self.source_picker.move_down();
+                    if self.source_picker.tab_focused {
+                        self.source_picker.tab_focused = false;
+                        self.source_picker.selected = 0;
+                        self.source_picker.scroll_offset = 0;
+                    } else {
+                        self.source_picker.move_down();
+                    }
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.source_picker.move_up();
+                    if self.source_picker.tab_focused {
+                        self.source_picker.tab_focused = false;
+                        if self.source_picker.filtered.is_empty() {
+                            self.source_picker.selected = 0;
+                        } else {
+                            self.source_picker.selected = self.source_picker.filtered.len() - 1;
+                        }
+                        self.source_picker.clamp_scroll();
+                    } else if self.source_picker.selected == 0 {
+                        self.source_picker.tab_focused = true;
+                        self.source_picker.selected = self.source_picker.filtered.len(); // sentinel
+                    } else {
+                        self.source_picker.move_up();
+                    }
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
-                    if self.source_picker.tab == SourcePickerTab::AudioFiles
+                    if self.source_picker.tab_focused {
+                        self.source_picker.prev_tab();
+                        self.scan_sources();
+                    } else if self.source_picker.tab == SourcePickerTab::AudioFiles
                         && self.source_picker.can_go_up()
                     {
                         if let Some(parent) = self.source_picker.current_dir.parent() {
@@ -5708,7 +5798,10 @@ impl App {
                     }
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
-                    if self.source_picker.tab == SourcePickerTab::AudioFiles {
+                    if self.source_picker.tab_focused {
+                        self.source_picker.next_tab();
+                        self.scan_sources();
+                    } else if self.source_picker.tab == SourcePickerTab::AudioFiles {
                         if let Some(item) = self.source_picker.selected_item().cloned() {
                             if item.is_dir {
                                 self.enter_source_directory(item.path);
@@ -5723,12 +5816,17 @@ impl App {
                     }
                 }
                 KeyCode::Char('g') => {
+                    self.source_picker.tab_focused = false;
                     self.source_picker.selected = 0;
                     self.source_picker.scroll_offset = 0;
                 }
                 KeyCode::Char('G') => {
-                    let last = self.source_picker.filtered.len().saturating_sub(1);
-                    self.source_picker.selected = last;
+                    self.source_picker.tab_focused = false;
+                    if self.source_picker.filtered.is_empty() {
+                        self.source_picker.selected = 0;
+                    } else {
+                        self.source_picker.selected = self.source_picker.filtered.len() - 1;
+                    }
                     self.source_picker.clamp_scroll();
                 }
                 KeyCode::Tab => {
@@ -5740,8 +5838,13 @@ impl App {
                     self.scan_sources();
                 }
                 KeyCode::Enter => {
-                    if let AppMode::SourcePicker(deck) = self.mode {
-                        if let Some(item) = self.source_picker.selected_item().cloned() {
+                    if self.source_picker.tab_focused {
+                        self.source_picker.tab_focused = false;
+                        self.source_picker.selected = 0;
+                        self.source_picker.scroll_offset = 0;
+                    } else if self.source_picker.selected < self.source_picker.filtered.len()
+                        && let AppMode::SourcePicker(deck) = self.mode
+                        && let Some(item) = self.source_picker.selected_item().cloned() {
                             if item.is_dir {
                                 self.enter_source_directory(item.path);
                             } else {
@@ -5749,7 +5852,6 @@ impl App {
                                 self.mode = AppMode::PaneSelect;
                             }
                         }
-                    }
                 }
                 _ => {}
             },
@@ -5758,8 +5860,9 @@ impl App {
                     self.source_picker.input_mode = PickerInputMode::Normal;
                 }
                 KeyCode::Enter => {
-                    if let AppMode::SourcePicker(deck) = self.mode {
-                        if let Some(item) = self.source_picker.selected_item().cloned() {
+                    if self.source_picker.selected < self.source_picker.filtered.len()
+                        && let AppMode::SourcePicker(deck) = self.mode
+                        && let Some(item) = self.source_picker.selected_item().cloned() {
                             if item.is_dir {
                                 self.enter_source_directory(item.path);
                             } else {
@@ -5767,7 +5870,6 @@ impl App {
                                 self.mode = AppMode::PaneSelect;
                             }
                         }
-                    }
                 }
                 KeyCode::Backspace => {
                     self.source_picker.query.pop();
@@ -5815,8 +5917,8 @@ impl App {
             .get_channel(ch_idx)
             .and_then(|c| c.source_id.clone());
 
-        if was_capture {
-            if let Some(sock) = source_id
+        if was_capture
+            && let Some(sock) = source_id
                 .as_deref()
                 .map(std::path::Path::new)
                 .and_then(|fifo| Self::route_socket_candidates_for_fifo(fifo).into_iter().find(|p| p.exists()))
@@ -5831,7 +5933,6 @@ impl App {
                     ]);
                 }
             }
-        }
 
         // Mute and drop MPV client
         match deck {
@@ -6343,11 +6444,10 @@ impl App {
             self.mpv_deck_c = Some(client);
 
             // Re-apply stored CUE output device to the new MPV client
-            if let Some(ref mpv_dev) = self.cue_output.selected_mpv_name().map(|s| s.to_string()) {
-                if let Some(ref mut client) = self.mpv_deck_c {
-                    client.set_audio_device(&mpv_dev).ok();
+            if let Some(ref mpv_dev) = self.cue_output.selected_mpv_name().map(|s| s.to_string())
+                && let Some(ref mut client) = self.mpv_deck_c {
+                    client.set_audio_device(mpv_dev).ok();
                 }
-            }
 
             self.sync_volume_to_mpv(channel_idx);
             self.sync_mute_to_mpv(channel_idx);
@@ -6552,12 +6652,11 @@ impl App {
             }
         }
         // Set the new CUE to CUE output
-        if let Some(dev) = &cue_dev {
-            if let Some(c) = self.mpv_deck_c.as_mut() {
+        if let Some(dev) = &cue_dev
+            && let Some(c) = self.mpv_deck_c.as_mut() {
                 tracing::debug!("Setting deck C audio device to cue: {}", dev);
                 c.set_audio_device(dev).ok();
             }
-        }
     }
 
     /// Sync volume to MPV/SC for a specific deck, combining fader, crossfader, and master
@@ -6670,39 +6769,34 @@ impl App {
         let engine_b = self.audio_engine.as_ref().map(|e| e.has_decoder(deck_b_ch)).unwrap_or(false);
         let engine_c = self.audio_engine.as_ref().map(|e| e.has_decoder(2)).unwrap_or(false);
 
-        if !engine_a {
-            if let Some(ref mut client) = self.mpv_deck_a {
+        if !engine_a
+            && let Some(ref mut client) = self.mpv_deck_a {
                 let _ = client.set_mute(a_muted);
                 let _ = client.set_volume(a_vol);
             }
-        }
 
-        if !engine_b {
-            if let Some(ref mut client) = self.mpv_deck_b {
+        if !engine_b
+            && let Some(ref mut client) = self.mpv_deck_b {
                 let _ = client.set_mute(b_muted);
                 let _ = client.set_volume(b_vol);
             }
-        }
 
-        if !engine_c {
-            if let Some(ref mut client) = self.mpv_deck_c {
+        if !engine_c
+            && let Some(ref mut client) = self.mpv_deck_c {
                 let _ = client.set_mute(c_muted);
                 let _ = client.set_volume(c_vol);
             }
-        }
 
-        if !engine_a {
-            if let Some(ref client) = self.sc_deck_a {
+        if !engine_a
+            && let Some(ref client) = self.sc_deck_a {
                 let sc_vol = if a_muted { 0.0 } else { (a_fader * gain_a * master * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0) };
                 let _ = client.set_volume(sc_vol);
             }
-        }
-        if !engine_b {
-            if let Some(ref client) = self.sc_deck_b {
+        if !engine_b
+            && let Some(ref client) = self.sc_deck_b {
                 let sc_vol = if b_muted { 0.0 } else { (b_fader * gain_b * master * 2.0 * SC_GAIN_BOOST).clamp(0.0, 8.0) };
                 let _ = client.set_volume(sc_vol);
             }
-        }
 
         // Update Rust audio engine solo state
         if let Some(ref engine) = self.audio_engine {
@@ -6718,8 +6812,8 @@ impl App {
     /// direction: -1.0 = reverse, 1.0 = forward
     /// coarse: true for H/J/K/L (faster acceleration)
     fn start_scrub(&mut self, direction: f32, coarse: bool) {
-        if let SelectionFocus::Channel(ch_idx) = self.mixer.focus {
-            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+        if let SelectionFocus::Channel(ch_idx) = self.mixer.focus
+            && let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
                 if ch.uses_supercollider {
                     return;
                 }
@@ -6741,7 +6835,6 @@ impl App {
                 }
                 ch.scrub_speed = 1.0;
             }
-        }
     }
 
     fn scrub_tap(&mut self, direction: f32) {
@@ -6897,11 +6990,10 @@ impl App {
                     if let Some(engine) = self.audio_engine.as_ref() {
                         engine.set_capture_reverse_scrub(ch_idx, false);
                     }
-                } else if has_decoder {
-                    if let Some(engine) = self.audio_engine.as_ref() {
+                } else if has_decoder
+                    && let Some(engine) = self.audio_engine.as_ref() {
                         engine.set_decoder_reverse_scrub(ch_idx, false);
                     }
-                }
                 continue;
             }
 
@@ -6917,11 +7009,10 @@ impl App {
                     if let Some(engine) = self.audio_engine.as_ref() {
                         engine.set_capture_reverse_scrub(ch_idx, false);
                     }
-                } else if has_decoder {
-                    if let Some(engine) = self.audio_engine.as_ref() {
+                } else if has_decoder
+                    && let Some(engine) = self.audio_engine.as_ref() {
                         engine.set_decoder_reverse_scrub(ch_idx, false);
                     }
-                }
                 if ch_idx < self.scrub_hold_start_ms.len() {
                     self.scrub_hold_start_ms[ch_idx] = 0;
                 }
@@ -7014,11 +7105,10 @@ impl App {
                     .as_ref()
                     .map(|engine| engine.has_decoder(idx))
                     .unwrap_or(false);
-                if !has_capture && has_decoder {
-                    if let Some(engine) = self.audio_engine.as_ref() {
+                if !has_capture && has_decoder
+                    && let Some(engine) = self.audio_engine.as_ref() {
                         engine.set_decoder_reverse_scrub(idx, false);
                     }
-                }
                 if idx < self.scrub_hold_start_ms.len() {
                     self.scrub_hold_start_ms[idx] = 0;
                 }
@@ -7144,10 +7234,6 @@ impl App {
                     if let Some(dur) = duration {
                         ch.duration = dur.max(0.0);
                         self.route_duration_last_ms[ch_idx] = now;
-                    }
-
-                    if ch.duration <= 0.0 {
-                        ch.duration = ch.time_pos.max(1.0);
                     }
 
                     if let Some(worker) = self.route_timeline_workers[ch_idx].as_ref() {
@@ -7339,12 +7425,11 @@ impl App {
                     let parsed = parse_camelot(&raw_key)
                         .map(|(pc, is_major)| pitch_class_to_camelot(pc, is_major))
                         .or_else(|| parse_key_name(&raw_key));
-                    if let Some(camelot) = parsed {
-                        if channel.key.as_deref() != Some(camelot.as_str()) {
+                    if let Some(camelot) = parsed
+                        && channel.key.as_deref() != Some(camelot.as_str()) {
                             channel.key = Some(camelot);
                             updated = true;
                         }
-                    }
                 }
 
                 if let Some(mut bpm) = pick_num(&[
@@ -7401,8 +7486,8 @@ impl App {
         // Deck A: prefer MPV client, fall back to engine meter (FIFO capture)
         if let Some(ref client) = self.mpv_deck_a {
             let bpm = client.get_detected_bpm();
-            if bpm > 0.0 {
-                if let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
+            if bpm > 0.0
+                && let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
                     if ch.base_bpm == 0.0 {
                         ch.base_bpm = bpm;
                         ch.target_bpm = bpm;
@@ -7410,12 +7495,11 @@ impl App {
                     }
                     ch.bpm = Some(bpm);
                 }
-            }
         } else if let Some(ref engine) = self.audio_engine {
             let raw = engine.meters[0].detected_bpm.load(std::sync::atomic::Ordering::Relaxed);
             let bpm = raw as f32 / 100.0;
-            if bpm > 0.0 {
-                if let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
+            if bpm > 0.0
+                && let Some(ch) = self.mixer.get_channel_mut(deck_a_ch) {
                     if ch.base_bpm == 0.0 {
                         ch.base_bpm = bpm;
                         ch.target_bpm = bpm;
@@ -7423,13 +7507,12 @@ impl App {
                     }
                     ch.bpm = Some(bpm);
                 }
-            }
         }
         // Deck B: prefer MPV client, fall back to engine meter
         if let Some(ref client) = self.mpv_deck_b {
             let bpm = client.get_detected_bpm();
-            if bpm > 0.0 {
-                if let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
+            if bpm > 0.0
+                && let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
                     if ch.base_bpm == 0.0 {
                         ch.base_bpm = bpm;
                         ch.target_bpm = bpm;
@@ -7437,12 +7520,11 @@ impl App {
                     }
                     ch.bpm = Some(bpm);
                 }
-            }
         } else if let Some(ref engine) = self.audio_engine {
             let raw = engine.meters[1].detected_bpm.load(std::sync::atomic::Ordering::Relaxed);
             let bpm = raw as f32 / 100.0;
-            if bpm > 0.0 {
-                if let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
+            if bpm > 0.0
+                && let Some(ch) = self.mixer.get_channel_mut(deck_b_ch) {
                     if ch.base_bpm == 0.0 {
                         ch.base_bpm = bpm;
                         ch.target_bpm = bpm;
@@ -7450,13 +7532,12 @@ impl App {
                     }
                     ch.bpm = Some(bpm);
                 }
-            }
         }
         // Deck C: prefer MPV client, fall back to engine meter
         if let Some(ref client) = self.mpv_deck_c {
             let bpm = client.get_detected_bpm();
-            if bpm > 0.0 {
-                if let Some(ch) = self.mixer.get_channel_mut(deck_c_ch) {
+            if bpm > 0.0
+                && let Some(ch) = self.mixer.get_channel_mut(deck_c_ch) {
                     if ch.base_bpm == 0.0 {
                         ch.base_bpm = bpm;
                         ch.target_bpm = bpm;
@@ -7464,12 +7545,11 @@ impl App {
                     }
                     ch.bpm = Some(bpm);
                 }
-            }
         } else if let Some(ref engine) = self.audio_engine {
             let raw = engine.meters[2].detected_bpm.load(std::sync::atomic::Ordering::Relaxed);
             let bpm = raw as f32 / 100.0;
-            if bpm > 0.0 {
-                if let Some(ch) = self.mixer.get_channel_mut(deck_c_ch) {
+            if bpm > 0.0
+                && let Some(ch) = self.mixer.get_channel_mut(deck_c_ch) {
                     if ch.base_bpm == 0.0 {
                         ch.base_bpm = bpm;
                         ch.target_bpm = bpm;
@@ -7477,7 +7557,6 @@ impl App {
                     }
                     ch.bpm = Some(bpm);
                 }
-            }
         }
 
         for ch_idx in initialized_channels {
@@ -7489,21 +7568,19 @@ impl App {
         // (or if ch.key is still None — first detection always applies).
         if let Some(ref engine) = self.audio_engine {
             for (deck_idx, ch_idx) in [(0, deck_a_ch), (1, deck_b_ch), (2, deck_c_ch)] {
-                if let Ok(mut guard) = engine.detected_keys[deck_idx].lock() {
-                    if let Some(new_key) = guard.take() {
+                if let Ok(mut guard) = engine.detected_keys[deck_idx].lock()
+                    && let Some(new_key) = guard.take() {
                         let dominated = self.last_detected_keys[deck_idx].as_deref() == Some(new_key.as_str());
                         let first_run = self.mixer.get_channel(ch_idx)
                             .and_then(|c| c.key.as_ref())
                             .is_none();
-                        if dominated || first_run {
-                            if let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
+                        if (dominated || first_run)
+                            && let Some(ch) = self.mixer.get_channel_mut(ch_idx) {
                                 ch.key = Some(new_key.clone());
                                 ch.key_offset = 0;
                             }
-                        }
                         self.last_detected_keys[deck_idx] = Some(new_key);
                     }
-                }
             }
         }
     }
@@ -7792,11 +7869,10 @@ impl App {
         let effective_high = if high_kill { -24.0 } else { high };
 
         let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
-        if !engine_active {
-            if let Some(client) = self.mpv_for_channel(channel_idx) {
+        if !engine_active
+            && let Some(client) = self.mpv_for_channel(channel_idx) {
                 let _ = client.set_eq(effective_low, effective_mid, effective_high);
             }
-        }
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_eq(effective_low, effective_mid, effective_high);
         }
@@ -7895,14 +7971,13 @@ impl App {
         // Skip MPV lavfi calls when the engine has a decoder for this channel.
         // SC controls route over OSC and should always receive updates.
         let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
-        if !engine_active {
-            if let Some(client) = self.mpv_for_channel(channel_idx) {
+        if !engine_active
+            && let Some(client) = self.mpv_for_channel(channel_idx) {
                 let le = client.set_lpf(soft_lpf.clamp(200.0, 20000.0)).err();
                 let he = client.set_hpf(effective_hpf.clamp(20.0, 8000.0)).err();
-                if let Some(e) = le { self.debug_log.push(format!("lpf: {}", e)); }
-                if let Some(e) = he { self.debug_log.push(format!("hpf: {}", e)); }
+                if let Some(e) = le { self.debug_log.push_back(format!("lpf: {}", e)); }
+                if let Some(e) = he { self.debug_log.push_back(format!("hpf: {}", e)); }
             }
-        }
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_lpf(soft_lpf.clamp(200.0, 20000.0));
             let _ = client.set_hpf(effective_hpf.clamp(20.0, 8000.0));
@@ -7946,11 +8021,10 @@ impl App {
             .unwrap_or(0.0);
 
         let engine_active = self.audio_engine.as_ref().map(|e| e.has_decoder(channel_idx)).unwrap_or(false);
-        if !engine_active {
-            if let Some(client) = self.mpv_for_channel(channel_idx) {
+        if !engine_active
+            && let Some(client) = self.mpv_for_channel(channel_idx) {
                 let _ = client.set_pan(pan);
             }
-        }
         if let Some(client) = self.sc_for_channel(channel_idx) {
             let _ = client.set_pan(pan);
         }
@@ -8162,9 +8236,9 @@ impl App {
         if std::env::var("DEBUG").is_err() {
             return;
         }
-        self.debug_log.push(msg.into());
+        self.debug_log.push_back(msg.into());
         if self.debug_log.len() > 500 {
-            self.debug_log.remove(0);
+            self.debug_log.pop_front();
         }
         // Only auto-scroll to bottom if already at the bottom.
         // If user has scrolled up to read, leave them there.
@@ -8181,7 +8255,7 @@ impl App {
 
     /// Copy the visible debug log lines to the system clipboard.
     fn copy_debug_log_to_clipboard(&mut self) {
-        let text = self.debug_log.join("\n");
+        let text = self.debug_log.make_contiguous().join("\n");
         if text.is_empty() {
             return;
         }

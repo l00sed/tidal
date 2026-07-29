@@ -5,6 +5,7 @@
 //! stderr redirection to prevent TUI corruption.
 
 use crossbeam_queue::ArrayQueue;
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::OnceLock;
 use tracing::{Event, Subscriber};
@@ -15,13 +16,13 @@ use tracing_subscriber::prelude::*;
 /// Shared bounded queue for debug log messages (capacity: 256).
 static LOG_QUEUE: OnceLock<ArrayQueue<String>> = OnceLock::new();
 
-/// Drains all queued messages into the provided vec.
-pub fn drain_log_queue(buf: &mut Vec<String>) {
+/// Drains all queued messages into the provided deque.
+pub fn drain_log_queue(buf: &mut VecDeque<String>) {
     if let Some(queue) = LOG_QUEUE.get() {
         while let Some(msg) = queue.pop() {
-            buf.push(msg);
+            buf.push_back(msg);
             if buf.len() > 500 {
-                buf.remove(0);
+                buf.pop_front();
             }
         }
     }

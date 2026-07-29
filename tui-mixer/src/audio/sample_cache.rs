@@ -204,11 +204,10 @@ impl SampleEngine {
 
     #[allow(dead_code)]
     pub fn clear_recording(&mut self) {
-        if let Some(ref buf) = self.recording_buffer {
-            if let Ok(mut b) = buf.lock() {
+        if let Some(ref buf) = self.recording_buffer
+            && let Ok(mut b) = buf.lock() {
                 b.clear();
             }
-        }
     }
 
     pub fn preload(&mut self, path: &Path) -> Result<(), String> {
@@ -254,11 +253,10 @@ impl SampleEngine {
         config: Option<&crate::state::PadConfig>,
         pad_idx: usize,
     ) -> Result<(), String> {
-        if let Some(cfg) = config {
-            if cfg.mute {
+        if let Some(cfg) = config
+            && cfg.mute {
                 return Ok(());
             }
-        }
 
         self.ensure_device()?;
 
@@ -488,7 +486,7 @@ pub fn apply_dsp_to_buffer(samples: &[f32], cfg: &crate::state::PadConfig) -> Ve
     // EQ bands: L/H use filters when cutting, M stays as simple gain
     if cfg.eq_low < 1.0 {
         let normalized = (1.0 - cfg.eq_low).clamp(0.0, 1.0);
-        let freq = (20000.0 * (500.0f64 / 20000.0).powf(normalized as f64)) as f64;
+        let freq = 20000.0 * (500.0f64 / 20000.0).powf(normalized as f64);
         let rc = 1.0 / (freq * std::f64::consts::TAU);
         let dt = 1.0 / 44100.0;
         let alpha = dt / (rc + dt);
@@ -506,7 +504,7 @@ pub fn apply_dsp_to_buffer(samples: &[f32], cfg: &crate::state::PadConfig) -> Ve
     }
     if cfg.eq_high < 1.0 {
         let normalized = (1.0 - cfg.eq_high).clamp(0.0, 1.0);
-        let freq = (20.0 * (5000.0f64 / 20.0).powf(normalized as f64)) as f64;
+        let freq = 20.0 * (5000.0f64 / 20.0).powf(normalized as f64);
         let rc = 1.0 / (freq * std::f64::consts::TAU);
         let dt = 1.0 / 44100.0;
         let alpha = dt / (rc + dt);

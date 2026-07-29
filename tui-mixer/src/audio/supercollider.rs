@@ -37,11 +37,29 @@ impl SuperColliderClient {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .map_err(|e| format!("Failed to bind UDP socket: {}", e))?;
         socket
-            .set_read_timeout(Some(Duration::from_millis(100)))
+            .set_read_timeout(Some(Duration::from_millis(500)))
             .ok();
         socket
             .set_write_timeout(Some(Duration::from_millis(100)))
             .ok();
+
+        // Ping SC server to verify it's alive before marking connected.
+        // Without this, synth/group creation silently fails if SC isn't running.
+        let ping_msg = Self::encode_osc_message("/status", &[]);
+        let mut alive = false;
+        for _ in 0..3 {
+            let _ = socket.send_to(&ping_msg, &self.addr);
+            let mut buf = [0u8; 256];
+            if socket.recv_from(&mut buf).is_ok() {
+                alive = true;
+                break;
+            }
+        }
+        if !alive {
+            return Err("SuperCollider server not responding on ".to_string()
+                + &self.addr);
+        }
+
         self.socket = Some(socket);
         self.connected = true;
         Ok(())

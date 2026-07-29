@@ -1013,12 +1013,11 @@ impl MixerState {
                 self.cue_channel.fader = fader;
                 return true;
             }
-        } else if let Some(fader) = self.pre_solo_faders.remove(&channel_idx) {
-            if let Some(ch) = self.channels.get_mut(channel_idx) {
+        } else if let Some(fader) = self.pre_solo_faders.remove(&channel_idx)
+            && let Some(ch) = self.channels.get_mut(channel_idx) {
                 ch.fader = fader;
                 return true;
             }
-        }
         false
     }
 

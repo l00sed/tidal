@@ -223,6 +223,7 @@ impl<'a> Widget for ChannelStrip<'a> {
                     self.is_control_selected(ChannelControl::NextTrack),
                 )
                 .playlist_executed(prev_executed_recently, next_executed_recently)
+                .elapsed_ms(self.elapsed_ms.into())
                 .render(chunks[idx], buf);
             idx += 1;
 
@@ -283,7 +284,7 @@ impl<'a> Widget for ChannelStrip<'a> {
             // Speed factor left-aligned (4 chars: "x1.00")
             buf.set_string(bpm_area.x, bpm_area.y, &factor_str, speed_style);
             // BPM right-aligned before separator (4 chars)
-            buf.set_string(sep_x.saturating_sub(5), bpm_area.y, &format!("{:>4}", bpm_value), bpm_style);
+            buf.set_string(sep_x.saturating_sub(5), bpm_area.y, format!("{:>4}", bpm_value), bpm_style);
             // Vertical separator
             let sep_style = Style::default().fg(SEPARATOR);
             buf.set_string(sep_x, bpm_area.y, "│", sep_style);
@@ -441,7 +442,7 @@ impl<'a> ChannelStrip<'a> {
             let fill_pos = (normalized * bar_width as f32) as usize;
 
             for i in 0..bar_width {
-                let ch = if i == center { '│' } else { '─' };
+                let (ch, is_center) = if i == center { ("│", true) } else { ("─", false) };
 
                 let color = if editing || selected {
                     if (fill_pos > center && i > center && i <= fill_pos) ||
@@ -458,7 +459,8 @@ impl<'a> ChannelStrip<'a> {
                     METER_TRACK
                 };
 
-                buf.set_string(bar_start + i as u16, y, ch.to_string(), Style::default().fg(color));
+                let _ = is_center;
+                buf.set_string(bar_start + i as u16, y, ch, Style::default().fg(color));
             }
         }
 
@@ -712,7 +714,7 @@ impl<'a> ChannelStrip<'a> {
         let bar_end = time_x.saturating_sub(1);
         if bar_end > bar_start + 2 {
             let bar_width = (bar_end - bar_start) as usize;
-            let filled = (position * bar_width as f32) as usize;
+            let filled = ((position * bar_width as f32) as usize).min(bar_width - 1);
             for i in 0..bar_width {
                 let ch = if i == filled { "◆" } else { "─" };
                 let color = if i < filled {
@@ -872,7 +874,7 @@ impl<'a> MasterStrip<'a> {
         let bar_step = 2u16;
         let total_width = num_bands * bar_step;
         let start_x = if area.width > total_width {
-            (area.width - total_width + 1) / 2
+            (area.width - total_width).div_ceil(2)
         } else {
             0
         };
@@ -1096,7 +1098,7 @@ impl<'a> Widget for MasterStrip<'a> {
         let bar_step = 2u16;
         let total_width = num_bands * bar_step;
         let start_x = if eq_area.width > total_width {
-            (eq_area.width - total_width + 1) / 2
+            (eq_area.width - total_width).div_ceil(2)
         } else {
             0
         };

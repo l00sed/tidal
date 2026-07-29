@@ -18,6 +18,9 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Native file dialogs for save/load
+rfd = "0.15"
+
 # Error handling
 anyhow = "1"
 thiserror = "2"

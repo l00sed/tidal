@@ -215,10 +215,10 @@ impl MpvClient {
                 match reader.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => {
-                        if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if resp.get("request_id").and_then(|v| v.as_u64()) == Some(req_id) {
-                                if let Some(data) = resp.get("data") {
-                                    if let Some(obj) = data.as_object() {
+                        if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line)
+                            && resp.get("request_id").and_then(|v| v.as_u64()) == Some(req_id) {
+                                if let Some(data) = resp.get("data")
+                                    && let Some(obj) = data.as_object() {
                                         let get_dbfs = |key: &str| -> f32 {
                                             obj.get(key)
                                                 .and_then(|v| v.as_str())
@@ -280,7 +280,7 @@ impl MpvClient {
                                                         iois.sort_by(|a, b| a.partial_cmp(b).unwrap());
                                                         let median = iois[iois.len() / 2];
                                                         let bpm = (60000.0 / median * 100.0) as u32;
-                                                        if bpm >= 6000 && bpm <= 20000 { // 60.00–200.00 BPM
+                                                        if (6000..=20000).contains(&bpm) { // 60.00–200.00 BPM
                                                             meters.detected_bpm.store(bpm, Ordering::Relaxed);
                                                         }
                                                     }
@@ -288,11 +288,9 @@ impl MpvClient {
                                             }
                                         }
                                     }
-                                }
                                 got_response = true;
                                 break;
                             }
-                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(_) => break,
@@ -332,15 +330,14 @@ impl MpvClient {
             match reader.read_line(&mut line) {
                 Ok(0) => return Err("Connection closed".to_string()),
                 Ok(_) => {
-                    if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line) {
-                        if resp.get("request_id").and_then(|v| v.as_u64()) == Some(self.request_id) {
+                    if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line)
+                        && resp.get("request_id").and_then(|v| v.as_u64()) == Some(self.request_id) {
                             let error = resp.get("error").and_then(|v| v.as_str()).unwrap_or("success");
                             if error != "success" {
                                 return Err(format!("MPV error: {}", error));
                             }
                             return Ok(resp.get("data").cloned());
                         }
-                    }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     break;
@@ -483,11 +480,10 @@ impl MpvClient {
     }
 
     fn has_filter(&mut self, label: &str) -> bool {
-        if let Ok(af) = self.get_property("af") {
-            if let Some(arr) = af.as_array() {
+        if let Ok(af) = self.get_property("af")
+            && let Some(arr) = af.as_array() {
                 return arr.iter().any(|f| f.get("label").and_then(|v| v.as_str()) == Some(label));
             }
-        }
         false
     }
 
@@ -732,14 +728,13 @@ impl MpvClient {
     /// Best-effort display title for the currently loaded media.
     /// Prefers `media-title`, then metadata TITLE fields.
     pub fn get_media_title(&mut self) -> Option<String> {
-        if let Ok(val) = self.get_property("media-title") {
-            if let Some(s) = val.as_str() {
+        if let Ok(val) = self.get_property("media-title")
+            && let Some(s) = val.as_str() {
                 let t = s.trim();
                 if !t.is_empty() {
                     return Some(t.to_string());
                 }
             }
-        }
 
         let metadata = self.get_property("metadata").ok()?;
         let obj = metadata.as_object()?;
@@ -842,15 +837,14 @@ impl MpvClient {
     }
 
     pub fn ensure_astats(&mut self) -> Result<(), String> {
-        if let Ok(af) = self.get_property("af") {
-            if let Some(arr) = af.as_array() {
+        if let Ok(af) = self.get_property("af")
+            && let Some(arr) = af.as_array() {
                 for filter in arr {
                     if filter.get("label").and_then(|v| v.as_str()) == Some("astats") {
                         return Ok(());
                     }
                 }
             }
-        }
 
         self.send_command(vec![
             "af".into(),
@@ -883,15 +877,14 @@ impl MpvClient {
         let _ = self.set_hpf(20.0);
         let _ = self.set_pan(0.0);
         // Remove all audio filters (eq, astats, pan, lpf, hpf)
-        if let Ok(af) = self.get_property("af") {
-            if let Some(arr) = af.as_array() {
+        if let Ok(af) = self.get_property("af")
+            && let Some(arr) = af.as_array() {
                 for filter in arr {
                     if let Some(label) = filter.get("label").and_then(|v| v.as_str()) {
                         let _ = self.send_command(vec!["af".into(), "remove".into(), format!("@{}", label).into()]);
                     }
                 }
             }
-        }
     }
 }
 

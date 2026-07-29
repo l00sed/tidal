@@ -6,7 +6,6 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Widget,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::colors::*;
 
@@ -172,6 +171,8 @@ pub struct DeckIndicator {
     next_selected: bool,
     prev_executed_recently: bool,
     next_executed_recently: bool,
+    /// Elapsed milliseconds since app start (for marquee scroll without syscall)
+    elapsed_ms: u128,
 }
 
 impl DeckIndicator {
@@ -193,6 +194,7 @@ impl DeckIndicator {
             next_selected: false,
             prev_executed_recently: false,
             next_executed_recently: false,
+            elapsed_ms: 0,
         }
     }
 
@@ -252,6 +254,11 @@ impl DeckIndicator {
     pub fn playlist_executed(mut self, prev_executed_recently: bool, next_executed_recently: bool) -> Self {
         self.prev_executed_recently = prev_executed_recently;
         self.next_executed_recently = next_executed_recently;
+        self
+    }
+
+    pub fn elapsed_ms(mut self, elapsed_ms: u128) -> Self {
+        self.elapsed_ms = elapsed_ms;
         self
     }
 }
@@ -441,11 +448,7 @@ impl Widget for DeckIndicator {
                     .collect();
                 let scroll_width: usize = scroll_chars.iter().map(|(_, w)| w).sum();
 
-                let now_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                let byte_offset = ((now_ms / 200) as usize) % scroll_width;
+                let byte_offset = ((self.elapsed_ms / 200) as usize) % scroll_width;
 
                 // Walk the circular buffer accumulating display width until max_width
                 let mut display = String::new();

@@ -266,11 +266,10 @@ impl<'a> Widget for MixerView<'a> {
         }
 
         // Render debug log if present
-        if let Some(area) = debug_area {
-            if let Some(log) = self.debug_log {
+        if let Some(area) = debug_area
+            && let Some(log) = self.debug_log {
                 self.render_debug_log(area, buf, log);
             }
-        }
     }
 }
 
@@ -295,7 +294,7 @@ impl<'a> MixerView<'a> {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
         // Minimalist header - just mode indicator and status
         let mode_str = if self.editing { "[EDIT]" } else { "" };
-        let title = format!("TERMIXER {}", mode_str);
+        let title = format!("T E R M I X E R {}", mode_str);
 
         let title_style = Style::default().fg(TEXT_BRIGHT).add_modifier(Modifier::BOLD);
         buf.set_string(area.x + 1, area.y, &title, title_style);
@@ -340,6 +339,8 @@ impl<'a> MixerView<'a> {
                             GlobalSequenceControl::Mute => {
                                 if seq_state.global.mute { "PAUSE" } else { "PLAY" }
                             }
+                            GlobalSequenceControl::Save => "SAVE",
+                            GlobalSequenceControl::Load => "LOAD",
                         };
                         format!("{} | {}", pane_label, ctrl_label)
                     } else if let Some(seq_idx) = seq_state.selected {
@@ -631,7 +632,10 @@ impl<'a> MixerView<'a> {
         } else {
             Style::default().fg(HINT_DEFAULT)
         };
-        buf.set_string(cx, cy, key.to_string(), key_style);
+        // Single-char key without String allocation
+        let mut key_buf = [0u8; 4];
+        let key_str = key.encode_utf8(&mut key_buf);
+        buf.set_string(cx, cy, key_str, key_style);
     }
 
     /// Render the sequences pane (below DJ center, between Deck A and Deck B)
@@ -687,12 +691,15 @@ impl<'a> MixerView<'a> {
             buf.set_string(inner.x, sep_y, &sep_line, Style::default().fg(border_color));
 
             // Draw ┴ intersections connecting top bar │ to separator line
+            // Positions match SequenceTopBar render formula (from right edge)
             let bpm_str_len = format!("{:.0}", seq_state.global.bpm).len() as u16;
-            let sep1_x = inner.x + inner.width - 7 - bpm_str_len;
-            let sep2_x = inner.x + inner.width - 4;
-            for sx in [sep1_x, sep2_x] {
+            let sep1_x = inner.x + inner.width - 15 - bpm_str_len;  // Vol│BPM
+            let sep_save_x = inner.x + inner.width - 12;             // BPM│Save
+            let sep_ls_x = inner.x + inner.width - 8;                // Save│Load
+            let sep_pp_x = inner.x + inner.width - 4;                // Load│Play
+            for sx in [sep1_x, sep_save_x, sep_ls_x, sep_pp_x] {
                 if sx >= inner.x && sx < inner.x + inner.width {
-                    buf.set_string(sx, sep_y, "┴", Style::default().fg(border_color));
+                    buf.set_string(sx, sep_y, "\u{2534}", Style::default().fg(border_color));
                 }
             }
 
@@ -701,6 +708,21 @@ impl<'a> MixerView<'a> {
             let right_border = inner.x + inner.width;
             buf.set_string(left_border, sep_y, "├", Style::default().fg(border_color));
             buf.set_string(right_border, sep_y, "┤", Style::default().fg(border_color));
+        }
+
+        // Draw ┬ intersections on the top border connecting to top bar │
+        {
+            let top_border_y = inner.y.saturating_sub(1);
+            let bpm_str_len = format!("{:.0}", seq_state.global.bpm).len() as u16;
+            let sep1_x = inner.x + inner.width - 15 - bpm_str_len;
+            let sep_save_x = inner.x + inner.width - 12;
+            let sep_ls_x = inner.x + inner.width - 8;
+            let sep_pp_x = inner.x + inner.width - 4;
+            for sx in [sep1_x, sep_save_x, sep_ls_x, sep_pp_x] {
+                if sx >= inner.x && sx < inner.x + inner.width {
+                    buf.set_string(sx, top_border_y, "\u{252C}", Style::default().fg(border_color));
+                }
+            }
         }
 
         // Sequence rows (scrollable, starting from row 2)
@@ -1131,10 +1153,10 @@ impl<'a> MixerView<'a> {
         // Ensure the active tab is visible (mutates tab_scroll_offset through interior mutability)
         // Since we can't mutate picker here, we compute the offset inline
         let tab_widths: Vec<(SourcePickerTab, usize)> = vec![
-            (SourcePickerTab::MpvSockets, 16),
-            (SourcePickerTab::AudioFiles, 16),
-            (SourcePickerTab::SuperCollider, 18),
-            (SourcePickerTab::DeckActions, 17),
+            (SourcePickerTab::MpvSockets, 14),   // " MPV Sockets "
+            (SourcePickerTab::AudioFiles, 14),    // " Audio Files "
+            (SourcePickerTab::SuperCollider, 16), // " SuperCollider "
+            (SourcePickerTab::DeckActions, 15),   // " Deck Actions "
         ];
         let mut tab_x = 0;
         let mut active_x = 0;
@@ -1154,10 +1176,10 @@ impl<'a> MixerView<'a> {
         }
 
         let all_tabs: Vec<(SourcePickerTab, &str, &str)> = vec![
-            (SourcePickerTab::MpvSockets, " [MPV Sockets] ", "  MPV Sockets  "),
-            (SourcePickerTab::AudioFiles, " [Audio Files] ", "  Audio Files  "),
-            (SourcePickerTab::SuperCollider, " [SuperCollider] ", "  SuperCollider  "),
-            (SourcePickerTab::DeckActions, " [Deck Actions] ", "  Deck Actions  "),
+            (SourcePickerTab::MpvSockets, " MPV Sockets ", " MPV Sockets "),
+            (SourcePickerTab::AudioFiles, " Audio Files ", " Audio Files "),
+            (SourcePickerTab::SuperCollider, " SuperCollider ", " SuperCollider "),
+            (SourcePickerTab::DeckActions, " Deck Actions ", " Deck Actions "),
         ];
 
         // Build the full tab line as styled graphemes, then render the visible slice
@@ -1167,7 +1189,7 @@ impl<'a> MixerView<'a> {
             let label = if picker.tab == *tab { *active_label } else { *inactive_label };
             let is_active = picker.tab == *tab;
             let style = if is_active {
-                Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(TEXT_DEFAULT)
             };
@@ -1207,7 +1229,7 @@ impl<'a> MixerView<'a> {
                     break;
                 }
 
-                let is_selected = i == picker.selected;
+                let is_selected = i == picker.selected && picker.selected < picker.filtered.len();
                 let style = if is_selected {
                     Style::default().fg(Color::Black).bg(BORDER_ACTIVE)
                 } else {
@@ -1219,7 +1241,7 @@ impl<'a> MixerView<'a> {
 
                 // Right-align key column if available (3 chars: "12B")
                 let key_display = item.camelot_key.as_deref().unwrap_or("");
-                let usable_width = list_area.width as usize;
+                let usable_width = (list_area.width as usize).saturating_sub(1);
                 let name_width = if !key_display.is_empty() && usable_width > 6 {
                     usable_width - 4 // reserve 4 chars for key + padding
                 } else {
@@ -1469,12 +1491,7 @@ impl<'a> MixerView<'a> {
         let scroll_offset = if self.debug_scroll > 0 {
             // Absolute position: debug_scroll IS the top-line index (frozen)
             self.debug_scroll.min(total_lines.saturating_sub(1))
-        } else if total_lines > inner_height {
-            // Follow mode: show latest lines
-            total_lines - inner_height
-        } else {
-            0
-        };
+        } else { total_lines.saturating_sub(inner_height) };
 
         let paragraph = Paragraph::new(lines).scroll((scroll_offset as u16, 0));
         paragraph.render(text_area, buf);

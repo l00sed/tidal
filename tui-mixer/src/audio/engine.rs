@@ -12,6 +12,9 @@ use crate::audio::dsp::{AtomicMeter, Biquad, DcBlocker, FilterType, LfoOsc, Svf,
 use crate::state::MASTER_EQ_FREQUENCIES;
 use crate::audio::pipe_capture::PipeCaptureThread;
 
+/// Shared cache of pre-decoded pad samples: (samples, sample_rate) per pad slot.
+type PadSampleCache = Arc<std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>>;
+
 // macOS CoreAudio FFI for reading system output volume
 #[cfg(target_os = "macos")]
 mod macos_volume {
@@ -305,6 +308,10 @@ struct DspFilters {
     master_eq_l: [Biquad; 10],
     master_eq_r: [Biquad; 10],
     master_eq: [f32; 10],
+    prev_eq_low: f32,
+    prev_eq_mid: f32,
+    prev_eq_hi: f32,
+    prev_master_eq: [f32; 10],
 }
 
 impl DspFilters {
@@ -350,6 +357,10 @@ impl DspFilters {
             master_eq_l: Self::make_master_eq_bank(sr),
             master_eq_r: Self::make_master_eq_bank(sr),
             master_eq: [0.0; 10],
+            prev_eq_low: f32::NAN,
+            prev_eq_mid: f32::NAN,
+            prev_eq_hi: f32::NAN,
+            prev_master_eq: [f32::NAN; 10],
         }
     }
 
@@ -425,17 +436,31 @@ impl DspFilters {
         let eq_lo_gain = if ctrl.eq_low_kill { -48.0 } else { ctrl.eq_low };
         let eq_mi_gain = if ctrl.eq_mid_kill { -48.0 } else { ctrl.eq_mid };
         let eq_hi_gain = if ctrl.eq_high_kill { -48.0 } else { ctrl.eq_high };
-        self.eq_lo_l.set_params(FilterType::Peaking, 80.0, 0.707, eq_lo_gain);
-        self.eq_lo_r.set_params(FilterType::Peaking, 80.0, 0.707, eq_lo_gain);
-        self.eq_mi_l.set_params(FilterType::Peaking, 1000.0, 0.707, eq_mi_gain);
-        self.eq_mi_r.set_params(FilterType::Peaking, 1000.0, 0.707, eq_mi_gain);
-        self.eq_hi_l.set_params(FilterType::Peaking, 8000.0, 0.707, eq_hi_gain);
-        self.eq_hi_r.set_params(FilterType::Peaking, 8000.0, 0.707, eq_hi_gain);
+        // Only recalculate biquad coefficients when gain actually changes
+        if eq_lo_gain != self.prev_eq_low {
+            self.eq_lo_l.set_params(FilterType::Peaking, 80.0, 0.707, eq_lo_gain);
+            self.eq_lo_r.set_params(FilterType::Peaking, 80.0, 0.707, eq_lo_gain);
+            self.prev_eq_low = eq_lo_gain;
+        }
+        if eq_mi_gain != self.prev_eq_mid {
+            self.eq_mi_l.set_params(FilterType::Peaking, 1000.0, 0.707, eq_mi_gain);
+            self.eq_mi_r.set_params(FilterType::Peaking, 1000.0, 0.707, eq_mi_gain);
+            self.prev_eq_mid = eq_mi_gain;
+        }
+        if eq_hi_gain != self.prev_eq_hi {
+            self.eq_hi_l.set_params(FilterType::Peaking, 8000.0, 0.707, eq_hi_gain);
+            self.eq_hi_r.set_params(FilterType::Peaking, 8000.0, 0.707, eq_hi_gain);
+            self.prev_eq_hi = eq_hi_gain;
+        }
 
         self.master_eq = *master_eq;
+        // Only recalculate master EQ biquads when gains change
         for (i, band_db) in self.master_eq.iter().enumerate() {
-            self.master_eq_l[i].set_params(FilterType::Peaking, MASTER_EQ_FREQUENCIES[i], 1.0, *band_db);
-            self.master_eq_r[i].set_params(FilterType::Peaking, MASTER_EQ_FREQUENCIES[i], 1.0, *band_db);
+            if *band_db != self.prev_master_eq[i] {
+                self.master_eq_l[i].set_params(FilterType::Peaking, MASTER_EQ_FREQUENCIES[i], 1.0, *band_db);
+                self.master_eq_r[i].set_params(FilterType::Peaking, MASTER_EQ_FREQUENCIES[i], 1.0, *band_db);
+                self.prev_master_eq[i] = *band_db;
+            }
         }
     }
 
@@ -722,7 +747,7 @@ pub struct AudioEngine {
     /// Cached sample data per pad, indexed by pad index.
     /// Set from UI thread when a sample is assigned; read by audio callback
     /// when a sequencer step triggers. Tuple: (samples, sample_rate).
-    pub pad_sample_cache: Arc<std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>>,
+    pub pad_sample_cache: PadSampleCache,
 }
 
 /// Rate-limited error callback: logs the first error, then at most once every 5 s.
@@ -820,7 +845,7 @@ impl AudioEngine {
 
         // Pad sample cache: holds Arc<Vec<f32>> for each pad's cached audio.
         // Updated from UI thread when samples are assigned; read by audio callback.
-        let pad_sample_cache: Arc<std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>> =
+        let pad_sample_cache: PadSampleCache =
             Arc::new(std::sync::RwLock::new(vec![None; 16]));
 
         // Direct pad trigger flags: one AtomicBool per pad slot.
@@ -915,11 +940,10 @@ impl AudioEngine {
         // Prefer it when PipeWire is detected and a default device exists.
         let pipewire_default: Option<cpal::Device> = if has_pipewire {
             let dev = host.default_output_device();
-            if let Some(ref d) = dev {
-                if let Ok(n) = d.description() {
+            if let Some(ref d) = dev
+                && let Ok(n) = d.description() {
                     eprintln!("Audio: PipeWire default output device: {}", n);
                 }
-            }
             dev
         } else {
             None
@@ -1139,7 +1163,7 @@ impl AudioEngine {
             } else {
                 picked.max_sample_rate()
             };
-            let cfg = picked.clone().with_sample_rate(sr).config();
+            let cfg = (*picked).with_sample_rate(sr).config();
             let mut cfg = cfg;
             cfg.buffer_size = cpal::BufferSize::Fixed(256);
             let cb_meters_inner = meters.clone();
@@ -1408,7 +1432,7 @@ impl AudioEngine {
                 } else {
                     hp_cfg.max_sample_rate()
                 };
-                let cfg = hp_cfg.clone().with_sample_rate(sr).config();
+                let cfg = (*hp_cfg).with_sample_rate(sr).config();
                 let mut cfg = cfg;
                 cfg.buffer_size = cpal::BufferSize::Fixed(256);
                 let channels = cfg.channels as usize;
@@ -1534,7 +1558,7 @@ impl AudioEngine {
         } else {
             picked.max_sample_rate()
         };
-        let cfg = picked.clone().with_sample_rate(sr).config();
+        let cfg = (*picked).with_sample_rate(sr).config();
         let mut cfg = cfg;
         cfg.buffer_size = cpal::BufferSize::Fixed(256);
         let channels = cfg.channels as usize;
@@ -1615,8 +1639,8 @@ impl AudioEngine {
             return;
         }
         let reverse = delta_secs < 0.0;
-        if let Ok(guard) = self.decoders[ch].lock() {
-            if let Some(decoder) = guard.as_ref() {
+        if let Ok(guard) = self.decoders[ch].lock()
+            && let Some(decoder) = guard.as_ref() {
                 decoder.set_reverse_scrub(reverse);
                 let mut target = self.time_pos[ch].load() + delta_secs;
                 let dur = self.duration[ch].load();
@@ -1630,7 +1654,6 @@ impl AudioEngine {
                 self.seek_requests[ch].store(target);
                 return;
             }
-        }
 
         if self.has_capture(ch) {
             self.capture_reverse[ch].set_active(reverse);
@@ -1739,8 +1762,8 @@ impl AudioEngine {
     /// is assigned to a pad. The audio callback reads this when a sequencer
     /// step triggers.
     pub fn set_pad_sample(&self, pad_idx: usize, samples: Vec<f32>, sample_rate: u32, channels: u16) {
-        if let Ok(mut cache) = self.pad_sample_cache.write() {
-            if pad_idx < cache.len() {
+        if let Ok(mut cache) = self.pad_sample_cache.write()
+            && pad_idx < cache.len() {
                 // Ensure samples are always stereo interleaved for the voice mixer.
                 // Mono files get each sample duplicated to L/R.
                 let stereo_samples = if channels == 1 {
@@ -1755,17 +1778,15 @@ impl AudioEngine {
                 };
                 cache[pad_idx] = Some(Arc::new((stereo_samples, sample_rate)));
             }
-        }
     }
 
     /// Clear cached sample data for a pad.
     #[allow(dead_code)]
     pub fn clear_pad_sample(&self, pad_idx: usize) {
-        if let Ok(mut cache) = self.pad_sample_cache.write() {
-            if pad_idx < cache.len() {
+        if let Ok(mut cache) = self.pad_sample_cache.write()
+            && pad_idx < cache.len() {
                 cache[pad_idx] = None;
             }
-        }
     }
 
     /// Publish sequence state from UI to audio thread via the control snapshot.
@@ -1812,13 +1833,12 @@ fn headphone_callback(
             use std::sync::atomic::AtomicU64;
             static LOG_COUNTER: AtomicU64 = AtomicU64::new(0);
             let c = LOG_COUNTER.fetch_add(1, Ordering::Relaxed);
-            if c < 5 || c % 2000 == 0 {
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
+            if (c < 5 || c % 2000 == 0)
+                && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
                     .open("/tmp/termixer_hp_debug.log") {
                     use std::io::Write;
                     let _ = writeln!(f, "hp cb#{}: sys_vol={:?}", c, v);
                 }
-            }
             v.unwrap_or(1.0)
         }
         #[cfg(not(target_os = "macos"))]
@@ -1831,13 +1851,13 @@ fn headphone_callback(
     let available = consumer.slots();
     let stereo_samples = available / 2;
     let to_read = frames.min(stereo_samples);
-    if to_read > 0 {
-        if let Ok(chunk) = consumer.read_chunk(to_read * 2) {
+    if to_read > 0
+        && let Ok(chunk) = consumer.read_chunk(to_read * 2) {
             let (first, second) = chunk.as_slices();
             let mut written = 0;
             for sample_pair in first.chunks(2) {
                 if written >= frames { break; }
-                let l = soft_limit(sample_pair.get(0).copied().unwrap_or(0.0) * sys_vol * DECK_C_VOLUME_OFFSET);
+                let l = soft_limit(sample_pair.first().copied().unwrap_or(0.0) * sys_vol * DECK_C_VOLUME_OFFSET);
                 let r = soft_limit(sample_pair.get(1).copied().unwrap_or(l) * sys_vol * DECK_C_VOLUME_OFFSET);
                 for ci in 0..channels.min(2) {
                     data[written * channels + ci] = if ci == 0 { l } else { r };
@@ -1849,7 +1869,7 @@ fn headphone_callback(
             }
             for sample_pair in second.chunks(2) {
                 if written >= frames { break; }
-                let l = soft_limit(sample_pair.get(0).copied().unwrap_or(0.0) * sys_vol * DECK_C_VOLUME_OFFSET);
+                let l = soft_limit(sample_pair.first().copied().unwrap_or(0.0) * sys_vol * DECK_C_VOLUME_OFFSET);
                 let r = soft_limit(sample_pair.get(1).copied().unwrap_or(l) * sys_vol * DECK_C_VOLUME_OFFSET);
                 for ci in 0..channels.min(2) {
                     data[written * channels + ci] = if ci == 0 { l } else { r };
@@ -1861,7 +1881,6 @@ fn headphone_callback(
             }
             chunk.commit_all();
         }
-    }
     let written_frames = to_read;
     for f in written_frames..frames {
         for c in 0..channels {
@@ -1899,28 +1918,74 @@ impl PadVoiceState {
     }
 }
 
+/// Fixed-size ring buffer for RT-safe use in the audio callback.
+struct RingBuf<T, const N: usize> {
+    buf: [MaybeUninit<T>; N],
+    head: usize,
+    len: usize,
+}
+
+impl<T: Copy, const N: usize> RingBuf<T, N> {
+    fn new(init: T) -> Self {
+        // SAFETY: T is Copy, so uninitialized -> initialized via copy is fine.
+        // We write all N slots during construction.
+        let mut buf: [MaybeUninit<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+        for slot in buf.iter_mut() {
+            *slot = MaybeUninit::new(init);
+        }
+        Self { buf, head: 0, len: 0 }
+    }
+
+    fn push(&mut self, val: T) {
+        let tail = (self.head + self.len) % N;
+        self.buf[tail] = MaybeUninit::new(val);
+        if self.len < N {
+            self.len += 1;
+        } else {
+            self.head = (self.head + 1) % N;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        (0..self.len).map(move |i| {
+            let idx = (self.head + i) % N;
+            // SAFETY: all slots [0..len] are initialized
+            unsafe { self.buf[idx].assume_init_ref() }
+        })
+    }
+}
+
+use std::mem::MaybeUninit;
+
 /// Persistent onset detection state for a single deck.
 pub struct OnsetState {
-    pub energy_ring: Vec<f32>,
-    pub onset_times: Vec<Instant>,
+    /// Fixed-size ring buffer for energy history (max 100 samples).
+    energy_ring: RingBuf<f32, 100>,
+    /// Fixed-size ring buffer for onset timestamps (max 32 entries).
+    onset_times: RingBuf<Instant, 32>,
     pub last_onset: Instant,
     pub frame_counter: u64,
-    /// Accumulated mono samples for key detection (resets after dispatching).
-    pub key_sample_buffer: Vec<f32>,
+    /// Pre-allocated buffer for key detection samples (~5s at 48kHz).
+    key_sample_buffer: Vec<f32>,
 }
 
 impl OnsetState {
     pub fn new() -> Self {
         Self {
-            energy_ring: Vec::with_capacity(100),
-            onset_times: Vec::with_capacity(32),
+            energy_ring: RingBuf::new(0.0),
+            onset_times: RingBuf::new(Instant::now()),
             last_onset: Instant::now() - std::time::Duration::from_secs(5),
             frame_counter: 0,
-            key_sample_buffer: Vec::new(),
+            key_sample_buffer: Vec::with_capacity(48000 * 5),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn audio_callback(
     data: &mut [f32],
     ctrl_output: &mut triple_buffer::Output<ControlSnapshot>,
@@ -1942,7 +2007,7 @@ fn audio_callback(
     pad_voices: &mut PadVoiceState,
     pad_sample_cache: &std::sync::RwLock<Vec<Option<Arc<(Vec<f32>, u32)>>>>,
     sequence_steps: &[AtomicUsize],
-    pad_triggers: &Vec<AtomicBool>,
+    pad_triggers: &[AtomicBool],
     onset_state: &mut [OnsetState; 3],
     key_sample_tx: &std::sync::mpsc::Sender<(usize, Vec<f32>, u32)>,
 ) {
@@ -1970,8 +2035,8 @@ fn audio_callback(
     let mut ml = crate::audio::dsp::LevelMeter::new();
 
     // Update DSP parameters (owned locally — no lock).
-    for d in 0..3 {
-        dsp_state[d].update_params(&ctrl.decks[d], frames, &ctrl.master.master_eq);
+    for (d, deck_ctrl) in dsp_state.iter_mut().zip(ctrl.decks.iter()) {
+        d.update_params(deck_ctrl, frames, &ctrl.master.master_eq);
     }
 
     let solo_active = ctrl.master.solo_active;
@@ -1983,11 +2048,10 @@ fn audio_callback(
             capture_reverse[d].reset_cursor();
             if let Some(ref mut consumer) = cap_consumers[d] {
                 let queued = consumer.slots();
-                if queued > 0 {
-                    if let Ok(chunk) = consumer.read_chunk(queued) {
+                if queued > 0
+                    && let Ok(chunk) = consumer.read_chunk(queued) {
                         chunk.commit_all();
                     }
-                }
                 dsp_state[d].prev_l = 0.0;
                 dsp_state[d].prev_r = 0.0;
                 dsp_state[d].underrun_gain = 0.0;
@@ -2012,8 +2076,8 @@ fn audio_callback(
         if capture_reverse[d].is_active() {
             let out = &mut deck_bufs[d][..need];
             out.fill(0.0);
-            let produced = if let Ok(mut cursor) = capture_reverse[d].cursor_frames.lock() {
-                capture_lookback[d].fill_reverse_from_cursor(out, &mut *cursor)
+            let produced = if let Ok(mut cursor) = capture_reverse[d].cursor_frames.try_lock() {
+                capture_lookback[d].fill_reverse_from_cursor(out, &mut cursor)
             } else {
                 0
             };
@@ -2032,18 +2096,19 @@ fn audio_callback(
             }
             if avail > 0 {
                 let to_read = need.min(avail);
-                let chunk = consumer.read_chunk(to_read).unwrap();
-                let (first, second) = chunk.as_slices();
-                deck_bufs[d][..first.len()].copy_from_slice(first);
-                if !second.is_empty() {
-                    deck_bufs[d][first.len()..first.len() + second.len()]
-                        .copy_from_slice(second);
+                if let Ok(chunk) = consumer.read_chunk(to_read) {
+                    let (first, second) = chunk.as_slices();
+                    deck_bufs[d][..first.len()].copy_from_slice(first);
+                    if !second.is_empty() {
+                        deck_bufs[d][first.len()..first.len() + second.len()]
+                            .copy_from_slice(second);
+                    }
+                    let total = first.len() + second.len();
+                    chunk.commit_all();
+                    capture_lookback[d].push_interleaved(&deck_bufs[d][..total]);
+                    deck_reads[d] = total;
+                    continue;
                 }
-                let total = first.len() + second.len();
-                chunk.commit_all();
-                capture_lookback[d].push_interleaved(&deck_bufs[d][..total]);
-                deck_reads[d] = total;
-                continue;
             }
         }
         // Fallback: SharedBuf (symphonia decoder)
@@ -2060,8 +2125,8 @@ fn audio_callback(
     // The audio callback owns pad_triggers; UI sets pad_triggers[i] = true.
     // Always activate a voice on trigger — the voice mixing section handles
     // cache lookup and won't produce audio if sample data isn't loaded.
-    for i in 0..pad_triggers.len().min(pad_voices.voice_active.len()) {
-        if pad_triggers[i].swap(false, Ordering::Relaxed) {
+    for (i, trigger) in pad_triggers.iter().enumerate().take(pad_voices.voice_active.len()) {
+        if trigger.swap(false, Ordering::Relaxed) {
             // Find a free voice slot
             for v in 0..pad_voices.voice_active.len() {
                 if !pad_voices.voice_active[v] {
@@ -2156,8 +2221,8 @@ fn audio_callback(
         }
 
         // If the triggered step is active in the pattern, start playback
-        if seq.pattern[step] {
-            if let Some(cache) = cache_ref {
+        if seq.pattern[step]
+            && let Some(cache) = cache_ref {
                 let pad_idx = seq.pad_idx;
                 if pad_idx < cache.len() && cache[pad_idx].is_some() {
                     // Find a free voice slot
@@ -2173,7 +2238,6 @@ fn audio_callback(
                     }
                 }
             }
-        }
 
         // Publish step to UI via atomic
         if let Some(atomic) = sequence_steps.get(seq_idx) {
@@ -2191,7 +2255,8 @@ fn audio_callback(
         let mut mix_l = 0.0;
         let mut mix_r = 0.0;
 
-        for d in 0..3 {
+    #[allow(clippy::needless_range_loop)]
+    for d in 0..3 {
             let cd = &ctrl.decks[d];
             let n = deck_reads[d];
 
@@ -2248,12 +2313,11 @@ fn audio_callback(
 
             // Deck C (d==2) routes to headphone output instead of main mix
             if d == 2 {
-                if let Ok(mut guard) = hp_producer.try_lock() {
-                    if let Some(ref mut prod) = *guard {
+                if let Ok(mut guard) = hp_producer.try_lock()
+                    && let Some(ref mut prod) = *guard {
                         let _ = prod.push(l);
                         let _ = prod.push(r);
                     }
-                }
             } else {
                 mix_l += l;
                 mix_r += r;
@@ -2356,9 +2420,6 @@ fn audio_callback(
 
                 let energy = rms;
                 onset_state[d].energy_ring.push(energy);
-                if onset_state[d].energy_ring.len() > 100 {
-                    onset_state[d].energy_ring.remove(0);
-                }
 
                 if onset_state[d].energy_ring.len() >= 20 {
                     let ring = &onset_state[d].energy_ring;
@@ -2372,20 +2433,24 @@ fn audio_callback(
                     if energy > threshold && energy > mean * 1.05 && ms_since >= 250.0 {
                         onset_state[d].onset_times.push(now);
                         onset_state[d].last_onset = now;
-                        if onset_state[d].onset_times.len() > 32 {
-                            onset_state[d].onset_times.remove(0);
-                        }
 
                         if onset_state[d].onset_times.len() >= 3 {
-                            let mut iois: Vec<f32> = onset_state[d].onset_times.windows(2)
-                                .map(|w| w[1].duration_since(w[0]).as_millis() as f32)
-                                .filter(|ioi| *ioi >= 250.0 && *ioi <= 1000.0)
-                                .collect();
-                            if iois.len() >= 2 {
-                                iois.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                                let median = iois[iois.len() / 2];
+                            // Stack-allocated IOI buffer (max 31 intervals from 32 onsets)
+                            let mut iois = [0.0f32; 31];
+                            let mut ioi_count = 0;
+                            let times: Vec<Instant> = onset_state[d].onset_times.iter().copied().collect();
+                            for pair in times.windows(2) {
+                                let ioi = pair[1].duration_since(pair[0]).as_millis() as f32;
+                                if (250.0..=1000.0).contains(&ioi) && ioi_count < iois.len() {
+                                    iois[ioi_count] = ioi;
+                                    ioi_count += 1;
+                                }
+                            }
+                            if ioi_count >= 2 {
+                                iois[..ioi_count].sort_by(|a, b| a.partial_cmp(b).unwrap());
+                                let median = iois[ioi_count / 2];
                                 let bpm = (60000.0 / median * 100.0) as u32;
-                                if bpm >= 6000 && bpm <= 20000 {
+                                if (6000..=20000).contains(&bpm) {
                                     meters[d].detected_bpm.store(bpm, Ordering::Relaxed);
                                 }
                             }
@@ -2407,6 +2472,8 @@ fn audio_callback(
                     let sr = sample_rate as usize;
                     if onset_state[d].key_sample_buffer.len() >= sr * 5 {
                         let buf = std::mem::take(&mut onset_state[d].key_sample_buffer);
+                        // Re-claim capacity for next cycle
+                        onset_state[d].key_sample_buffer = Vec::with_capacity(sr * 5);
                         let _ = key_sample_tx.send((d, buf, sr as u32));
                     }
                 }
@@ -2420,26 +2487,14 @@ fn audio_callback(
     // ~once/sec; try_lock never blocks the audio thread.
     static DBG_FRAME: AtomicU64 = AtomicU64::new(0);
     let frame_count = DBG_FRAME.fetch_add(1, Ordering::Relaxed);
-    if frame_count % 50 == 0 {
-        // Diagnostic: log what the callback actually sees
-        eprintln!(
-            "cb#{}: reads=[{},{},{}] frames={} vol0={:.3} muted={} master={:.3} mix_peak={:.6}",
-            frame_count,
-            deck_reads[0], deck_reads[1], deck_reads[2],
-            frames,
-            ctrl.decks[0].volume,
-            ctrl.decks[0].muted,
-            ctrl.master.fader,
-            data.iter().map(|s| s.abs()).fold(0.0f32, f32::max),
-        );
-        if let Ok(mut s) = lfo_debug.try_lock() {
+    if frame_count % 50 == 0
+        && let Ok(mut s) = lfo_debug.try_lock() {
             s.clear();
-            for di in 0..3 {
+            for (di, deck_dsp) in dsp_state.iter().enumerate() {
                 if di > 0 { s.push(' '); }
-                let dl = dsp_state[di].lfo_debug_line();
+                let dl = deck_dsp.lfo_debug_line();
                 let ss = ctrl.decks[di].lfo_speed;
                 s.push_str(&format!("[{}]{} ss={:.3}", di, dl, ss));
             }
         }
-    }
 }

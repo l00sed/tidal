@@ -67,6 +67,7 @@ impl PipeCaptureThread {
                 let mut total_bytes: u64 = 0;
                 let mut log_counter: u32 = 0;
                 let mut should_exit = false;
+                let mut sample_buf: Vec<f32> = Vec::with_capacity(1024);
 
                 while !should_exit {
                     if stop_inner.load(Ordering::Acquire) {
@@ -100,14 +101,15 @@ impl PipeCaptureThread {
                             // the engine's native rate (e.g. 96 kHz) via
                             // --audio-samplerate=96000.
                             if samples > 0 {
-                                let mut vals = vec![0.0f32; samples];
-                                for (i, out) in vals.iter_mut().enumerate() {
+                                sample_buf.clear();
+                                sample_buf.resize(samples, 0.0f32);
+                                for (i, out) in sample_buf.iter_mut().enumerate() {
                                     let b = &byte_buf[i * 4..i * 4 + 4];
                                     *out = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                                 }
 
                                 let mut offset = 0usize;
-                                while offset < vals.len() {
+                                while offset < sample_buf.len() {
                                     if stop_inner.load(Ordering::Acquire) {
                                         should_exit = true;
                                         break;
@@ -118,10 +120,10 @@ impl PipeCaptureThread {
                                         continue;
                                     }
 
-                                    let to_write = (vals.len() - offset).min(slots);
+                                    let to_write = (sample_buf.len() - offset).min(slots);
                                     let mut written = 0usize;
                                     for i in 0..to_write {
-                                        let v = vals[offset + i];
+                                        let v = sample_buf[offset + i];
                                         if producer.push(v).is_err() {
                                             break;
                                         }

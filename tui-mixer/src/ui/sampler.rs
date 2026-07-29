@@ -122,6 +122,7 @@ impl<'a> Widget for PadConfigPane<'a> {
 }
 
 /// Render a single config control row
+#[allow(clippy::too_many_arguments)]
 fn render_config_row(
     area: Rect,
     buf: &mut Buffer,
@@ -312,28 +313,65 @@ impl<'a> Widget for SequenceTopBar<'a> {
         let y = area.y;
         let border_style = Style::default().fg(self.border_color);
 
-        // Color scheme: default=gray, focused=white, editing=yellow
+        // Layout (right to left):  Play │ Load │ Save │ BPM │ Vol
+        // Each button is 3 cells: " X " (space + icon + space)
+        // Separators are 1 cell:  "│"
 
-        // --- Play/pause (rightmost cell, with padding) ---
+        // --- Play/pause (rightmost, 3 cells) ---
+        let pp_x = area.x + area.width - 3;
         let pp_is_target = self.selected && self.selected_control == GlobalSequenceControl::Mute;
         let pp_active = pp_is_target && self.editing;
         let (mute_label, mute_fg) = if self.global.mute {
-            ("󰏤", if pp_active { Color::Red } else if pp_is_target { Color::Red } else { Color::DarkGray })
+            ("\u{F03E4}", if pp_active || pp_is_target { Color::Red } else { Color::DarkGray })
         } else {
-            ("▶", if pp_active { TEXT_EDITING } else if pp_is_target { TEXT_BRIGHT } else { TEXT_DIM })
+            ("\u{25B6}", if pp_active { TEXT_EDITING } else if pp_is_target { TEXT_BRIGHT } else { TEXT_DIM })
         };
         let mute_style = if pp_is_target {
             Style::default().fg(mute_fg).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(mute_fg)
         };
-        let pp_icon_x = area.x + area.width - 2;
-        buf.set_string(pp_icon_x - 1, y, " ", mute_style);
-        buf.set_string(pp_icon_x, y, mute_label, mute_style);
+        buf.set_string(pp_x, y, " ", mute_style);
+        buf.set_string(pp_x + 1, y, mute_label, mute_style);
+        buf.set_string(pp_x + 2, y, " ", mute_style);
 
-        // --- Separator between BPM and play/pause ---
-        let sep2_x = pp_icon_x - 2;
-        buf.set_string(sep2_x, y, "│", border_style);
+        // --- Separator: │ Play ---
+        let sep_pp = pp_x - 1;
+        buf.set_string(sep_pp, y, "\u{2502}", border_style);
+
+        // --- Load button (3 cells) ---
+        let load_x = sep_pp - 3;
+        let load_is_target = self.selected && self.selected_control == GlobalSequenceControl::Load;
+        let load_fg = if load_is_target { TEXT_BRIGHT } else { TEXT_DIM };
+        let load_style = if load_is_target {
+            Style::default().fg(load_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(load_fg)
+        };
+        buf.set_string(load_x, y, " ", load_style);
+        buf.set_string(load_x + 1, y, "\u{EAF7}", load_style); // nf-cod-folder-opened
+        buf.set_string(load_x + 2, y, " ", load_style);
+
+        // --- Separator: Load │ Save ---
+        let sep_ls = load_x - 1;
+        buf.set_string(sep_ls, y, "\u{2502}", border_style);
+
+        // --- Save button (3 cells) ---
+        let save_x = sep_ls - 3;
+        let save_is_target = self.selected && self.selected_control == GlobalSequenceControl::Save;
+        let save_fg = if save_is_target { TEXT_BRIGHT } else { TEXT_DIM };
+        let save_style = if save_is_target {
+            Style::default().fg(save_fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(save_fg)
+        };
+        buf.set_string(save_x, y, " ", save_style);
+        buf.set_string(save_x + 1, y, "\u{EB4B}", save_style); // nf-cod-save
+        buf.set_string(save_x + 2, y, " ", save_style);
+
+        // --- Separator: BPM │ Save ---
+        let sep_save = save_x - 1;
+        buf.set_string(sep_save, y, "\u{2502}", border_style);
 
         // --- BPM (padded cell) ---
         let bpm_str = format!("{:.0}", self.global.bpm);
@@ -345,16 +383,16 @@ impl<'a> Widget for SequenceTopBar<'a> {
         } else {
             Style::default().fg(bpm_fg)
         };
-        let bpm_text_x = sep2_x - bpm_str.len() as u16 - 1;
+        let bpm_text_x = sep_save - bpm_str.len() as u16 - 1;
         buf.set_string(bpm_text_x - 1, y, " ", bpm_style);
         buf.set_string(bpm_text_x, y, &bpm_str, bpm_style);
         buf.set_string(bpm_text_x + bpm_str.len() as u16, y, " ", bpm_style);
 
-        // --- Separator between volume and BPM ---
+        // --- Separator: Vol │ BPM ---
         let sep1_x = bpm_text_x - 2;
-        buf.set_string(sep1_x, y, "│", border_style);
+        buf.set_string(sep1_x, y, "\u{2502}", border_style);
 
-        // --- Volume slider (no brackets, fills remaining space) ---
+        // --- Volume slider (fills remaining space) ---
         let slider_x = area.x + 1;
         let slider_end = sep1_x - 1;
         let slider_w = if slider_end > slider_x { slider_end - slider_x } else { 5 };
@@ -368,16 +406,13 @@ impl<'a> Widget for SequenceTopBar<'a> {
             Style::default().fg(vol_fg)
         };
         for i in 0..slider_w as usize {
-            let ch = if i < filled { "━" } else { "─" };
+            let ch = if i < filled { "\u{2501}" } else { "\u{2500}" };
             buf.set_string(slider_x + i as u16, y, ch, bar_style);
         }
 
-        // Connect inner separators to the top border with ┬
-        let top_y = area.y.saturating_sub(1);
-        if top_y < area.y {
-            buf.set_string(sep1_x, top_y, "┬", border_style);
-            buf.set_string(sep2_x, top_y, "┬", border_style);
-        }
+        // Connect all separators to the top border with ┬ (T-junction)
+        // Note: this is done in the mixer render code instead, since the
+        // top border is outside this widget's 1-row area.
     }
 }
 

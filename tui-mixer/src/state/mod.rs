@@ -10,6 +10,6 @@ pub use mixer::{
 
 pub use sampler::{
     PadConfig, PadControl, SamplePad, SamplePadGrid, PAD_KEYS,
-    Sequence, SequenceState, SEQUENCE_STEPS,
+    Sequence, SequenceState, SEQUENCE_STEPS, SessionState,
     GlobalSequenceControls, GlobalSequenceControl, EditTarget,
 };

@@ -166,11 +166,10 @@ fn parse_args(args: &[String]) -> CliArgs {
     }
 
     // Default music dir to ~/Music when not provided
-    if music_dir.is_none() {
-        if let Ok(home) = std::env::var("HOME") {
+    if music_dir.is_none()
+        && let Ok(home) = std::env::var("HOME") {
             music_dir = Some(PathBuf::from(home).join("Music"));
         }
-    }
 
     CliArgs { sources, auto_discover, music_dir, samples_dir }
 }
@@ -251,6 +250,7 @@ MOUSE:
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> where <B as Backend>::Error: Send + Sync + 'static {
     let mut frame_counter: u8 = 0;
     let mut next_tick = Instant::now() + app.tick_rate;
+    let mut play_steps: Vec<usize> = Vec::with_capacity(8);
 
     loop {
         // Update terminal dimensions for scroll calculations
@@ -270,7 +270,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             let master_devices = app.master_output.devices();
             let cue_devices = app.cue_output.devices();
 
-            let play_steps: Vec<usize> = app.sequence_state.sequences.iter().map(|s| s.current_step).collect();
+            play_steps.clear();
+            play_steps.extend(app.sequence_state.sequences.iter().map(|s| s.current_step));
             let mut view = MixerView::new(&app.mixer, &app.sample_pads)
                 .show_help(app.show_help())
                 .editing(app.is_editing())
@@ -295,7 +296,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 .confirm_action(confirm_action)
                 .confirm_selected(confirm_selected)
                 .help_scroll(app.help_scroll)
-                .debug_log(&app.debug_log)
+                .debug_log(app.debug_log.make_contiguous())
                 .debug_scroll(app.debug_scroll)
                 .samples_dir(Some(&app.samples_dir));
 
@@ -369,6 +370,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 
 /// Calculate screen areas for all panes for mouse hit testing.
 /// Returns (channel_areas, crossfader_area, master_area, cue_area, loops_area, pad_areas).
+#[allow(clippy::type_complexity)]
 fn calculate_all_areas(
     area: Rect,
     num_channels: usize,

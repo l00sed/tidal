@@ -10,6 +10,8 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
+type BpmCallback = Arc<Mutex<dyn Fn(Result<BpmResult, String>) + Send>>;
+
 /// Result of BPM + key detection for a single track
 #[derive(Debug, Clone)]
 pub struct BpmResult {
@@ -58,7 +60,7 @@ pub fn parse_camelot(s: &str) -> Option<(usize, bool)> {
         _ => return None,
     };
     let camelot_num: usize = num_part.parse().ok()?;
-    if camelot_num < 1 || camelot_num > 12 {
+    if !(1..=12).contains(&camelot_num) {
         return None;
     }
     // Reverse Camelot number to pitch class
@@ -189,8 +191,8 @@ pub fn detect_key_from_audio(samples: &[f32], sample_rate: u32) -> Option<String
     let mut num_frames = 0u32;
 
     // Hann window
-    for i in 0..fft_size {
-        window[i] = 0.5 * (1.0 - (TAU * i as f32 / fft_size as f32).cos());
+    for (i, w) in window.iter_mut().enumerate().take(fft_size) {
+        *w = 0.5 * (1.0 - (TAU * i as f32 / fft_size as f32).cos());
     }
 
     // Process frames
@@ -198,7 +200,7 @@ pub fn detect_key_from_audio(samples: &[f32], sample_rate: u32) -> Option<String
     while offset + fft_size <= segment.len() {
         // Use Goertzel algorithm for the 12 pitch class centers
 
-        for pc in 0..12 {
+        for (pc, chroma_val) in chroma.iter_mut().enumerate() {
             // Map pitch class to frequency (A4 = 440Hz, A = pitch class 9)
             // We accumulate energy across octaves 2-7 (roughly 80Hz - 8000Hz)
             let mut energy = 0.0f32;
@@ -224,7 +226,7 @@ pub fn detect_key_from_audio(samples: &[f32], sample_rate: u32) -> Option<String
                 let power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
                 energy += power;
             }
-            chroma[pc] += energy;
+            *chroma_val += energy;
         }
 
         num_frames += 1;
@@ -300,7 +302,7 @@ impl BpmAnalyzer {
     /// Analyze an audio file in a background thread. Calls `on_result` when done.
     pub fn analyze_file(
         path: &Path,
-        on_result: Arc<Mutex<dyn Fn(Result<BpmResult, String>) + Send>>,
+        on_result: BpmCallback,
     ) {
         let path = path.to_path_buf();
         thread::spawn(move || {

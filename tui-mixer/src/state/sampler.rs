@@ -296,8 +296,8 @@ impl SamplePadGrid {
     /// Move config control selection up
     pub fn config_control_up(&mut self) {
         let controls = PadControl::all();
-        if let Some(pos) = controls.iter().position(|c| *c == self.selected_control) {
-            if pos > 0 {
+        if let Some(pos) = controls.iter().position(|c| *c == self.selected_control)
+            && pos > 0 {
                 let mut new_pos = pos - 1;
                 // Skip over FiltersHeader (non-interactive)
                 while new_pos > 0 && controls[new_pos] == PadControl::FiltersHeader {
@@ -305,14 +305,13 @@ impl SamplePadGrid {
                 }
                 self.selected_control = controls[new_pos];
             }
-        }
     }
 
     /// Move config control selection down
     pub fn config_control_down(&mut self) {
         let controls = PadControl::all();
-        if let Some(pos) = controls.iter().position(|c| *c == self.selected_control) {
-            if pos + 1 < controls.len() {
+        if let Some(pos) = controls.iter().position(|c| *c == self.selected_control)
+            && pos + 1 < controls.len() {
                 let mut new_pos = pos + 1;
                 // Skip over FiltersHeader (non-interactive)
                 while new_pos < controls.len() - 1 && controls[new_pos] == PadControl::FiltersHeader {
@@ -320,7 +319,6 @@ impl SamplePadGrid {
                 }
                 self.selected_control = controls[new_pos];
             }
-        }
     }
 
     /// Adjust the currently selected config control by delta
@@ -521,7 +519,7 @@ impl EditTarget {
 }
 
 /// Global controls for all sequences (shown in top bar)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GlobalSequenceControls {
     pub volume: f32,
     pub bpm: f32,
@@ -539,6 +537,8 @@ impl Default for GlobalSequenceControls {
 pub enum GlobalSequenceControl {
     Volume,
     Bpm,
+    Save,
+    Load,
     Mute,
 }
 
@@ -603,11 +603,10 @@ impl SequenceState {
             self.sequences.remove(idx);
             if self.sequences.is_empty() {
                 self.selected = None;
-            } else if let Some(sel) = self.selected {
-                if sel >= self.sequences.len() {
+            } else if let Some(sel) = self.selected
+                && sel >= self.sequences.len() {
                     self.selected = Some(self.sequences.len() - 1);
                 }
-            }
         }
     }
 
@@ -677,6 +676,8 @@ impl SequenceState {
         let controls = [
             GlobalSequenceControl::Volume,
             GlobalSequenceControl::Bpm,
+            GlobalSequenceControl::Save,
+            GlobalSequenceControl::Load,
             GlobalSequenceControl::Mute,
         ];
         let idx = controls.iter().position(|&c| c == self.global_control).unwrap_or(0);
@@ -688,6 +689,8 @@ impl SequenceState {
         let controls = [
             GlobalSequenceControl::Volume,
             GlobalSequenceControl::Bpm,
+            GlobalSequenceControl::Save,
+            GlobalSequenceControl::Load,
             GlobalSequenceControl::Mute,
         ];
         let idx = controls.iter().position(|&c| c == self.global_control).unwrap_or(0);
@@ -697,19 +700,56 @@ impl SequenceState {
 
     /// Toggle a step in the selected sequence
     pub fn toggle_step(&mut self, step: usize) {
-        if let Some(sel) = self.selected {
-            if let Some(seq) = self.sequences.get_mut(sel) {
+        if let Some(sel) = self.selected
+            && let Some(seq) = self.sequences.get_mut(sel) {
                 seq.pattern[step] = !seq.pattern[step];
                 // Auto-play when any step is marked, auto-stop when all unmarked
                 seq.playing = seq.any_marked();
             }
-        }
     }
 }
 
 impl Default for SequenceState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Serializable session state for saving/loading pads and sequences
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionState {
+    /// All 16 sample pads with their configuration
+    pub pads: [SamplePad; 16],
+    /// All sequences
+    pub sequences: Vec<Sequence>,
+    /// Global sequence controls (volume, BPM, mute)
+    pub global: GlobalSequenceControls,
+}
+
+impl SessionState {
+    /// Create a session state snapshot from current app state
+    pub fn from_current(pads: &[SamplePad; 16], sequence_state: &SequenceState) -> Self {
+        Self {
+            pads: pads.clone(),
+            sequences: sequence_state.sequences.clone(),
+            global: sequence_state.global,
+        }
+    }
+
+    /// Save session to a JSON file
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize session: {}", e))?;
+        std::fs::write(path, json)
+            .map_err(|e| format!("Failed to write file: {}", e))
+    }
+
+    /// Load session from a JSON file
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, String> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read file: {}", e))?;
+        serde_json::from_str(&json)
+            .map_err(|e| format!("Failed to parse session: {}", e))
     }
 }
 
