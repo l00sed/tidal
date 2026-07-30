@@ -1027,12 +1027,11 @@ impl MixerState {
         &mut self,
         real_channels: &[(usize, f32, f32, f32, f32)], // (channel_idx, peak_l, peak_r, rms_l, rms_r)
     ) {
-        // Precompute crossfader gains (same formula as App::calculate_crossfader_gains)
+        // Precompute crossfader gains (equal-power sqrt, matching audio engine)
         let xf = self.dj.crossfader;
-        let xf_gain_a = if xf <= 0.0 { 1.0 } else { 1.0 - xf };
-        let xf_gain_b = if xf >= 0.0 { 1.0 } else { 1.0 + xf };
-        let xf_gain_a = xf_gain_a.clamp(0.0, 1.0);
-        let xf_gain_b = xf_gain_b.clamp(0.0, 1.0);
+        let cf = ((xf + 1.0) * 0.5).clamp(0.0, 1.0);
+        let xf_gain_a = (1.0 - cf).sqrt();
+        let xf_gain_b = cf.sqrt();
 
         for (i, channel) in self.channels.iter_mut().enumerate() {
             // Decay peaks (slow hold) and RMS (faster fall)

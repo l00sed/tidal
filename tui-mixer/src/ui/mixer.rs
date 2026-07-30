@@ -316,15 +316,17 @@ impl<'a> MixerView<'a> {
             if matches!(self.selected_pane, SelectedPane::Crossfader) {
                 pane_label.to_string()
             } else if matches!(self.selected_pane, SelectedPane::DjCenter) {
-                // PADS pane: show pad number or CONFIG
+                // PADS pane: show pad key or CONFIG
                 if self.pad_config_mode {
                     if let Some(pad_idx) = self.selected_pad_idx {
-                        format!("{} | CONFIG {}", pane_label, pad_idx + 1)
+                        let key = self.pads.pads[pad_idx].key_char().to_ascii_uppercase();
+                        format!("{} | CONFIG {}", pane_label, key)
                     } else {
                         format!("{} | CONFIG", pane_label)
                     }
                 } else if let Some(pad_idx) = self.selected_pad_idx {
-                    format!("{} | {}", pane_label, pad_idx + 1)
+                    let key = self.pads.pads[pad_idx].key_char().to_ascii_uppercase();
+                    format!("{} | {}", pane_label, key)
                 } else {
                     pane_label.to_string()
                 }
@@ -346,7 +348,6 @@ impl<'a> MixerView<'a> {
                     } else if let Some(seq_idx) = seq_state.selected {
                         // Sequence row focused: show pad and cursor target
                         if let Some(seq) = seq_state.sequences.get(seq_idx) {
-                            let pad_num = seq.pad_idx + 1;
                             let ctrl_label = match seq_state.cursor {
                                 EditTarget::Step(step) => {
                                     format!("TRIGGER {}", step)
@@ -354,7 +355,7 @@ impl<'a> MixerView<'a> {
                                 EditTarget::Mute => "MUTE".to_string(),
                                 EditTarget::Gear => "CONFIG".to_string(),
                             };
-                            format!("{} | {} | {}", pane_label, pad_num, ctrl_label)
+                            format!("{} | {} | {}", pane_label, seq.name, ctrl_label)
                         } else {
                             pane_label.to_string()
                         }
@@ -692,10 +693,11 @@ impl<'a> MixerView<'a> {
 
             // Draw ┴ intersections connecting top bar │ to separator line
             // Positions match SequenceTopBar render formula (from right edge)
+            // Buttons: Play(3) │ Load(8) │ Save(8) │ BPM │ Vol
             let bpm_str_len = format!("{:.0}", seq_state.global.bpm).len() as u16;
-            let sep1_x = inner.x + inner.width - 15 - bpm_str_len;  // Vol│BPM
-            let sep_save_x = inner.x + inner.width - 12;             // BPM│Save
-            let sep_ls_x = inner.x + inner.width - 8;                // Save│Load
+            let sep1_x = inner.x + inner.width - 25 - bpm_str_len;  // Vol│BPM
+            let sep_save_x = inner.x + inner.width - 22;             // BPM│Save
+            let sep_ls_x = inner.x + inner.width - 13;               // Save│Load
             let sep_pp_x = inner.x + inner.width - 4;                // Load│Play
             for sx in [sep1_x, sep_save_x, sep_ls_x, sep_pp_x] {
                 if sx >= inner.x && sx < inner.x + inner.width {
@@ -714,9 +716,9 @@ impl<'a> MixerView<'a> {
         {
             let top_border_y = inner.y.saturating_sub(1);
             let bpm_str_len = format!("{:.0}", seq_state.global.bpm).len() as u16;
-            let sep1_x = inner.x + inner.width - 15 - bpm_str_len;
-            let sep_save_x = inner.x + inner.width - 12;
-            let sep_ls_x = inner.x + inner.width - 8;
+            let sep1_x = inner.x + inner.width - 25 - bpm_str_len;
+            let sep_save_x = inner.x + inner.width - 22;
+            let sep_ls_x = inner.x + inner.width - 13;
             let sep_pp_x = inner.x + inner.width - 4;
             for sx in [sep1_x, sep_save_x, sep_ls_x, sep_pp_x] {
                 if sx >= inner.x && sx < inner.x + inner.width {
@@ -1012,34 +1014,50 @@ impl<'a> MixerView<'a> {
         buf.set_string(area.x + 1, area.y, hint, Style::default().fg(TEXT_DIM));
 
         // Mode indicators on right side
+        // Half-block cap characters extend the label's bg by half a cell on
+        // each side so the highlighted block visually continues the MASTER
+        // pane's right border above into the footer.
+        // Cap fg matches the label's bg; no bg set → cell stays transparent.
         let mut right_x = area.x + area.width;
 
         if !self.state.master.playing {
             let label = " PAUSED ";
+            let style = Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD);
+            let cap = Style::default().fg(BORDER_ACTIVE);
             right_x = right_x.saturating_sub(label.len() as u16 + 1);
-            buf.set_string(right_x, area.y, label,
-                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
+            buf.set_string(right_x, area.y, label, style);
+            buf.set_string(right_x.saturating_sub(1), area.y, "▐", cap);
+            buf.set_string(right_x + label.len() as u16, area.y, "▌", cap);
         }
 
         if self.pads.active {
             let label = " PADS ";
+            let style = Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD);
+            let cap = Style::default().fg(BORDER_ACTIVE);
             right_x = right_x.saturating_sub(label.len() as u16 + 1);
-            buf.set_string(right_x, area.y, label,
-                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
+            buf.set_string(right_x, area.y, label, style);
+            buf.set_string(right_x.saturating_sub(1), area.y, "▐", cap);
+            buf.set_string(right_x + label.len() as u16, area.y, "▌", cap);
         }
 
         if self.state.solo_active {
             let label = " SOLO ";
+            let style = Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD);
+            let cap = Style::default().fg(BORDER_ACTIVE);
             right_x = right_x.saturating_sub(label.len() as u16 + 1);
-            buf.set_string(right_x, area.y, label,
-                Style::default().fg(Color::Black).bg(BORDER_ACTIVE).add_modifier(Modifier::BOLD));
+            buf.set_string(right_x, area.y, label, style);
+            buf.set_string(right_x.saturating_sub(1), area.y, "▐", cap);
+            buf.set_string(right_x + label.len() as u16, area.y, "▌", cap);
         }
 
         if self.state.mute_active() {
             let label = " MUTE ";
+            let style = Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD);
+            let cap = Style::default().fg(Color::Red);
             right_x = right_x.saturating_sub(label.len() as u16 + 1);
-            buf.set_string(right_x, area.y, label,
-                Style::default().fg(Color::Black).bg(Color::Red).add_modifier(Modifier::BOLD));
+            buf.set_string(right_x, area.y, label, style);
+            buf.set_string(right_x.saturating_sub(1), area.y, "▐", cap);
+            buf.set_string(right_x + label.len() as u16, area.y, "▌", cap);
         }
     }
 

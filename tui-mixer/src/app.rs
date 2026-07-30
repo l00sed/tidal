@@ -2736,9 +2736,16 @@ impl App {
                     self.sequence_state.global_focused = true;
                     self.sequence_state.scroll_offset = 0;
 
-                    // Start paused after loading a session
-                    self.mixer.master.playing = false;
-                    self.sync_all_playpause();
+                    // Save derived play states so resume has something to restore
+                    self.sequence_state.previously_global_mute = false;
+                    self.sequence_state.previously_playing = self.sequence_state.sequences.iter()
+                        .map(|seq| seq.playing)
+                        .collect();
+                    // Pause sequences only (not decks) after loading a session
+                    self.sequence_state.global.mute = true;
+                    for seq in &mut self.sequence_state.sequences {
+                        seq.playing = false;
+                    }
 
                     // Reload pad samples into the audio engine
                     for (pad_idx, pad) in self.sample_pads.pads.iter().enumerate() {
@@ -3128,7 +3135,21 @@ impl App {
                                 self.mode = AppMode::Edit;
                             }
                             crate::state::GlobalSequenceControl::Mute => {
-                                self.sequence_state.global.mute = !self.sequence_state.global.mute;
+                                let was_muted = self.sequence_state.global.mute;
+                                self.sequence_state.global.mute = !was_muted;
+                                if was_muted {
+                                    // Unmuting: restore per-sequence play states
+                                    for (i, seq) in self.sequence_state.sequences.iter_mut().enumerate() {
+                                        if i < self.sequence_state.previously_playing.len() {
+                                            seq.playing = self.sequence_state.previously_playing[i];
+                                        }
+                                    }
+                                } else {
+                                    // Muting: save play states so unmute can restore them
+                                    self.sequence_state.previously_playing = self.sequence_state.sequences.iter()
+                                        .map(|seq| seq.playing)
+                                        .collect();
+                                }
                             }
                             crate::state::GlobalSequenceControl::Save => {
                                 self.save_session();
@@ -6579,12 +6600,14 @@ impl App {
 
     /// Calculate crossfader gains for deck A and B based on current position and curve
     /// Crossfader position: -1.0 = full A, 0.0 = center (both 100%), 1.0 = full B
+    /// Uses equal-power (sqrt) curve matching the audio engine.
     fn calculate_crossfader_gains(&self) -> (f32, f32) {
         let xf = self.mixer.dj.crossfader; // -1.0 to 1.0
-        // Center (0): both 100%, Left (-1): A=100% B=0%, Right (+1): A=0% B=100%
-        let a = if xf <= 0.0 { 1.0 } else { 1.0 - xf };
-        let b = if xf >= 0.0 { 1.0 } else { 1.0 + xf };
-        (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0))
+        // Remap to engine space: 0.0 = full A, 1.0 = full B
+        let cf = ((xf + 1.0) * 0.5).clamp(0.0, 1.0);
+        let a = (1.0 - cf).sqrt();
+        let b = cf.sqrt();
+        (a, b)
     }
 
     /// Get the MPV client for a channel index.
@@ -7727,7 +7750,8 @@ impl App {
                 }
             }
             // Restore sequences that were playing before the pause
-            self.sequence_state.global.mute = self.sequence_state.previously_global_mute;
+            // Always unmute on resume — master play should start audio
+            self.sequence_state.global.mute = false;
             for (i, seq) in self.sequence_state.sequences.iter_mut().enumerate() {
                 if i < self.sequence_state.previously_playing.len() {
                     seq.playing = self.sequence_state.previously_playing[i];

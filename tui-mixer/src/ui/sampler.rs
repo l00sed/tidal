@@ -306,7 +306,7 @@ impl<'a> SequenceTopBar<'a> {
 
 impl<'a> Widget for SequenceTopBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.height < 1 || area.width < 20 {
+        if area.height < 1 || area.width < 30 {
             return;
         }
 
@@ -314,14 +314,14 @@ impl<'a> Widget for SequenceTopBar<'a> {
         let border_style = Style::default().fg(self.border_color);
 
         // Layout (right to left):  Play │ Load │ Save │ BPM │ Vol
-        // Each button is 3 cells: " X " (space + icon + space)
+        // Play: 3 cells " ▶ ", Load: 8 cells " 📂 LOAD ", Save: 8 cells " 💾 SAVE "
         // Separators are 1 cell:  "│"
 
         // --- Play/pause (rightmost, 3 cells) ---
         let pp_x = area.x + area.width - 3;
         let pp_is_target = self.selected && self.selected_control == GlobalSequenceControl::Mute;
         let pp_active = pp_is_target && self.editing;
-        let (mute_label, mute_fg) = if self.global.mute {
+        let (mute_icon, mute_fg) = if self.global.mute {
             ("\u{F03E4}", if pp_active || pp_is_target { Color::Red } else { Color::DarkGray })
         } else {
             ("\u{25B6}", if pp_active { TEXT_EDITING } else if pp_is_target { TEXT_BRIGHT } else { TEXT_DIM })
@@ -332,15 +332,15 @@ impl<'a> Widget for SequenceTopBar<'a> {
             Style::default().fg(mute_fg)
         };
         buf.set_string(pp_x, y, " ", mute_style);
-        buf.set_string(pp_x + 1, y, mute_label, mute_style);
+        buf.set_string(pp_x + 1, y, mute_icon, mute_style);
         buf.set_string(pp_x + 2, y, " ", mute_style);
 
         // --- Separator: │ Play ---
         let sep_pp = pp_x - 1;
         buf.set_string(sep_pp, y, "\u{2502}", border_style);
 
-        // --- Load button (3 cells) ---
-        let load_x = sep_pp - 3;
+        // --- Load button (8 cells: " 📂 LOAD ") ---
+        let load_x = sep_pp - 8;
         let load_is_target = self.selected && self.selected_control == GlobalSequenceControl::Load;
         let load_fg = if load_is_target { TEXT_BRIGHT } else { TEXT_DIM };
         let load_style = if load_is_target {
@@ -350,14 +350,14 @@ impl<'a> Widget for SequenceTopBar<'a> {
         };
         buf.set_string(load_x, y, " ", load_style);
         buf.set_string(load_x + 1, y, "\u{EAF7}", load_style); // nf-cod-folder-opened
-        buf.set_string(load_x + 2, y, " ", load_style);
+        buf.set_string(load_x + 2, y, " LOAD ", load_style);
 
         // --- Separator: Load │ Save ---
         let sep_ls = load_x - 1;
         buf.set_string(sep_ls, y, "\u{2502}", border_style);
 
-        // --- Save button (3 cells) ---
-        let save_x = sep_ls - 3;
+        // --- Save button (8 cells: " 💾 SAVE ") ---
+        let save_x = sep_ls - 8;
         let save_is_target = self.selected && self.selected_control == GlobalSequenceControl::Save;
         let save_fg = if save_is_target { TEXT_BRIGHT } else { TEXT_DIM };
         let save_style = if save_is_target {
@@ -367,7 +367,7 @@ impl<'a> Widget for SequenceTopBar<'a> {
         };
         buf.set_string(save_x, y, " ", save_style);
         buf.set_string(save_x + 1, y, "\u{EB4B}", save_style); // nf-cod-save
-        buf.set_string(save_x + 2, y, " ", save_style);
+        buf.set_string(save_x + 2, y, " SAVE ", save_style);
 
         // --- Separator: BPM │ Save ---
         let sep_save = save_x - 1;
