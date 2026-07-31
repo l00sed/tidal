@@ -80,7 +80,8 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Check managed config files against installed destinations
-    if std::env::var("TM_NO_CONFIG").unwrap_or_default() != "1" {
+    let tm_no_config = std::env::var("TM_NO_CONFIG").unwrap_or_default();
+    if tm_no_config != "1" {
         let diffs = config::check_config_files();
         if !diffs.is_empty() {
             app.config_diffs = diffs;
@@ -402,7 +403,7 @@ where
             let area = frame.area();
             let popup_width = 52u16.min(area.width.saturating_sub(4));
             let num_files = diffs.len() as u16;
-            let popup_height = (8 + num_files).min(area.height.saturating_sub(4));
+            let popup_height = (10 + num_files).min(area.height.saturating_sub(4));
             let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
             let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
             let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -421,11 +422,11 @@ where
 
             let block = ratatui::widgets::Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
-                .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(0, 200, 150)))
+                .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::Yellow))
                 .title(ratatui::text::Span::styled(
                     " UPDATE CONFIG FILES ",
                     ratatui::style::Style::default()
-                        .fg(ratatui::style::Color::Rgb(0, 200, 150))
+                        .fg(ratatui::style::Color::Yellow)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ));
 
@@ -460,6 +461,16 @@ where
                 lines.push(ratatui::text::Line::from(""));
             }
 
+            lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                "  TIP: Add `export TM_NO_CONFIG=1` to your shell",
+                ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100)),
+            )));
+            lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                "  environment to self-manage your MPV config.",
+                ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100)),
+            )));
+            lines.push(ratatui::text::Line::from(""));
+
             // Y/n hint
             let y_style = if confirm_selected {
                 ratatui::style::Style::default()
@@ -475,13 +486,19 @@ where
             } else {
                 ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))
             };
+            let dim = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100));
 
             lines.push(ratatui::text::Line::from(vec![
-                ratatui::text::Span::raw("     "),
+                ratatui::text::Span::raw("    "),
+                ratatui::text::Span::styled("[", y_style),
                 ratatui::text::Span::styled("Y", y_style),
-                ratatui::text::Span::styled("es   ", ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))),
+                ratatui::text::Span::styled("]", y_style),
+                ratatui::text::Span::styled("es", y_style),
+                ratatui::text::Span::styled("  ", dim),
+                ratatui::text::Span::styled("[", n_style),
                 ratatui::text::Span::styled("n", n_style),
-                ratatui::text::Span::styled("o", ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))),
+                ratatui::text::Span::styled("]", n_style),
+                ratatui::text::Span::styled("o", n_style),
             ]));
 
             let paragraph = ratatui::widgets::Paragraph::new(lines);

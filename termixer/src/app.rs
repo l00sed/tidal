@@ -2724,10 +2724,10 @@ impl App {
                 self.mode = AppMode::PaneSelect;
             }
             KeyCode::Char('h') | KeyCode::Left => {
-                self.confirm_selected = false;
+                self.confirm_selected = true;
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.confirm_selected = true;
+                self.confirm_selected = false;
             }
             _ => {}
         }
