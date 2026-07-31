@@ -5,6 +5,7 @@
 
 mod app;
 mod audio;
+mod config;
 mod debug_log;
 mod state;
 mod ui;
@@ -77,6 +78,17 @@ fn main() -> Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+
+    // Check managed config files against installed destinations
+    if std::env::var("TM_NO_CONFIG").unwrap_or_default() != "1" {
+        let diffs = config::check_config_files();
+        if !diffs.is_empty() {
+            app.config_diffs = diffs;
+            app.confirm_selected = true; // Y focused by default
+            app.mode = app::AppMode::ConfigCheck;
+            run_config_dialog(&mut terminal, &mut app)?;
+        }
+    }
 
     // Run the application
     let result = run_app(&mut terminal, &mut app);
@@ -209,11 +221,11 @@ EXAMPLES:
     # Start with music and samples directories
     termixer -m ~/Music -S ~/Samples
 
-    # Route MPV through tui-mixer (stable socket/fifo names):
-    TUI_MIXER_ROUTE=1 mpv \
-      --input-ipc-server=/tmp/tui-mixer.sock \
+    # Route MPV through termixer (stable socket/fifo names):
+    TM=1 mpv \
+      --input-ipc-server=/tmp/termixer.sock \
       --ao=pcm \
-      --ao-pcm-file=/tmp/tui-mixer.pcm \
+      --ao-pcm-file=/tmp/termixer.pcm \
       --ao-pcm-waveheader=no \
       --audio-format=float \
       --audio-samplerate=48000 \
@@ -368,7 +380,125 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
     }
 }
 
-/// Calculate screen areas for all panes for mouse hit testing.
+/// Mini event loop for the config check dialog. Blocks until the user
+/// confirms or cancels, then returns to the caller.
+fn run_config_dialog<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> Result<()>
+where
+    <B as Backend>::Error: Send + Sync + 'static,
+{
+    use ratatui::prelude::Widget;
+    use std::time::Duration;
+
+    loop {
+        terminal.draw(|frame| {
+            let diffs = &app.config_diffs;
+            let files = config::managed_files();
+            let confirm_selected = app.confirm_selected;
+            let msg = app.config_check_msg.as_deref();
+
+            let area = frame.area();
+            let popup_width = 52u16.min(area.width.saturating_sub(4));
+            let num_files = diffs.len() as u16;
+            let popup_height = (8 + num_files).min(area.height.saturating_sub(4));
+            let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+            let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+            let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+            // Clear and draw background
+            ratatui::widgets::Clear.render(popup_area, frame.area_mut());
+            for y in popup_area.y..popup_area.y + popup_area.height {
+                for x in popup_area.x..popup_area.x + popup_area.width {
+                    frame.buffer_mut().set_string(
+                        x, y, " ",
+                        ratatui::style::Style::default().bg(ratatui::style::Color::Rgb(20, 20, 20)),
+                    );
+                }
+            }
+
+            let block = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(0, 200, 150)))
+                .title(ratatui::text::Span::styled(
+                    " UPDATE CONFIG FILES ",
+                    ratatui::style::Style::default()
+                        .fg(ratatui::style::Color::Rgb(0, 200, 150))
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ));
+
+            let inner = block.inner(popup_area);
+            block.render(popup_area, frame.buffer_mut());
+
+            let mut lines: Vec<ratatui::text::Line> = Vec::new();
+            lines.push(ratatui::text::Line::from(""));
+
+            let summary = format!(" {} file(s) differ from installed:", diffs.len());
+            lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                summary,
+                ratatui::style::Style::default().fg(ratatui::style::Color::White),
+            )));
+            lines.push(ratatui::text::Line::from(""));
+
+            for diff in diffs {
+                let label = files[diff.file_index].label;
+                lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                    format!("  \u{2022} {}", label),
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(180, 180, 180)),
+                )));
+            }
+
+            lines.push(ratatui::text::Line::from(""));
+
+            if let Some(m) = msg {
+                lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                    format!("  {}", m),
+                    ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(0, 200, 150)),
+                )));
+                lines.push(ratatui::text::Line::from(""));
+            }
+
+            // Y/n hint
+            let y_style = if confirm_selected {
+                ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::White)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))
+            };
+            let n_style = if !confirm_selected {
+                ratatui::style::Style::default()
+                    .fg(ratatui::style::Color::White)
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))
+            };
+
+            lines.push(ratatui::text::Line::from(vec![
+                ratatui::text::Span::raw("     "),
+                ratatui::text::Span::styled("Y", y_style),
+                ratatui::text::Span::styled("es   ", ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))),
+                ratatui::text::Span::styled("n", n_style),
+                ratatui::text::Span::styled("o", ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(100, 100, 100))),
+            ]));
+
+            let paragraph = ratatui::widgets::Paragraph::new(lines);
+            paragraph.render(inner, frame.buffer_mut());
+        })?;
+
+        if crossterm::event::poll(Duration::from_millis(50))? {
+            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                app.handle_config_check_key(key);
+                if !matches!(app.mode, app::AppMode::ConfigCheck) {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Returns (channel_areas, crossfader_area, master_area, cue_area, loops_area, pad_areas).
 #[allow(clippy::type_complexity)]
 fn calculate_all_areas(

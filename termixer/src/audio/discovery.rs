@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-const TUI_MIXER_ROUTE_SOCKET: &str = "/tmp/tui-mixer.sock";
+const TM_SOCKET: &str = "/tmp/termixer.sock";
 
 /// Types of audio sources we can discover
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,10 +81,10 @@ impl SourceDiscovery {
     /// Discover MPV IPC sockets
     fn discover_mpv_sockets(&mut self) {
         // Route mode: one stable source for the TUI.
-        let route_socket = PathBuf::from(TUI_MIXER_ROUTE_SOCKET);
+        let route_socket = PathBuf::from(TM_SOCKET);
         if route_socket.exists() {
             self.sources.push(DiscoveredSource {
-                name: "tui-mixer route".to_string(),
+                name: "termixer route".to_string(),
                 source_type: SourceType::Mpv,
                 identifier: route_socket.to_string_lossy().to_string(),
             });

@@ -9,7 +9,6 @@ authors = ["Daniel Tompkins"]
 # TUI framework
 ratatui = "0.30"
 crossterm = "0.29"
-tui-slider = "0.3"
 
 # Async runtime for MPV IPC
 tokio = { version = "1", features = ["full"] }
@@ -23,7 +22,6 @@ rfd = "0.15"
 
 # Error handling
 anyhow = "1"
-thiserror = "2"
 
 # File globbing
 glob = "0.3"
@@ -35,12 +33,10 @@ rodio = "0.22"
 cpal = "0.17"
 coreaudio-rs = { version = "0.13", optional = true }
 jack = { version = "0.13", optional = true }
-dasp = { version = "0.11", default-features = false, features = ["std", "signal", "slice", "ring_buffer", "rms"] }
 
 # Lock-free primitives for the real-time audio path
 triple_buffer = "8"       # SPSC snapshot: UI writes control state, audio reads latest
 rtrb = "0.3"              # SPSC ring for audio commands (no Mutex)
-arc-swap = "1"            # Atomic Arc swap for per-deck ring buffer handoff
 crossbeam-queue = "0.3"   # Lock-free bounded queue for debug log capture
 
 # Unicode display-width aware string handling

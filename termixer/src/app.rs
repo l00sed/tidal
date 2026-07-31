@@ -20,10 +20,10 @@ type PendingBpm = Arc<Mutex<Vec<(usize, f32, Option<String>)>>>;
 const SC_GAIN_BOOST: f32 = 8.0;
 const SC_DEFAULT_BPM: f32 = 135.0;
 const TIDAL_BPM_PATH: &str = "/tmp/termixer-bpm";
-const TUI_MIXER_ROUTE_SOCKET: &str = "/tmp/tui-mixer.sock";
-const TUI_MIXER_ROUTE_FIFO: &str = "/tmp/tui-mixer.pcm";
-const TUI_MIXER_ROUTE_META: &str = "/tmp/tui-mixer-meta.json";
-const TUI_MIXER_ROUTE_FIFO_GLOB: &str = "/tmp/tui-mixer-*.pcm";
+const TM_SOCKET: &str = "/tmp/termixer.sock";
+const TM_FIFO: &str = "/tmp/termixer.pcm";
+const TM_META: &str = "/tmp/termixer-meta.json";
+const TM_FIFO_GLOB: &str = "/tmp/termixer-*.pcm";
 const SCRUB_FINE_STEP_MIN_SECS: f32 = 0.003;
 const SCRUB_FINE_STEP_MAX_SECS: f32 = 0.02;
 const SCRUB_COARSE_STEP_MIN_SECS: f32 = 0.015;
@@ -66,6 +66,8 @@ pub enum AppMode {
     SamplePicker(usize),  // pad index
     /// Confirmation dialog for destructive actions
     ConfirmAction(ConfirmAction),
+    /// Config file update check dialog
+    ConfigCheck,
 }
 
 /// Destructive actions that require confirmation
@@ -601,6 +603,10 @@ pub struct App {
     pub debug_scroll: usize,
     // Confirm dialog selection (true = Y focused, false = N focused)
     pub confirm_selected: bool,
+    // Config check diffs (files that need updating)
+    pub config_diffs: Vec<crate::config::ConfigDiff>,
+    // Config check message to display (e.g. PATH setup result)
+    pub config_check_msg: Option<String>,
     // Help panel scroll offset
     pub help_scroll: usize,
     // Counter for MPV state polling (poll every N ticks)
@@ -1395,8 +1401,8 @@ impl App {
     fn route_socket_candidates_for_fifo(fifo: &std::path::Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         out.push(fifo.with_extension("sock"));
-        if fifo == std::path::Path::new(TUI_MIXER_ROUTE_FIFO) {
-            out.push(PathBuf::from(TUI_MIXER_ROUTE_SOCKET));
+        if fifo == std::path::Path::new(TM_FIFO) {
+            out.push(PathBuf::from(TM_SOCKET));
         }
         out
     }
@@ -1407,16 +1413,16 @@ impl App {
         if let Some(stem) = fifo.file_stem().and_then(|s| s.to_str()) {
             out.push(fifo.with_file_name(format!("{}-meta.json", stem)));
         }
-        if fifo == std::path::Path::new(TUI_MIXER_ROUTE_FIFO) {
-            out.push(PathBuf::from(TUI_MIXER_ROUTE_META));
+        if fifo == std::path::Path::new(TM_FIFO) {
+            out.push(PathBuf::from(TM_META));
         }
         out
     }
 
-    fn is_tui_mixer_route_socket(path: &std::path::Path) -> bool {
+    fn is_termixer_socket(path: &std::path::Path) -> bool {
         let p = path.to_string_lossy();
-        p == TUI_MIXER_ROUTE_SOCKET
-            || (p.starts_with("/tmp/tui-mixer-") && p.ends_with(".sock"))
+        p == TM_SOCKET
+            || (p.starts_with("/tmp/termixer-") && p.ends_with(".sock"))
     }
 
     fn find_alternative_route_socket(stale_path: &str) -> Option<PathBuf> {
@@ -1425,7 +1431,7 @@ impl App {
         let pattern = format!("{}/*.sock", parent.display());
         if let Ok(paths) = glob::glob(&pattern) {
             for entry in paths.flatten() {
-                if entry != stale && Self::is_tui_mixer_route_socket(&entry) {
+                if entry != stale && Self::is_termixer_socket(&entry) {
                     return Some(entry);
                 }
             }
@@ -1433,8 +1439,8 @@ impl App {
         None
     }
 
-    fn find_tui_mixer_route_fifo() -> Option<PathBuf> {
-        let canonical = PathBuf::from(TUI_MIXER_ROUTE_FIFO);
+    fn find_termixer_fifo() -> Option<PathBuf> {
+        let canonical = PathBuf::from(TM_FIFO);
         if let Ok(meta) = canonical.metadata() {
             use std::os::unix::fs::FileTypeExt;
             if meta.file_type().is_fifo() {
@@ -1446,7 +1452,7 @@ impl App {
         for entry in entries.flatten() {
             let p = entry.path();
             let name = p.file_name().and_then(|n| n.to_str())?;
-            if !(name.starts_with("tui-mixer-") && name.ends_with(".pcm")) {
+            if !(name.starts_with("termixer-") && name.ends_with(".pcm")) {
                 continue;
             }
             if let Ok(meta) = p.metadata() {
@@ -1612,6 +1618,8 @@ impl App {
             debug_log: VecDeque::new(),
             debug_scroll: 0,
             confirm_selected: false,
+            config_diffs: Vec::new(),
+            config_check_msg: None,
             help_scroll: 0,
             mpv_poll_counter: 0,
             source_refresh_counter: 0,
@@ -1650,7 +1658,7 @@ impl App {
 
         // Pre-scan: check for a FIFO capture source (from mpv-mixer shell fn).
         let fifo_attached = if self.audio_engine.is_some() {
-            let fifo_opt = Self::find_tui_mixer_route_fifo();
+            let fifo_opt = Self::find_termixer_fifo();
             if let Some(ref fifo) = fifo_opt {
                 let route_name = sources.first().map(|(name, _)| name.clone());
                 if self.attach_fifo_capture_to_deck(Deck::A, fifo, route_name).is_ok() {
@@ -2167,7 +2175,7 @@ impl App {
     }
 
     /// Refresh deck labels from MPV media titles.
-    /// This keeps route-mode sockets (`/tmp/tui-mixer.sock`) showing the
+    /// This keeps route-mode sockets (`/tmp/termixer.sock`) showing the
     /// active track title instead of a generic source name.
     fn refresh_deck_titles(&mut self) {
         let try_update = |client_opt: &mut Option<MpvClient>, channel_opt: Option<&mut crate::state::MixerChannel>| {
@@ -2369,7 +2377,7 @@ impl App {
 
     fn resolve_route_meta_path(source_path: Option<&std::path::Path>) -> Option<PathBuf> {
         if let Some(path) = source_path {
-            // Direct metadata file adjacent to FIFO (e.g., /tmp/tui-mixer-A.json)
+            // Direct metadata file adjacent to FIFO (e.g., /tmp/termixer-A.json)
             let direct_json = path.with_extension("json");
             if direct_json.exists() {
                 return Some(direct_json);
@@ -2380,8 +2388,8 @@ impl App {
                 }
             }
         }
-        if std::path::Path::new(TUI_MIXER_ROUTE_META).exists() {
-            return Some(PathBuf::from(TUI_MIXER_ROUTE_META));
+        if std::path::Path::new(TM_META).exists() {
+            return Some(PathBuf::from(TM_META));
         }
         None
     }
@@ -2658,6 +2666,7 @@ impl App {
             AppMode::SourcePicker(_) => self.handle_source_picker_key(key),
             AppMode::SamplePicker(_) => self.handle_sample_picker_key(key),
             AppMode::ConfirmAction(action) => self.handle_confirm_key(key, action),
+            AppMode::ConfigCheck => self.handle_config_check_key(key),
         }
     }
 
@@ -2683,6 +2692,31 @@ impl App {
                     ConfirmAction::ClearDeck(deck) => self.clear_deck(deck),
                     ConfirmAction::ResetDeck(_deck) => self.reset_deck_to_defaults(),
                     ConfirmAction::ResetAll => self.reset_all_controls(),
+                }
+                self.mode = AppMode::PaneSelect;
+            }
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.mode = AppMode::PaneSelect;
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.confirm_selected = false;
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.confirm_selected = true;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_config_check_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                let errors = crate::config::apply_config_files(&self.config_diffs);
+                if errors.is_empty() {
+                    let path_msg = crate::config::ensure_local_bin_in_path();
+                    self.config_check_msg = path_msg;
+                } else {
+                    self.config_check_msg = Some(errors.join("; "));
                 }
                 self.mode = AppMode::PaneSelect;
             }
@@ -5318,14 +5352,14 @@ impl App {
     fn scan_mpv_sockets(&mut self) {
         // Route FIFOs: named pipes created by MPV for audio routing.
         // MPV writes PCM into these; the Rust engine captures from them.
-        if let Ok(paths) = glob::glob(TUI_MIXER_ROUTE_FIFO_GLOB) {
+        if let Ok(paths) = glob::glob(TM_FIFO_GLOB) {
             for entry in paths.flatten() {
                 if entry.exists() {
                     let name = Self::route_meta_label(Some(&entry)).unwrap_or_else(|| {
                         entry
                             .file_name()
                             .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "tui-mixer route".to_string())
+                            .unwrap_or_else(|| "termixer route".to_string())
                     });
                     self.source_picker.items.push(SourcePickerItem {
                         name,
@@ -5341,10 +5375,10 @@ impl App {
         }
 
         // Canonical FIFO path
-        let canonical_fifo = PathBuf::from(TUI_MIXER_ROUTE_FIFO);
+        let canonical_fifo = PathBuf::from(TM_FIFO);
         if canonical_fifo.exists() {
             self.source_picker.items.push(SourcePickerItem {
-                name: Self::route_meta_label(Some(&canonical_fifo)).unwrap_or_else(|| "tui-mixer route".to_string()),
+                name: Self::route_meta_label(Some(&canonical_fifo)).unwrap_or_else(|| "termixer route".to_string()),
                 path: canonical_fifo.clone(),
                 is_socket: false,
                 is_pcm_fifo: true,
@@ -5369,7 +5403,7 @@ impl App {
         for pattern in &socket_patterns {
             if let Ok(paths) = glob::glob(pattern) {
                 for entry in paths.flatten() {
-                    if entry.exists() && !Self::is_tui_mixer_route_socket(&entry) {
+                    if entry.exists() && !Self::is_termixer_socket(&entry) {
                         let name = entry.file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| "mpv".to_string());
@@ -5397,7 +5431,7 @@ impl App {
             let runtime_pattern = format!("/run/user/{}/mpv*", uid);
             if let Ok(paths) = glob::glob(&runtime_pattern) {
                 for entry in paths.flatten() {
-                    if entry.exists() && !Self::is_tui_mixer_route_socket(&entry) {
+                    if entry.exists() && !Self::is_termixer_socket(&entry) {
                         let name = entry.file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_else(|| "mpv".to_string());
@@ -8127,7 +8161,7 @@ impl App {
 
     /// Sync current mixer state to audio capture DSP parameters (no-op without BlackHole)
     fn sync_capture_dsp_params(&mut self) {}
-    
+
     /// Cleanup resources before exit.
     ///
     /// Deck A/B handoff policy:
@@ -8253,7 +8287,7 @@ impl App {
             );
         }
     }
-    
+
     /// Add a debug log message (keeps last 500 messages)
     /// Only logs when DEBUG env var is set (e.g. DEBUG=1 ./tidal-mixer)
     pub fn log_debug(&mut self, msg: impl Into<String>) {
@@ -8270,7 +8304,7 @@ impl App {
             // Already at bottom — new messages are visible automatically
         }
     }
-    
+
     /// Check if debug mode is enabled via DEBUG env var
     #[allow(dead_code)]
     pub fn is_debug_enabled() -> bool {

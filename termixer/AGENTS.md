@@ -1,4 +1,4 @@
-# AGENTS.md - termixer (tui-mixer)
+# AGENTS.md - termixer
 
 This file is the fast onboard for coding agents entering this repo.
 Read it before making changes.
@@ -42,9 +42,9 @@ Read it before making changes.
 - Deck model is effectively A/B/C (C is CUE-focused) with shared master/crossfader logic.
 - Tick cadence is ~20 FPS (`tick_rate = 50ms`) and drives meter updates/animations.
 - MPV route mode conventions:
-  - socket: `/tmp/tui-mixer.sock`
-  - fifo: `/tmp/tui-mixer.pcm`
-  - wildcard variants: `/tmp/tui-mixer-*.sock` and `/tmp/tui-mixer-*.pcm`
+  - socket: `/tmp/termixer.sock`
+  - fifo: `/tmp/termixer.pcm`
+  - wildcard variants: `/tmp/termixer-*.sock` and `/tmp/termixer-*.pcm`
 - Debug pane/logging is gated by `DEBUG=1`. Without it, stderr is redirected to avoid TUI corruption.
 
 ## 5) External Dependencies and Expected Environment

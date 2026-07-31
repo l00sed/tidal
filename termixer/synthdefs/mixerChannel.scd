@@ -1,4 +1,4 @@
-// Compile SynthDefs for tui-mixer
+// Compile SynthDefs for termixer
 // Run: sclang mixerChannel.scd
 (
 SynthDef("mixerChannel", { |in=2, out=0, vol=0.8, lpf=20000, hpf=20, eqLowFreq=20000, eqLowGain=0, eqMidFreq=1000, eqMidGain=0, eqHighFreq=20, eqHighGain=0,
@@ -43,12 +43,12 @@ SynthDef("mixerChannel", { |in=2, out=0, vol=0.8, lpf=20000, hpf=20, eqLowFreq=2
     sig = sig * volL;
     sig = Balance2.ar(sig[0], sig[1], panL);
     Out.ar(out, sig);
-}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/tui-mixer/synthdefs");
+}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/termixer/synthdefs");
 
 SynthDef("monitorChannel", { |in=0, out=2|
     var sig = In.ar(in, 2);
     Out.ar(out, sig);
-}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/tui-mixer/synthdefs");
+}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/termixer/synthdefs");
 
 "SynthDefs written!".postln;
 0.exit;
@@ -57,7 +57,7 @@ SynthDef("monitorChannel", { |in=0, out=2|
 SynthDef("monitorChannel", { |in=0, out=2|
     var sig = In.ar(in, 2);
     Out.ar(out, sig);
-}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/tui-mixer/synthdefs");
+}).writeDefFile("/Users/dwtompkins/Downloads/Tidal/termixer/synthdefs");
 
 "SynthDefs written!".postln;
 0.exit;
