@@ -408,10 +408,11 @@ where
             let popup_area = ratatui::layout::Rect::new(popup_x, popup_y, popup_width, popup_height);
 
             // Clear and draw background
-            ratatui::widgets::Clear.render(popup_area, frame.area_mut());
+            let buf = frame.buffer_mut();
+            ratatui::widgets::Clear.render(popup_area, buf);
             for y in popup_area.y..popup_area.y + popup_area.height {
                 for x in popup_area.x..popup_area.x + popup_area.width {
-                    frame.buffer_mut().set_string(
+                    buf.set_string(
                         x, y, " ",
                         ratatui::style::Style::default().bg(ratatui::style::Color::Rgb(20, 20, 20)),
                     );
@@ -429,7 +430,7 @@ where
                 ));
 
             let inner = block.inner(popup_area);
-            block.render(popup_area, frame.buffer_mut());
+            block.render(popup_area, buf);
 
             let mut lines: Vec<ratatui::text::Line> = Vec::new();
             lines.push(ratatui::text::Line::from(""));
@@ -484,7 +485,7 @@ where
             ]));
 
             let paragraph = ratatui::widgets::Paragraph::new(lines);
-            paragraph.render(inner, frame.buffer_mut());
+            paragraph.render(inner, buf);
         })?;
 
         if crossterm::event::poll(Duration::from_millis(50))? {
