@@ -79,6 +79,7 @@ d3
   # crush 5
   # gain 0.85
 
+d4 $ silence
 d4
   $ fast 4
   $ s "hh27*8 ~"

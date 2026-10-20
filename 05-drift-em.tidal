@@ -1,0 +1,69 @@
+-- Drift · E minor · 76 BPM
+-- Em9 · Cmaj7 · Am9 · B7 (i–VI–iv–V). Harp bed, cello lead, "ooh-aha" vocal (B/G-centred, fits E minor).
+
+setcps (76/60/4)
+
+
+let driftChords = "<[e4,g4,b4,d5,fs5] [c4,e4,g4,b4] [a4,c5,e5,g5,b5] [b4,ds5,fs5,a5]>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+setF "vol" 1
+setF "vol" 0.85
+setF "filt" 0.05 -- lowpass (dark)
+setF "filt" 0.5 -- off
+setF "filt" 0.95 -- highpass (thin)
+
+-- Slides: rampF name from to bars (straight line starting now, then holds)
+rampF "filt" 0.5 0.2 1 -- darken over 4 bars
+rampF "filt" 0.2 0.5 1 -- open back up
+rampF "filt" 0.5 0.8 1 -- thin out
+rampF "filt" 0.8 0.5 1
+rampF "vol" 1 0 16 -- 16-bar fade-out
+
+noKnobs
+
+-- Harp: rolling 16ths, gently thinned so it breathes
+d1 $ tape $ human
+   $ degradeBy 0.2
+   $ arp "<up converge up diverge>"
+   $ segment 16
+   $ harp driftChords
+   # legato 2 # gain "0.65 0.45 0.55 0.45"
+   # pan (slow 2 $ range 0.35 0.65 sine)
+   # room 0.4 # size 0.85
+   # orbit 1
+
+-- Cello lead: long singing notes, the D# in bar 4 pulling back to E
+d2 $ tape $ human
+   $ slur
+   $ cello "<[b4 ~ ~ a4] [g4 ~ e4 ~] [c5 ~ b4 a4] [ds4 ~ fs4 ~] [e4 ~ ~ ~] [g4 ~ ~ [a4 g4]] [e4 ~ c5 ~] [b4 ~ ~ ~]>"
+   # legato 1.4
+   # gain 0.75
+   # room 0.35 # size 0.85
+   # orbit 5
+
+d3 $ tape
+   $ s "<voxooh:0 ~ ~ ~ ~ ~ voxooh:0 ~>"
+   # begin 0.012 # end 0.363 # legato 4
+   # gain 0.7 # lpf 4000 # hpf 200
+   # room 0.45 # size 0.85
+   # orbit 6
+
+d4 $ human
+   $ note "<e2 c2 a1 b1>"
+   # s "supersquare" # lpf 250 # legato 1 # gain 0.85
+   # orbit 3
+
+-- Half-time drums: kick on 1, snare on 3 only
+d5 $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~" # gain 1 # shape 0.3,
+     s "~ ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~" # gain 0.9 # room 0.25 # size 0.6,
+     swingBy (1/48) 8 $ degradeBy 0.3 $ s "jazz:3*16" # gain 0.5 # hpf 7000
+   ]
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.9 # hpf 1500 # orbit 4
+
+hush

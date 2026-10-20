@@ -1,0 +1,66 @@
+-- Choirboy · Bb major · 82 BPM
+-- Bbmaj9 · Gm9 · Ebmaj7 · F9sus4. A single choirboy note (sung on Bb) re-pitched into a melody,
+-- Oberheim pad, Kawai bell, Jupiter-8 bass. Cassette idea: car stereo — a slow filter "breathing"
+-- in and out over 8 bars, on top of the wow.
+
+setcps (82/60/4)
+
+let cbChords = "<[as3,d4,f4,a4,c5] [g3,as3,d4,f4,a4] [ds4,g4,as4,d5] [f3,as3,ds4,g4,c5]>" :: Pattern Note
+
+let breathe = (# lpf (slow 8 $ range 1200 5500 sine)) . tapeFX 50
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Oberheim Matrix-1000 "PacificHorizonPad5" (C3 +12c)
+d1
+  $ breathe
+  $ tuned 48.12 cbChords
+  # s "oberheim-matrix-1000-pad:8"
+  # legato 1.05 # attack 0.25
+  # gain 0.8
+  # room 0.4 # size 0.85
+  # orbit 0
+
+-- Choirboy melody: the Bb sample shifted by scale degrees (0 = Bb, 2 = C, 4 = D, 7 = F, 9 = G)
+d2
+  $ breathe $ human
+  $ note "<[0 ~ 4 ~] [7 ~ ~ 4] [2 ~ 0 ~] [-3 ~ ~ ~] [4 ~ 7 9] [7 ~ 4 ~] [2 4 2 0] [0 ~ ~ ~]>"
+  # s "voxchoir:2"
+  # legato 1.2 # gain 0.95 # hpf 250
+  # delay 0.3 # delayt (3/8) # delayfb 0.4 # lock 1
+  # room 0.45 # size 0.9
+  # orbit 6
+
+-- Bell: Kawai K4 "Bellerion2" (C5 −6c), sparse high answers on the off-beats
+d3
+  $ breathe $ human
+  $ mask "<0!4 1!4>"
+  $ tuned 71.94 "<[~ d6 ~ f6] [~ ~ as5 ~] [~ g5 ~ as5] [a5 ~ ~ ~]>"
+  # s "kawai-4-synth:22"
+  # legato 1.5 # gain 0.7 # pan 0.7
+  # room 0.35 # size 0.85
+  # orbit 5
+
+-- Bass: Jupiter-8 "Compacti slow" (C2 −3c)
+d4
+  $ human
+  $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ t"
+  $ tuned 35.97 ("<as2 g2 ds3 f2>" + "0 0 0 <0 0 0 -1>")
+  # s "jupiter-8-bass:6"
+  # tapewow 10 # legato 0.9 # gain 0.95 # lpf 700
+  # orbit 3
+
+d5
+  $ human
+  $ stack [
+    s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+    (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~ ~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~" # gain 0.95,
+    swingBy (1/48) 8 $ degradeBy 0.15 $ s "hh27:0*16" # gain "0.85 0.7 0.78 0.7" # hpf 6000
+  ]
+  # tapeflutter 4
+  # orbit 2
+
+d6 $ s "vinyl:2" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

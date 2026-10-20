@@ -1,0 +1,63 @@
+-- Villain Lab · D minor · 84 BPM
+-- Dm9 · Gm9 · Bbmaj7 · A7b9. DOOM-style: Eisenhower's "military-industrial complex" and FDR's
+-- "fear itself", dusty SP-1200-ish drums (crushed), Korg Mono/Poly keys, Oberheim low strings.
+-- Cassette idea: degrading tape echo — each vocal repeat gets darker AND more warped.
+
+setcps (84/60/4)
+
+let vlChords = "<[d4,f4,a4,c5,e5] [g3,as3,d4,f4,a4] [as3,d4,f4,a4] [a3,cs4,g4,as4]>" :: Pattern Note
+    decay = echoWith 3 (3/16) ((|* gain 0.85) . (# lpf 1800) . (|+ tapewow 40))
+    -- decay — each echo quieter, darker, +40 cents more wow than the last
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Keys: Korg Mono/Poly "ChineseKeyboardz hi" (C3 −2c), off-beat comp
+d1 $ tapeFX 45 $ human
+   $ struct "~ t ~ ~ t ~ ~ t"
+   $ tuned 47.98 vlChords
+   # s "korg-monopoly-synth:10"
+   # legato 0.6 # gain 0.85 # lpf 3200
+   # room 0.25 # size 0.6
+   # orbit 0
+
+-- Low strings: Oberheim "lippestring GrandeurPast" (C2 +2c), one long chord per bar
+d2 $ tapeFX 45
+   $ tuned 36.02 (vlChords - 12)
+   # s "oberheim-matrix-1000-strings:15"
+   # legato 1.05 # attack 0.2 # gain 0.8
+   # room 0.35 # size 0.85
+   # orbit 1
+
+-- Vocals: Ike on bar 1, FDR answers on bar 3, "fear… fear… fear itself" stutter on bar 7
+d3 $ tapeFX 30 $ decay $ stack [
+     onBar 0 $ clip "voxspeech:7" 0.54 0.78,
+     (0.25 ~>) $ onBar 2 $ clip "voxspeech:2" 0.30 0.62,
+     onBar 4 $ clip "voxspeech:7" 0.16 0.29,
+     onBar 6 $ struct "t t ~ ~" $ clip "voxspeech:2" 0.58 0.63,
+     (0.5 ~>) $ onBar 6 $ clip "voxspeech:2" 0.85 1
+   ]
+   # gain 1 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Jupiter-8 "CrossmodBass 2" (C2 +7c)
+d4 $ human
+   $ struct "t ~ ~ t ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ tuned 36.07 "<d3 g2 as2 a2>"
+   # s "jupiter-8-bass:7"
+   # tapewow 10 # legato 0.8 # gain 0.95 # lpf 650
+   # orbit 3
+
+-- Drums: dusty and crushed like an old sampler, kick slightly early, snare late
+d5 $ stack [
+     ((-0.005) ~>) $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~" # gain 1.05,
+     (0.015 ~>) $ s "~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~" # gain 0.95,
+     swingBy (1/24) 4 $ s "hh27:0*8" # gain "0.85 0.65"
+   ]
+   # crush 8 # coarse 2 # shape 0.3 # lpf 4500
+   # tapeflutter 5
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

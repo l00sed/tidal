@@ -1,0 +1,61 @@
+-- Late Shift · Bb major · 80 BPM
+-- Bbmaj9 · Gm9 · Cm9 · F13 (I–vi–ii–V). Piano comp + high piano melody, cello bass, trap-style hat rolls.
+
+setcps (80/60/4)
+
+let lateChords = "<[as3,d4,f4,a4,c5] [g3,as3,d4,f4,a4] [c4,ds4,g4,as4,d5] [f3,a3,ds4,g4,d5]>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+setF "vol" 1
+setF "vol" 0.85
+setF "filt" 0.05 -- lowpass (dark)
+setF "filt" 0.5 -- off
+setF "filt" 0.95 -- highpass (thin)
+
+-- Slides: rampF name from to bars (straight line starting now, then holds)
+rampF "filt" 0.5 0.1 4 -- darken over 4 bars
+rampF "filt" 0.1 0.5 1 -- open back up
+rampF "filt" 0.5 0.9 2 -- thin out
+rampF "filt" 0.9 0.5 1
+rampF "vol" 1 0 16 -- 16-bar fade-out
+
+noKnobs
+
+-- Piano comp: syncopated, short
+d1 $ tape $ human
+   $ struct "t ~ ~ t ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ piano lateChords
+   # legato 0.9 # gain 0.65
+   # lpf 3000
+   # room 0.3 # size 0.7
+   # orbit 0
+
+-- High piano melody, 8 bars, panned right like a second player
+d2 $ tape $ human
+   $ piano "<[f6 ~ d6 ~] [~ c6 as5 ~] [g6 ~ f6 ds6] [d6 ~ ~ c6] [as5 ~ c6 d6] [f6 ~ ~ ~] [ds6 d6 c6 ~] [a5 ~ c6 ~]>"
+   # legato 1.5 # gain 0.55 # pan 0.7
+   # delay 0.25 # delayt (3/8) # delayfb 0.35 # lock 1
+   # room 0.35 # size 0.8
+   # orbit 5
+
+-- Cello bass, plucked-short
+d3 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ cello "<as3 g3 c4 f3>"
+   # legato 0.5 # gain 0.85 # lpf 1500
+   # orbit 3
+
+-- 808 kit with trap-style hat rolls every 2nd bar
+d4 $ human $ stack [
+     s "808bd:4 ~ ~ ~ ~ ~ ~ 808bd:4 ~ ~ 808bd:4 ~ ~ ~ ~ ~" # gain 1.05 # shape 0.25,
+     (0.01 ~>) $ s "~ ~ ~ ~ [808sd:3, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [808sd:3, realclaps:1] ~ ~ ~" # gain 0.85,
+     every 2 (ply "<1 [1 1 2 1] [1 1 1 3] [1 2 1 4]>") $ s "808hc*8" # gain "0.6 0.45" # hpf 6000
+   ]
+   # lpf 4000
+   # orbit 2
+
+d5 $ s "vinyl:2" # legato 1 # gain 0.9 # hpf 1200 # orbit 4
+
+hush

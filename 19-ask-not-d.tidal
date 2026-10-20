@@ -1,0 +1,72 @@
+-- Ask Not · D major · 90 BPM
+-- Dmaj9 · Bm9 · Gmaj7 · A13. JFK's inaugural ("ask not…"), 1940s Superman radio fanfare (D major, opens
+-- on A — used as the V chord pulling back to D), tenor sax, Kawai K4 pad, DX200 bass.
+-- Cassette ideas: varispeed — wow rate changes every bar — and a pitched-down "villain" JFK in bars 5–8
+-- (psrate lowers pitch without changing the timing).
+
+setcps (90/60/4)
+
+let anChords = "<[d4,fs4,a4,cs5,e5] [b3,d4,fs4,a4,cs5] [g3,b3,d4,fs4] [a3,cs4,g4,b4,fs5]>" :: Pattern Note
+    varispeed = (# tapewowrate "<0.3 0.45 0.9 0.3 0.6 0.2 1.2 0.45>") . tapeFX "<40 50 90 40 60 30 110 50>"
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Kawai K4 "Cornwall" (C3 −7c)
+d1 $ varispeed
+   $ tuned 47.93 (anChords - 12)
+   # s "kawai-4-pad:9"
+   # legato 1.05 # attack 0.3 # gain 0.85
+   # room 0.4 # size 0.85
+   # orbit 0
+
+-- Fanfare: the opening A-major hit, on the A13 bar (bar 4 of every 4)
+d2 $ varispeed
+   $ s "<~ ~ ~ voxfilm:7>"
+   # begin 0.011 # end 0.045
+   # gain 0.7 # hpf 200 # lpf 5000
+   # room 0.3 # size 0.7
+   # orbit 1
+
+-- Sax: D major line, bars 1–4
+d3 $ varispeed $ human
+   $ mask "<1!4 0!4>"
+   $ sax "<[~ a3 [b3 d4] ~] [fs4 ~ e4 ~] [d4 ~ b3 a3] [~ e4 cs4 ~]>"
+   # legato 1.4 # attack 0.025 # gain 0.85
+   # leslie 0.15 # lrate 5.5 # lsize 0.12
+   # hpf 140 # pan 0.45
+   # room 0.3 # size 0.8
+   # orbit 5
+
+-- JFK: "my fellow Americans" (1), "ask not what your country can do for you" (2),
+-- "ask what you can do for your country" (4); bars 5–8 the villain version, with an "ask– ask–" stutter
+d4 $ tapeFX 30 $ stack [
+     onBar 0 $ clip "voxspeech:4" 0 0.27,
+     onBar 1 $ clip "voxspeech:4" 0.28 0.65,
+     onBar 3 $ clip "voxspeech:4" 0.66 1,
+     onBar 4 $ struct "t t ~ ~" $ clip "voxspeech:4" 0.28 0.31 # psrate 0.75 # cut 1,
+     (0.5 ~>) $ onBar 4 $ clip "voxspeech:4" 0.28 0.65 # psrate 0.75,
+     onBar 6 $ clip "voxspeech:4" 0.66 1 # psrate 0.75
+   ]
+   |< gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Yamaha DX200 "SoftbassC" (C2 +6c)
+d5 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ t ~"
+   $ tuned 36.06 "<d3 b2 g2 a2>"
+   # s "yamaha-dx200-bass:6"
+   # tapewow 10 # legato 0.85 # gain 0.95 # lpf 650
+   # orbit 3
+
+d6 $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~ ~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~" # gain 0.95,
+     swingBy (1/48) 8 $ degradeBy 0.15 $ s "hh27:0*16" # gain "0.85 0.7 0.78 0.7" # hpf 6000
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+d7 $ s "vinyl:2" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

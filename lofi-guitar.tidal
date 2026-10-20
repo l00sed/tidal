@@ -1,0 +1,103 @@
+-- Lofi guitar: I–vi–ii–V in G (Gmaj7 · Em9 · Am7 · D7), 82 BPM, one cycle = one bar.
+-- Send setcps, each `let` line, `knobs`, then the patterns. Uses the global aguitar + tapeFX helpers.
+-- 8-bar form: bars 1–4 strummed guitar, bars 5–8 fingerpicked guitar + sax answer.
+
+setcps (82/60/4)
+
+-- Guitar voicings for the real acoustic samples (aguitar: Tidal names sit one octave above
+-- the pitch you hear, so g3 sounds as G2).
+let gchords = "<[g3,d4,fs4,b4] [e3,b3,d4,fs4,g4] [a3,e4,g4,c5] [d4,fs4,a4,c5]>" :: Pattern Note
+
+let groots = "<g2 e2 a2 d3>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Strummed guitar (bars 1–4): down-strums on the beat, quicker, quieter up-strums
+-- between, a muted "chuck" on 2 and 4
+d1 $ tapeFX 30 $ human
+   $ mask "<1!4 0!4>"
+   $ stack [
+     rolledBy "<0.07 0.06>" $ struct "t ~ ~ t ~ ~ t ~" $ aguitar gchords # gain 0.85 # legato 1.6,
+     rolledBy "-0.03" $ struct "~ ~ t ~ ~ t ~ t" $ aguitar gchords # gain 0.6 # legato 0.6,
+     struct "~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~" $ aguitar gchords # gain 0.55 # legato 0.08 # lpf 2500
+   ]
+   # pan 0.4
+   # orbit 0
+
+-- Fingerpicked guitar (bars 5–8): thumb on the bass, fingers rolling up the voicing
+d2 $ tapeFX 30 $ human
+   $ mask "<0!4 1!4>"
+   $ arp "<thumbup pinkyup>"
+   $ struct "t t"
+   $ aguitar gchords
+   # legato 1.8
+   # gain "0.8 0.6 0.7 0.6"
+   # pan 0.55
+   # orbit 0
+
+-- Kick: jazz kick + 808 weight, boom-bap with a lazy push into bar 4
+d3 $ human
+   $ whenmod 4 3 (const $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ [jazz:0, 808bd:4] ~")
+   $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~"
+   # gain 1.05 # shape 0.3 # lpf 2800
+   # orbit 2
+
+-- Backbeat: rimshot + snare layer for a dry, acoustic crack (sits well with guitar)
+d4 $ (0.008 ~>)
+   $ s "~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~ ~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~"
+   # gain 0.95 # shape 0.2
+   # room 0.15 # size 0.4
+   # orbit 2
+
+-- Shaker instead of hats: swung 16ths, accent on the off-beat
+d5 $ human
+   $ swingBy (1/48) 8
+   $ degradeBy 0.1
+   $ s "emu-vintage-drums:18*16"
+   # gain "0.55 0.45 0.7 0.45"
+   # hpf 4000
+   # pan (slow 2 $ range 0.35 0.65 sine)
+   # orbit 2
+
+-- Bass: round sub on roots, approach note into each chord
+d6 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ t"
+   $ note (groots + "0 0 0 <-1 4 4 4>")
+   # s "supersquare"
+   # lpf 300 # legato 0.9 # gain 0.9
+   # orbit 3
+
+-- Sax answer over the fingerpicked half: G-major phrase with a b3 (bb) blues bend into bar 7
+d7 $ tapeFX 30 $ human
+   $ superimpose ((|+ note 0.1) . (0.012 ~>) . (|* gain 0.55) . (# pan 0.62) . filterEvents (not . isShort))
+   $ slur
+   $ sax "<~ ~ ~ ~ [~ [~ d4] [g4 fs4] [d4 ~ b3 ~]] [[e4 ~ ~ d4] [b3 ~ g3 ~] [a3 b3 d4 e4] ~] [[g4 ~ as3 b3] [d4 ~ ~ ~] ~ [~ fs4]] [[e4 ~ d4 ~] [c4 ~ a3 ~] [~ fs3 ~ ~] ~]>"
+   # legato 1.4
+   # attack 0.025 # release 0.4
+   # gain 0.9
+   |* gain "1 0.9 0.96 0.9"
+   # leslie 0.15 # lrate 5.5 # lsize 0.12
+   # triode 0.2 # hpf 140
+   # pan 0.48
+   # delay 0.2 # delayt (3/16) # delayfb 0.3 # lock 1
+   # room 0.3 # size 0.8
+   # orbit 5
+
+-- Vibes: two high notes per bar in the strummed half, like a glint over the guitar
+d8 $ human
+   $ whenmod 8 4 (const silence)
+   $ note "<[~ ~ b6 ~] [~ ~ ~ fs6] [e6 ~ ~ ~] [~ ~ ~ [a6 fs6]]>"
+   # s "supervibe"
+   # legato 2 # gain 0.5 # pan 0.7
+   # delay 0.3 # delayt (3/8) # delayfb 0.4 # lock 1
+   # room 0.35 # size 0.8
+   # orbit 7
+
+-- Vinyl bed
+d9 $ s "vinyl:2" # legato 1 # gain 0.7 # hpf 1200 # orbit 4
+
+-- Breakdown: guitar + vinyl only
+-- mapM_ ($ silence) [d3, d4, d5, d6, d7]
+
+hush

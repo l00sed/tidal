@@ -1,0 +1,50 @@
+-- Monastery · A minor · 80 BPM
+-- Am9 · Fmaj9 · G6 · E7. Gregorian chant (A minor) chopped into 8 slices, Oberheim Matrix-1000 low pad,
+-- Korg Mono/Poly bass. Cassette idea: chewed tape — heavy fast flutter and random dropouts.
+
+setcps (80/60/4)
+
+let monkChords = "<[a3,c4,e4,g4,b4] [f3,a3,c4,e4,g4] [g3,b3,d4,e4] [e3,gs3,b3,d4]>" :: Pattern Note
+    chewed = (sometimesBy 0.12 ((|* gain 0.6) . (# lpf 800))) . tapeFX 55 . (|< tapeflutter 22) . (|< tapefluttrate 9)
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Oberheim Matrix-1000 "Lowpad" (C2 −1c)
+d1 $ chewed
+   $ tuned 35.99 monkChords
+   # s "oberheim-matrix-1000-pad:2"
+   # legato 1.05 # attack 0.4
+   # gain 0.8
+   # room 0.45 # size 0.9
+   # orbit 0
+
+-- Chant chops: 8 slices re-sequenced, long and echoing
+d2 $ chewed $ human
+   $ slice 8 "<0 ~ [2 ~ 3 ~] ~ 4 ~ [6 ~ ~ 7] ~>"
+   $ s "voxchoir:6"
+   # legato 2 # gain 0.7 # hpf 200
+   # delay 0.35 # delayt (3/8) # delayfb 0.45 # lock 1
+   # room 0.5 # size 0.95
+   # orbit 6
+
+-- Bass: Korg Mono/Poly "simplesoft" (C2 −13c), roots
+d3 $ human
+   $ struct "t ~ ~ ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ tuned 35.87 "<a2 f2 g2 e2>"
+   # s "korg-monopoly-bass:13"
+   # tapewow 10 # legato 1 # gain 0.95 # lpf 500
+   # orbit 3
+
+-- Slow, heavy drums with a reverb-washed snare
+d4 $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     (0.012 ~>) $ s "~ ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~" # gain 1 # room 0.4 # size 0.8,
+     degradeBy 0.3 $ s "hh27:0*8" # gain 0.75 # hpf 7000
+   ]
+   # tapeflutter 8 # crush 9
+   # orbit 2
+
+d5 $ s "vinyl:0" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

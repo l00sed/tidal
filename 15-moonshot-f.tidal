@@ -1,0 +1,62 @@
+-- Moonshot · F major · 80 BPM
+-- Fmaj9 · Dm9 · Bbmaj7 · C9sus4. Armstrong + JFK's Rice University speech, Jupiter-8 pad,
+-- Kawai bell, Jupiter-8 bass. Cassette ideas: reversed "pre-echo" leading into each JFK line, and a
+-- tape speed-UP (launch) in the second half of bar 8 that lands on the downbeat.
+
+setcps (80/60/4)
+
+let moonChords = "<[f3,a3,c4,e4,g4] [d4,f4,a4,c5,e5] [as3,d4,f4,a4] [c4,f4,as4,d5,g5]>" :: Pattern Note
+    launch = whenmod 8 7 (within (0.5, 1) ((# accelerate 0.6) . (ply 2)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Jupiter-8 (C3 0c), an octave under the voicings
+d1 $ launch $ tapeFX 40
+   $ tuned 48 (moonChords - 12)
+   # s "jupiter-8-pad:19"
+   # legato 1.05 # attack 0.3 # gain 0.85
+   # room 0.4 # size 0.9
+   # orbit 0
+
+-- Bell: Kawai K4 "Bellerion2" (C5 −6c), melody in bars 5–8
+d2 $ launch $ tapeFX 40 $ human
+   $ tuned 71.94 "<~ ~ ~ ~ [c6 ~ a5 ~] [f6 ~ e6 d6] [~ c6 d6 f6] [g6 ~ ~ e6]>"
+   # s "kawai-4-synth:22"
+   # legato 1.5 # gain 0.85 # pan 0.65
+   # delay 0.3 # delayt (3/8) # delayfb 0.4 # lock 1
+   # room 0.35 # size 0.85
+   # orbit 5
+
+-- Vocals: "one small step for man" (bar 1), "one giant leap for mankind" (bar 3),
+-- "we choose to go to the moon" (bars 5, 7) with a quiet reversed copy swelling in before each
+d3 $ tapeFX 35 $ stack [
+     onBar 0 $ clip "voxspeech:0" 0.06 0.37,
+     onBar 2 $ clip "voxspeech:0" 0.38 1,
+     onBar 4 $ clip "voxspeech:5" 0 0.40,
+     onBar 6 $ clip "voxspeech:5" 0 0.40,
+     (0.5 ~>) $ onBar 3 $ clip "voxspeech:5" 0 0.40 # speed (-1) # gain 0.8 # lpf 2000,
+     (0.5 ~>) $ onBar 5 $ clip "voxspeech:5" 0 0.40 # speed (-1) # gain 0.8 # lpf 2000
+   ]
+   |< gain 1 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Jupiter-8 "CrossmodBass 2" (C2 +7c)
+d4 $ launch $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ t"
+   $ tuned 36.07 "<f2 d2 as2 c3>"
+   # s "jupiter-8-bass:7"
+   # tapewow 10 # legato 0.85 # gain 0.95 # lpf 650
+   # orbit 3
+
+d5 $ launch $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 0.95,
+     swingBy (1/48) 8 $ degradeBy 0.15 $ s "hh27:0*16" # gain "0.85 0.7 0.78 0.7" # hpf 6000
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+d6 $ s "vinyl:2" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

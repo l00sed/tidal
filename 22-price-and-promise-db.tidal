@@ -1,0 +1,76 @@
+-- Price and Promise · Db major · 82 BPM
+-- Dbmaj9 · Bbm11 · Ebm9 · Ab13. Neo-soul boom-bap: Obama's 2009 inaugural ("pick ourselves up… dust
+-- ourselves off"), Rhodes, clean guitar fills, tenor-ish sax solo, ghost-note snare.
+-- Cassette idea: only the sax rides a deep warble (the band stays steady), and bar 8 slows the whole
+-- melodic band down like a dragging tape before snapping back.
+
+setcps (82/60/4)
+
+let ppChords = "<[cs4,f4,gs4,c5,ds5] [as3,cs4,ds4,gs4,c5] [ds4,fs4,as4,cs5,f5] [gs3,c4,fs4,as4,f5]>" :: Pattern Note
+    drag = whenmod 8 7 (within (0.5, 1) (# accelerate (-0.5)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Rhodes: lush, slightly rolled, on 1 and the "a" of 2
+d1 $ drag $ tapeFX 30 $ human
+   $ rolledBy 0.05
+   $ struct "t ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~ ~"
+   $ note ppChords
+   # s "emu-vintage-piano:1"
+   # legato 2 # gain 0.85
+   # room 0.3 # size 0.7
+   # orbit 0
+
+-- Clean guitar fills answering the Rhodes, off the beat
+d2 $ drag $ tapeFX 30 $ human
+   $ degradeBy 0.3
+   $ arp "<up down>"
+   $ struct "~ ~ ~ ~ ~ ~ ~ ~ ~ t t ~ t ~ t ~"
+   $ eguitar (ppChords + 12)
+   # legato 0.6 # gain 0.7 # pan 0.35
+   # room 0.25 # size 0.6
+   # orbit 1
+
+-- Sax solo, bars 5–8, with its own heavy warble
+d3 $ drag $ tapeFX 75 $ human
+   $ mask "<0!4 1!4>"
+   $ jsax "<[~ gs4 [as4 c5] cs5] [f5 ~ ds5 cs5] [c5 ~ as4 gs4] [fs4 f4 ds4 ~]>"
+   # legato 1.3 # attack 0.02 # gain 0.9 # pan 0.6
+   # room 0.3 # size 0.75
+   # orbit 5
+
+-- Obama: "starting today" (bar 1), "we must pick ourselves up / pick ourselves up" (bar 2),
+-- "dust ourselves off" (bar 3), "the challenges we face are real" (bar 5), "the price and the promise" (bar 7)
+d4 $ tapeFX 25 $ stack [
+     onBar 0 $ clip "voxpol:6" 0.04 0.28,
+     onBar 1 $ clip "voxpol:6" 0.28 0.64,
+     (0.5 ~>) $ onBar 1 $ clip "voxpol:6" 0.38 0.64,
+     onBar 2 $ clip "voxpol:6" 0.62 0.94,
+     onBar 4 $ clip "voxpol:5" 0.08 0.80,
+     onBar 6 $ clip "voxpol:7" 0 1
+   ]
+   # gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Jupiter-8 "Compacti slow" (C2 −3c), syncopated with a slide-in approach note
+d5 $ human
+   $ struct "t ~ ~ ~ ~ ~ ~ t ~ ~ t ~ ~ ~ ~ t"
+   $ tuned 35.97 ("<cs3 as2 ds3 gs2>" + "0 0 0 <-1 1 -1 1>")
+   # s "jupiter-8-bass:6"
+   # legato 0.85 # gain 0.95 # lpf 700
+   # orbit 3
+
+-- Sexy boom-bap: lazy kick, snare + clap on 2 & 4, ghost notes, swung hats
+d6 $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     (0.018 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 1,
+     degradeBy 0.35 $ s "~ ~ ~ jazz:7 ~ ~ ~ ~ ~ jazz:7 ~ ~ ~ ~ ~ jazz:7" # gain 0.7 # lpf 2500,
+     swingBy (1/24) 8 $ s "hh27:0*16" # gain "0.85 0.6 0.75 0.6" # hpf 6000
+   ]
+   # crush 11 # tapeflutter 4
+   # orbit 2
+
+d7 $ s "vinyl:2" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

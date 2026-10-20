@@ -1,0 +1,105 @@
+-- Inauguration (Nightmare Mix) · F minor · 76 BPM · 88 bars ≈ 4:38
+-- Fm(maj7) · Db7 · Bbm9 · C7#9. A haunted tour of the inaugural podium: Obama, Trump, Eisenhower, Biden, JFK,
+-- Reagan, Clinton, FDR. Ensemble: sax lead, sax + trumpet harmonies, guitar solo, piano, vibes, upright bass,
+-- a rich kit with tabla, congas and claves.
+--
+-- Form:  i intro 8 · a sax 16 · b horns/DROP 16 · d breakdown 8 · a sax 8 · s guitar solo 16 · x 1 · c everything 7 · o outro 8
+-- Tape:  each section has its own tape: light wobble (a), degrading echo on the vocals (b),
+--        heavy VHS (d), varispeed (s), and a tape stop on the last bar of every 8 in the drop.
+-- HOW TO PLAY: send setcps, the form block, then `resetCycles` (starts the form at bar 1),
+-- then every d-pattern. Each part only sounds in its sections, so everything can be sent up front and the
+-- arrangement plays itself; after the outro it falls silent.
+
+setcps (76/60/4)
+
+let form = "<i!8 a!16 b!16 d!8 a!8 s!16 x c!7 o!8 ~!32>" :: Pattern String
+    inS ss p = mask (fmap (`elem` words ss) form) p
+    nmChords = "<[f3,gs3,c4,e4,g4] [cs4,f4,gs4,b4] [as3,cs4,f4,gs4,c5] [c4,e4,as4,ds5]>" :: Pattern Note
+    stop8 = whenmod 8 7 (within (0.5, 1) ((# accelerate (-0.9)) . (# lpf 1500)))
+    sectionTape p = stack [inS "i a o" (tapeFX 35 p), inS "b c x" (stop8 $ tapeFX 45 p), inS "d" (vhs 90 p), inS "s" ((# tapewowrate "<0.3 0.9 0.45 1.2>") $ tapeFX "<40 90 50 110>" p)]
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+resetCycles
+
+d1 $ sectionTape $ human $ inS "i a b d s c o"
+   $ rolledBy 0.06
+   $ struct "t ~ ~ ~ ~ ~ t ~"
+   $ piano nmChords
+   # legato 2 # gain 0.8
+   # room 0.4 # size 0.85
+   # orbit 0
+
+d2 $ sectionTape $ human $ inS "b s c"
+   $ arp "<up converge>" $ segment 8
+   $ vibes (nmChords + 12)
+   # legato 1.2 # gain 0.65 # pan 0.7
+   # room 0.35 # size 0.8
+   # orbit 1
+
+-- Sax lead (a); sax + trumpet in harmony (b, c)
+d3 $ sectionTape $ human $ stack [
+     inS "a b c" $ jsax "<[c5 ~ e5 g5] [gs5 ~ f5 ~] [~ f5 [gs5 c6] as5] [g5 ~ e5 ~] [f5 ~ gs5 c6] [b5 ~ gs5 f5] [cs5 f5 gs5 ~] [e5 ~ ~ ~]>" # pan 0.6,
+     inS "b c" $ trumpet "<[e5 ~ g5 c6] [cs6 ~ gs5 ~] [~ cs6 [f6 gs6] f6] [c6 ~ as5 ~] [gs5 ~ c6 e6] [ds6 ~ cs6 gs5] [f5 gs5 cs6 ~] [as5 ~ ~ ~]>" # pan 0.4 # gain 0.8 # lpf 3000
+   ]
+   # legato 1.2 |< gain 0.9
+   # room 0.3 # size 0.75
+   # orbit 5
+
+-- Guitar: comps, then a solo with octaves (s)
+d4 $ sectionTape $ human $ stack [
+     inS "a b c" $ struct "~ t ~ [~ t]" $ eguitar nmChords # legato 0.3 # gain 0.7,
+     inS "s" $ superimpose (|+ note 12) $ eguitar "<[f4 ~ gs4 c5] [b4 ~ gs4 f4] [cs5 ~ c5 as4] [e4 g4 as4 ~] [c5 [as4 gs4] g4 f4] [gs4 ~ b4 cs5] [c5 ~ as4 gs4] [g4 e4 c4 ~]>" # legato 0.9 # gain 0.85
+   ]
+   # pan 0.35
+   # room 0.25 # size 0.6
+   # orbit 0
+
+d5 $ sectionTape $ human $ stack [
+     inS "a b s c" $ ubass "<[f3 gs3 c4 e3] [cs3 f3 gs3 b2] [as2 cs3 f3 gs3] [c3 e3 g3 as3]>" # legato 0.9,
+     inS "d o" $ ubass "<f3 cs3 as2 c3>" # legato 1
+   ]
+   # gain 1 # lpf 1800
+   # orbit 3
+
+-- Kit: lazy boom-bap (a, s), heavy drop (b, c), with a clave pattern and congas threaded through
+d6 $ human $ stack [
+     inS "a s" $ s "jazz:0 ~ ~ ~ ~ ~ ~ jazz:0 ~ ~ jazz:0 ~ ~ ~ ~ ~" # gain 1,
+     inS "b c" $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ [jazz:0, 808bd:4] ~ ~ ~ ~ [jazz:0, 808bd:4] ~" # gain 1.1 # crush 9 # shape 0.35,
+     inS "a b s c" $ (0.015 ~>) $ s "~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~" # gain 0.95,
+     inS "a b s c" $ swingBy (1/24) 8 $ s "hh27:0*16" # gain "0.8 0.55 0.7 0.55" # hpf 6000,
+     inS "b c" $ s "drumnibus-percussion:15 ~ ~ drumnibus-percussion:15 ~ ~ drumnibus-percussion:15 ~ ~ ~ drumnibus-percussion:15 ~ drumnibus-percussion:15 ~ ~ ~" # gain 0.7 # pan 0.7,
+     inS "a b s c" $ s "~ ~ drumnibus-percussion:18 ~ ~ drumnibus-percussion:19 ~ drumnibus-percussion:18" # gain 0.75 # pan 0.3,
+     inS "s c" $ fast 2 $ s "tabla:9 tabla:19 [tabla:0 ~]" # gain 0.75 # pan 0.6
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+d7 $ inS "i d o" $ s "<drumnibus-percussion:4 ~ ~ ~>" # legato 4 # gain 0.85 # room 0.5 # size 0.9 # orbit 7
+
+-- The podium
+d8 $ stack [
+     inS "i" $ stack [onBar 2 $ clip "voxpol:5" 0.08 0.8, onBar 6 $ clip "voxspeech:3" 0.17 0.79 # psrate 0.8],
+     inS "a" $ stack [
+       onBar 0 $ clip "voxpol:0" 0 0.32,
+       onBar 2 $ struct "t t ~ ~" $ clip "voxpol:0" 0.06 0.21 # cut 1,
+       (0.5 ~>) $ onBar 2 $ clip "voxpol:0" 0.06 0.32,
+       onBar 4 $ clip "voxpol:3" 0 0.57,
+       onBar 6 $ clip "voxpol:3" 0.57 1 # psrate 0.8 ],
+     inS "b" $ echoWith 3 (3/16) ((|* gain 0.85) . (# lpf 1800) . (|+ tapewow 40)) $ stack [
+       onBar 0 $ clip "voxspeech:7" 0.54 0.78,
+       onBar 3 $ clip "voxspeech:7" 0.16 0.29,
+       onBar 6 $ clip "voxpol:1" 0.33 0.70 ],
+     inS "d" $ stack [onBar 1 $ clip "voxpol:10" 0.28 0.53, onBar 5 $ clip "voxpol:10" 0 0.28 # psrate 0.75],
+     inS "s" $ stack [onBar 0 $ clip "voxspeech:4" 0.28 0.65 # psrate 0.75, onBar 4 $ struct "t t ~ ~" $ clip "voxspeech:4" 0.28 0.31 # cut 1],
+     inS "x" $ clip "voxspeech:8" 0.27 0.60 # gain 1.1,
+     inS "c" $ stack [onBar 0 $ clip "voxpol:8" 0.04 0.39, onBar 4 $ clip "voxpol:2" 0.70 1],
+     inS "o" $ stack [onBar 1 $ clip "voxspeech:2" 0.30 0.62, onBar 5 $ clip "voxspeech:2" 0.85 1 # room 0.6 # size 0.95]
+   ]
+   |< gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   |< tapewow 25 # orbit 6
+
+d9 $ inS "i a b d s x c o" $ s "vinyl:0" # legato 1 # gain 0.85 # hpf 1500 # orbit 4
+
+hush

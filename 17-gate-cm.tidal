@@ -1,0 +1,64 @@
+-- Gate · C minor · 86 BPM
+-- Cm11 · Abmaj9 · Fm7 · G7#5. Reagan at the Brandenburg Gate, chopped DOOM-style ("Mr– Mr– Mr. Gorbachev"),
+-- Rhodes, Oberheim strings, JV-2080 pad, Jupiter-8 bass.
+-- Cassette ideas: "tape scrubbing" — every 4th bar the Rhodes is cut into 8 pieces with some played
+-- backwards; bar 8 ends in a tape stop under "tear down this wall".
+
+setcps (86/60/4)
+
+let gateChords = "<[c4,ds4,f4,as4,d5] [gs3,c4,ds4,g4,as4] [f3,gs3,c4,ds4] [g3,b3,ds4,f4]>" :: Pattern Note
+    scrub = whenmod 4 3 (chop 8 . (# speed "1 1 -1 1 1 -1 -1 1"))
+    stop8 = whenmod 8 7 (within (0.5, 1) ((# accelerate (-0.9)) . (# lpf 1500)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Rhodes: emu-vintage-piano:1 (recorded at C4), lazy comp
+d1 $ stop8 $ scrub $ tapeFX 40 $ human
+   $ rolledBy 0.04
+   $ struct "t ~ ~ t ~ ~ t ~"
+   $ note gateChords
+   # s "emu-vintage-piano:1"
+   # legato 1.2 # gain 0.85
+   # room 0.25 # size 0.6
+   # orbit 0
+
+-- Strings: Oberheim "kattesnorrestring Looo" (C3 +5c), sustained
+d2 $ stop8 $ tapeFX 40
+   $ tuned 48.05 gateChords
+   # s "oberheim-matrix-1000-strings:8"
+   # legato 1.05 # attack 0.25 # gain 0.75 # hpf 250
+   # room 0.4 # size 0.85
+   # orbit 1
+
+-- Reagan: "Mr– Mr– Mr– Mr. Gorbachev" (bar 4), "open this gate" (bar 6), "tear down this wall" (bar 8)
+d3 $ tapeFX 30 $ stack [
+     onBar 3 $ struct "t t t ~" $ clip "voxspeech:8" 0 0.05 # cut 1,
+     (0.75 ~>) $ onBar 3 $ clip "voxspeech:8" 0 0.26,
+     (0.25 ~>) $ onBar 5 $ clip "voxspeech:9" 0.50 1,
+     onBar 7 $ clip "voxspeech:8" 0.27 0.60
+   ]
+   # gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Jupiter-8 "Compacti slow" (C2 −3c)
+d4 $ stop8 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ t ~"
+   $ tuned 35.97 "<c3 gs2 f2 g2>"
+   # s "jupiter-8-bass:6"
+   # tapewow 10 # legato 0.85 # gain 0.95 # lpf 650
+   # orbit 3
+
+d5 $ human
+   $ whenmod 8 7 (within (0.5, 1) (const silence))
+   $ stack [
+       s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ [jazz:0, 808bd:4] ~" # gain 1.05 # shape 0.35,
+       (0.01 ~>) $ s "~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~" # gain 0.95,
+       swingBy (1/24) 4 $ s "hh27:0*8" # gain "0.85 0.7" # hpf 6000
+     ]
+   # crush 9 # tapeflutter 4
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

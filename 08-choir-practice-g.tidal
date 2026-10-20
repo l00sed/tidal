@@ -1,0 +1,59 @@
+-- Choir Practice · G major · 76 BPM
+-- Gmaj7 · Em9 · Cmaj9 · D9sus4. Children's choir (sung in G, so it sits natively), Kawai K4 pad + bell,
+-- Jupiter-8 bass. Cassette idea: the tape slowly warps deeper over 16 bars, then recovers.
+-- Gains: SuperDirt uses gain^4, so 0.8 ≈ −4 dB, 0.7 ≈ −6 dB.
+
+setcps (76/60/4)
+
+let cpChords = "<[g3,b3,d4,fs4] [e3,g3,b3,d4,fs4] [c4,e4,g4,b4,d5] [d4,g4,a4,c5,e5]>" :: Pattern Note
+    warp = tapeFX (slow 16 $ range 20 140 $ (1 - cosine) / 2)
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Kawai K4 "Cornwall" (C3 −7c)
+d1 $ warp
+   $ tuned 47.93 cpChords
+   # s "kawai-4-pad:9"
+   # legato 1.05 # attack 0.3 # release 1.2
+   # gain 0.8
+   # room 0.4 # size 0.85
+   # orbit 0
+
+-- Children's choir: one 5-bar phrase every 8 bars
+d2 $ warp
+   $ s "<voxchoir:0 ~!7>"
+   # begin 0.01 # legato 6
+   # gain 0.95 # lpf 5000 # hpf 200
+   # room 0.4 # size 0.9
+   # orbit 6
+
+-- Bell lead: Kawai K4 "Bellerion" (C4 −6c), answers the choir in bars 5–8
+d3 $ warp $ human
+   $ tuned 59.94 "<~ ~ ~ ~ [d6 ~ b5 ~] [a5 ~ g5 e5] [~ g5 b5 d6] [c6 ~ a5 fs5]>"
+   # s "kawai-4-synth:21"
+   # legato 1.5 # gain 0.7 # pan 0.65
+   # delay 0.3 # delayt (3/8) # delayfb 0.4 # lock 1
+   # room 0.35 # size 0.85
+   # orbit 5
+
+-- Bass: Jupiter-8 "Compacti" (C2 −1c)
+d4 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ tuned 35.99 "<g2 e2 c3 d3>"
+   # s "jupiter-8-bass:4"
+   # tapewow 10 # legato 0.9 # gain 0.95 # lpf 700
+   # orbit 3
+
+-- Soft jazz kit, brushed feel
+d5 $ human $ stack [
+     s "jazz:0 ~ ~ ~ ~ ~ ~ jazz:0 ~ ~ jazz:0 ~ ~ ~ ~ ~" # gain 1 # shape 0.25,
+     (0.01 ~>) $ s "~ ~ ~ ~ rs:0 ~ ~ ~ ~ ~ ~ ~ rs:0 ~ ~ ~" # gain 0.95,
+     swingBy (1/48) 8 $ s "emu-vintage-drums:18*16" # gain "0.8 0.65 0.85 0.65" # hpf 4000
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+d6 $ s "vinyl:2" # legato 1 # gain 1.2 # hpf 1500 # orbit 4
+
+hush

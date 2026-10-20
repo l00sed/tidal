@@ -1,0 +1,60 @@
+-- Forgotten · C minor · 72 BPM
+-- Cm9 · Abmaj7#11 · Fm9 · G7b9. Dark ballad boom-bap from Trump's 2017 inaugural — "the forgotten men and
+-- women", "transferring power… back to you, the people", and a "strong / wealthy / proud / safe" word-chop —
+-- over tonejs piano and a mournful sax. Cassette idea: heavy VHS (80 cents, slow, with dropouts).
+
+setcps (72/60/4)
+
+let fgChords = "<[c4,ds4,g4,as4,d5] [gs3,c4,d4,g4] [f3,gs3,c4,ds4,g4] [g3,b3,f4,gs4]>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+d1 $ vhs 80 $ human
+   $ rolledBy 0.08
+   $ struct "t ~ ~ ~ ~ ~ t ~"
+   $ piano fgChords
+   # legato 2 # gain 0.85
+   # room 0.4 # size 0.85
+   # orbit 0
+
+-- Sax, bars 5–8
+d2 $ vhs 80 $ human
+   $ mask "<0!4 1!4>"
+   $ jsax "<[g4 ~ ~ f4] [ds4 ~ c4 ~] [~ gs4 g4 f4] [d4 ~ b3 ~]>"
+   # legato 1.4 # attack 0.03 # gain 0.85 # pan 0.6
+   # room 0.4 # size 0.85
+   # orbit 5
+
+-- Trump: "the forgotten men and women of our country" (1) / villain "will be forgotten no longer" (3) /
+-- "we are transferring power" (5) / "and giving it back to you, the people" (7) / "strong– wealthy– proud– safe–" (8)
+d3 $ tapeFX 30 $ stack [
+     onBar 0 $ clip "voxpol:3" 0 0.57,
+     onBar 2 $ clip "voxpol:3" 0.57 1 # psrate 0.8,
+     onBar 4 $ clip "voxpol:4" 0.04 0.31,
+     onBar 6 $ clip "voxpol:4" 0.56 1,
+     onBar 7 $ s "voxpol:2*4" # begin "0.11 0.29 0.46 0.63" # end "0.15 0.33 0.50 0.67" # cut 1
+   ]
+   |< gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Korg Mono/Poly "moogeyfiltered" (C2 −9c)
+d4 $ human
+   $ struct "t ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~"
+   $ tuned 35.91 "<c3 gs2 f2 g2>"
+   # s "korg-monopoly-bass:7"
+   # tapewow 15 # tapewowrate 0.2 # legato 1 # gain 0.95 # lpf 500
+   # orbit 3
+
+-- Half-time, heavy, crushed
+d5 $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.35,
+     (0.015 ~>) $ s "~ ~ ~ ~ ~ ~ ~ ~ [sn:3, realclaps:1] ~ ~ ~ ~ ~ ~ ~" # gain 1 # room 0.35 # size 0.8,
+     degradeBy 0.3 $ s "hh27:0*8" # gain 0.75 # hpf 7000
+   ]
+   # crush 9 # tapeflutter 6
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.85 # hpf 1500 # orbit 4
+
+hush

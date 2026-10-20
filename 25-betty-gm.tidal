@@ -1,0 +1,63 @@
+-- Betty · G minor · 96 BPM
+-- Gm9 · C9 · Am7b5 · D7b9. Swing-hop with Betty Boop (1932–35): "a saxophone can go…" (sung in Bb, the
+-- relative major, so it fits), "beep beep" chops, "oh my, oh dear", "oh, shut up!". Sax + trumpet trading
+-- lines, Freddie Green guitar, ride cymbal swing on clean DrumTraks.
+-- Cassette idea: 78 rpm — bars 1–4 sound like an old shellac record (narrow band, loud crackle);
+-- bars 5–8 open up to full-range hi-fi.
+
+setcps (96/60/4)
+
+let btChords = "<[g3,as3,d4,f4,a4] [c4,e4,as4,d5] [a3,c4,ds4,g4] [d4,fs4,c5,ds5]>" :: Pattern Note
+
+let shellac = (\p -> stack [mask "<1!4 0!4>" (p # hpf 350 # lpf 3200 # crush 11), mask "<0!4 1!4>" p]) . tapeFX 30
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Freddie Green guitar: four short strums per bar
+d1 $ shellac $ human
+   $ struct "t t t t"
+   $ eguitar btChords
+   # legato 0.3 # gain "0.85 0.7 0.8 0.7" # pan 0.4
+   # orbit 0
+
+-- Sax (bars 1, 3, 5, 7) and trumpet (bars 2, 4, 6, 8) trading short phrases
+d2 $ shellac $ human $ stack [
+     jsax "<[d5 ~ f5 a5] ~ [g5 ~ ds5 c5] ~>" # pan 0.6,
+     trumpet "<~ [e6 ~ d6 as5] ~ [a5 ~ fs5 ~]>" # pan 0.35 # lpf 3500
+   ]
+   # legato 1.1 # gain 0.85
+   # room 0.25 # size 0.6
+   # orbit 5
+
+-- Betty: "a saxophone can go…" (1) / "beep– beep– beep beep" (3) / "oh my! oh dear, oh dear" (5) /
+-- "beep" stutter (7) / "oh, shut up!" (8)
+d3 $ tapeFX 30 $ stack [
+     onBar 0 $ clip "voxcartoon:11" 0 0.5,
+     onBar 2 $ slice 6 "0 1 ~ [2 3]" $ s "voxcartoon:7",
+     onBar 4 $ clip "voxcartoon:8" 0 0.52,
+     onBar 6 $ struct "t t [t t] t" $ clip "voxcartoon:7" 0 0.2 # cut 1,
+     (0.5 ~>) $ onBar 7 $ clip "voxcartoon:10" 0.05 0.6
+   ]
+   # gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Walking bass: Jupiter-8 "Compacti" (C2 −1c)
+d4 $ shellac $ human
+   $ tuned 35.99 ("<g2 c3 a2 d3>" + "0 7 12 7")
+   # s "jupiter-8-bass:4"
+   # legato 0.85 # gain 0.95 # lpf 700
+   # orbit 3
+
+-- Swing: ride pattern, boom-bap kick, snare + rim on 2 & 4
+d5 $ shellac $ human $ stack [
+     swingBy (1/6) 4 $ s "drumtraks:7 [~ drumtraks:7] drumtraks:7 [~ drumtraks:7]" # gain 0.8,
+     s "[drumtraks:6, jazz:0] ~ ~ [~ drumtraks:6] ~ ~ [drumtraks:6, jazz:0] ~" # gain 1.05,
+     (0.008 ~>) $ s "~ [drumtraks:9, drumtraks:8] ~ [drumtraks:9, drumtraks:8]" # gain 0.95
+   ]
+   # orbit 2
+
+-- Crackle is loud in the 78-rpm half, faint in the hi-fi half
+d6 $ s "vinyl:0" # legato 1 # gain "<1!4 0.7!4>" # hpf 1500 # orbit 4
+
+hush

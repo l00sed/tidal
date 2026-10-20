@@ -1,0 +1,138 @@
+-- Lofi soul: I–vi–ii–V in G (Gmaj7 · Em9 · Am7 · D7), 80 BPM, one cycle = one bar.
+-- Uses ~/.samples/aguitar (real acoustic guitar) and ~/.samples/vox* (CC0 soul vocals);
+-- see SAMPLE_CREDITS.md. Needs SuperDirt restarted once so it loads ~/.samples.
+-- Send setcps and each `let` line on its own (<C-e>), then the patterns.
+-- 8-bar form: bars 1–4 strum + vocal "ooh" intro, bars 5–8 fingerpicking + chopped vocal hook.
+
+setcps (80/60/4)
+
+-- aguitar is chromatic from D2 (00_D2 = MIDI 38); Tidal note 0 = MIDI 60,
+-- so n = note + 22 selects the recording of that exact pitch (no pitch-shifting)
+
+-- Guitar voicings at real pitch (g3 = G2, the guitar's low register)
+let gchords = "<[g3,d4,fs4,b4] [e3,b3,d4,fs4,g4] [a3,e4,g4,c5,e5] [d4,a4,c5,fs5]>" :: Pattern Note
+    groots = "<g2 e2 a2 d3>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+setF "vol" 1
+setF "vol" 0.85
+setF "filt" 0.2 -- lowpass (dark)
+setF "filt" 0.5 -- off
+setF "filt" 0.8 -- highpass (thin)
+
+-- Slides: rampF name from to bars (straight line starting now, then holds)
+rampF "filt" 0.5 0.2 1 -- darken over 4 bars
+rampF "filt" 0.2 0.5 1 -- open back up
+rampF "filt" 0.5 0.8 1 -- thin out
+rampF "filt" 0.8 0.5 1
+rampF "vol" 1 0 16 -- 16-bar fade-out
+rampF "vol" 0 1 1 -- 16-bar fade-out
+
+noKnobs
+
+-- Strummed acoustic (bars 1–4): down-strums with a roll, lighter reversed up-strums, muted chucks
+d1 $ tapeFX 30 $ human
+   $ mask "<1!4 0!4>"
+   $ stack [
+       rolledBy "<0.06 0.05>" $ struct "t ~ ~ t ~ ~ t ~" $ aguitar gchords # gain 0.85 # legato 2,
+       rolledBy "-0.03" $ struct "~ ~ t ~ ~ t ~ t" $ aguitar gchords # gain 0.55 # legato 0.7,
+       struct "~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~" $ aguitar gchords # gain 0.5 # legato 0.06 # lpf 2500
+     ]
+   # pan 0.4
+   # room 0.2 # size 0.35
+   # orbit 0
+
+-- Fingerpicked acoustic (bars 5–8): thumb + rolling fingers, let ring
+d2 $ tapeFX 30 $ human
+   $ mask "<0!4 1!4>"
+   $ arp "<thumbup pinkyup>"
+   $ struct "t t"
+   $ aguitar gchords
+   # legato 2.5
+   # gain (range 0.58 0.7 $ slow 4 sine)
+   |* gain "1.2 1.3 1.2 1.4"
+   # pan 0.55
+   # room 0.2 # size 0.35
+   # orbit 0
+
+-- Kick: jazz kick + 808 weight, boom-bap, push into bar 4
+d3 $ human
+   $ whenmod 4 3 (const $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ [jazz:0, 808bd:4] ~")
+   $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~"
+   # gain 1.05 # shape 0.3 # lpf 2800
+   # orbit 2
+
+-- Backbeat: snare + clap, laid back
+d4 $ (0.008 ~>)
+   $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~"
+   # gain 0.95 # shape 0.25
+   # room 0.15 # size 0.4
+   # orbit 2
+
+-- Hats: swung 16ths with accents
+d5 $ human
+   $ swingBy (1/48) 8
+   $ degradeBy 0.15
+   $ s "jazz:3*16"
+   # gain "0.75 0.5 0.62 0.5"
+   # hpf 7000
+   # pan (slow 2 $ range 0.4 0.6 sine)
+   # orbit 2
+
+-- Bass: round sub on roots with a leading-tone pickup into each chord
+d6 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ t"
+   $ note (groots + "0 0 0 <-1 4 4 4>")
+   # s "supersquare"
+   # lpf 300 # legato 0.9 # gain 0.9
+   # orbit 3
+
+-- Vocal intro: warm "ooh-aha" opening each 8 bars, a soft "oooh hoo" answering in bar 4
+d7 $ tapeFX 30
+   $ s "<voxooh:0 ~ ~ [~ ~ voxooh:3 ~] ~ ~ ~ ~>"
+   # begin "<0.012 0 0 0.047>" # end "<0.363 1 1 1>"
+   # legato 4
+   # gain 0.8
+   # lpf 4500 # hpf 200
+   # room 0.7 # size 0.8
+   # delay 0.15 # delayt (3/8) # delayfb 0.3 # lock 1
+   # pan 0.5
+   # orbit 6
+
+-- Bright strings riding with d7's "ooh": a full bar under "ooh-aha" (bar 1), and the same
+-- late swell under "oooh hoo" (bar 4). Oberheim Matrix-1000 "ecstacystring EenNoot" (C5 +2c).
+d8 $ tapeFX 30
+   $ struct "<t _ ~ [~ ~ t _] ~ ~ ~ ~>"
+   $ tuned 72.02 (gchords + 12)
+   # s "oberheim-matrix-1000-strings:3"
+   # release 3.2 # legato 1.5
+   # legato 1.5
+   # gain 0.95 # hpf 400
+   # room 0.6 # size 0.85
+   # pan 0.5
+   # orbit 6
+
+-- Hammond layer: soft sustained chords under everything, slow vibrato, a touch of Leslie.
+-- vibrato/vrate are superhammond's own pitch wobble; voice picks the drawbar preset (0–9).
+d9 $ tapeFX 30 $ human
+   $ struct "t _ _ _ _ _ [~ t] _"
+   $ note (gchords - 12)
+   # s "superhammond"
+   # voice 1 # pF "vibrato" 0.3 # pF "vrate" 5
+   # octave 6
+   # legato 1.2 # gain 0.5
+   # lpf 2500
+   # leslie 0.3 # lrate 0.8 # lsize 0.4
+   # room 0.3 # size 0.6
+   # pan 0.45
+   # orbit 1
+
+-- Vinyl bed
+d10 $ s "vinyl:2" # legato 1 # gain 1 # hpf 1200 # orbit 4
+
+-- Breakdown: guitar + vocals + vinyl only
+-- mapM_ ($ silence) [d3, d4, d5, d6]
+
+hush

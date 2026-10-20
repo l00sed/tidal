@@ -1,0 +1,74 @@
+-- Night Bus · A minor · 70 BPM
+-- Am9 · Fmaj7 · Dm9 · E7#9 (i–VI–iv–V). Dark 808 kit, piano, tenor sax, chopped "Fall in Love" slice
+-- (slice 7 is E/C/A — already in A minor, so no transposition needed).
+
+setcps (70/60/4)
+
+
+let nightChords = "<[a3,c4,e4,g4,b4] [f3,a3,c4,e4] [d4,f4,a4,c5,e5] [e3,gs3,d4,g4]>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+setF "vol" 1
+setF "vol" 1.5
+setF "filt" 0.05 -- lowpass (dark)
+setF "filt" 0.5 -- off
+setF "filt" 0.95 -- highpass (thin)
+
+-- Slides: rampF name from to bars (straight line starting now, then holds)
+rampF "filt" 0.5 0.2 1 -- darken over 4 bars
+rampF "filt" 0.2 0.5 1 -- open back up
+rampF "filt" 0.5 0.8 1 -- thin out
+rampF "filt" 0.8 0.5 1
+rampF "vol" 1 7 1 -- 16-bar fade-out
+
+noKnobs
+
+d1 $ tape $ human
+   $ rolledBy 0.06
+   $ struct "t ~ ~ t ~ ~ ~ ~"
+   $ piano nightChords
+   # legato 3 # gain 0.7
+   # lpf 2800
+   # room 0.4 # size 0.9
+   # orbit 0
+
+-- Sax: A minor pentatonic + the E7's G#, call in bars 1–4, rest in 5–8
+d2 $ tape $ human
+   $ superimpose ((|+ note 0.1) . (0.012 ~>) . (|* gain 0.55) . (# pan 0.6) . filterEvents (not . isShort))
+   $ slur
+   $ sax "<[~ e4 [g4 a4] ~] [c4 ~ a3 ~] [~ d4 [f4 e4] d4] [~ b3 gs3 ~] ~ ~ ~ ~>"
+   # legato 1.4 # attack 0.025 # release 0.4
+   # gain 0.72 # leslie 0.15 # lrate 5.5 # lsize 0.12
+   # triode 0.2 # hpf 140 # pan 0.45
+   # room 0.35 # size 0.85
+   # orbit 5
+
+-- Vocal chop answering the sax in bars 5–8
+d3 $ tape $ human
+   $ mask "<0!4 1!4>"
+   $ slice 8 "<[7 ~ ~ 7] [~ [7 7] ~ 7] [7 ~ 7 ~] [[7 7] ~ ~ ~]>"
+   $ s "voxphrase:0"
+   # cut 1 # gain 0.7 # shape 0.3
+   # lpf 3800 # hpf 250
+   # delay 0.2 # delayt (3/16) # delayfb 0.3 # lock 1
+   # orbit 6
+
+-- 808 sub on roots with long tails
+d4 $ note "<a1 f1 d2 e1>"
+   # s "808:1" # legato 1 # gain 0.9
+   # lpf 200
+   # orbit 3
+
+d5 $ human $ stack [
+     s "808bd:4 ~ ~ ~ ~ ~ 808bd:4 ~ ~ ~ 808bd:4 ~ ~ ~ ~ ~" # gain 1.05,
+     s "~ ~ ~ ~ 808sd:3 ~ ~ ~ ~ ~ ~ ~ 808sd:3 ~ ~ ~" # gain 0.85 # room 0.2,
+     whenmod 4 3 (ply "1 1 1 [2 4]") $ s "808hc*8" # gain 0.55 # hpf 6000
+   ]
+   # lpf 3500 # shape 0.2
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.6 # hpf 1500 # orbit 4
+
+hush

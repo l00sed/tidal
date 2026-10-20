@@ -1,0 +1,66 @@
+-- Democracy's Day · G major · 92 BPM
+-- Gmaj9 · Em9 · Cmaj9 · D13. Biden's 2021 inaugural + Clinton 1993 ("nothing wrong with America…"),
+-- a two-trumpet horn section in diatonic thirds, Rhodes, walking Mono/Poly bass, clean DrumTraks hi-fi.
+-- Cassette idea: rewind — the last quarter of bar 8 plays the band backwards before the downbeat.
+
+setcps (92/60/4)
+
+let ddChords = "<[g3,b3,d4,fs4,a4] [e4,g4,b4,d5,fs5] [c4,e4,g4,b4,d5] [d4,fs4,c5,e5,b5]>" :: Pattern Note
+
+let rewind = whenmod 8 7 (within (0.75, 1) (# speed (-1.5)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+d1 $ rewind $ tapeFX 25 $ human
+   $ struct "t ~ ~ t ~ ~ t ~"
+   $ note ddChords
+   # s "emu-vintage-piano:1"
+   # legato 1.1 # gain 0.85
+   # room 0.25 # size 0.6
+   # orbit 0
+
+-- Horn section: lead trumpet + harmony a diatonic third below, bars 5–8
+d2 $ rewind $ tapeFX 25 $ human
+   $ mask "<0!4 1!4>"
+   $ stack [
+       trumpet "<[b5 d6 ~ b5] [~ g6 fs6 e6] [~ e6 d6 ~] [fs6 ~ ~ ~]>" # pan 0.6,
+       trumpet "<[g5 b5 ~ g5] [~ e6 d6 c6] [~ c6 b5 ~] [d6 ~ ~ ~]>" # pan 0.4 # gain 0.8
+     ]
+   # legato 1.1 |< gain 0.9
+   # room 0.3 # size 0.7
+   # orbit 5
+
+-- Biden builds over 8 bars: "this is America's day" / "this is democracy's day" / "with unity we can do
+-- great things" / Clinton "there is nothing wrong with America" / "democracy is precious" / "democracy is fragile" /
+-- "and at this hour, my friends" / "democracy has prevailed"
+d3 $ tapeFX 25 $ stack [
+     onBar 0 $ clip "voxpol:9" 0 0.50,
+     onBar 1 $ clip "voxpol:9" 0.52 0.94,
+     onBar 2 $ clip "voxpol:11" 0.10 0.92,
+     onBar 3 $ clip "voxpol:8" 0.04 0.39,
+     onBar 4 $ clip "voxpol:10" 0 0.28,
+     onBar 5 $ clip "voxpol:10" 0.28 0.53,
+     onBar 6 $ clip "voxpol:10" 0.53 0.76,
+     onBar 7 $ clip "voxpol:10" 0.76 1
+   ]
+   # gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Walking bass: Korg Mono/Poly "simplesoft" (C2 −13c), quarter notes
+d4 $ rewind $ human
+   $ tuned 35.87 ("<g2 e2 c3 d3>" + "0 4 7 <5 3 2 -1>")
+   # s "korg-monopoly-bass:13"
+   # legato 0.9 # gain 0.95 # lpf 700
+   # orbit 3
+
+-- Clean DrumTraks, crisp and upfront
+d5 $ rewind $ human $ stack [
+     s "drumtraks:6 ~ ~ ~ ~ ~ drumtraks:6 ~ ~ ~ drumtraks:6 ~ ~ ~ ~ ~" # gain 1.05,
+     (0.006 ~>) $ s "~ ~ ~ ~ [drumtraks:9, drumtraks:1] ~ ~ ~ ~ ~ ~ ~ [drumtraks:9, drumtraks:1] ~ ~ ~" # gain 0.95,
+     swingBy (1/48) 8 $ s "drumtraks:4*16" # gain "0.85 0.65 0.75 0.65",
+     s "drumtraks:7*4" # gain 0.65
+   ]
+   # orbit 2
+
+hush

@@ -1,110 +1,114 @@
--- ~~~ neo-soul groove · golden hour ~~~
--- brighter, bouncier, ~92 bpm with a half-time swing feel
-setcps (92/60/4)
+-- Lofi: ii–V–I–vi in C (Dm9 · G13 · Cmaj9 · Am9), 78 BPM, one cycle = one bar.
+-- Send setcps and each `let` line on its own (<C-e>), then the patterns.
 
--- ::: drums :::
+setcps (78/60/4)
 
--- punchy kick with a syncopated push on the "and" of 3
-d1 $ s "bd ~ ~ [~ bd] bd ~ ~ ~"
-   # gain 1.05
-   # lpf 1200
-   # shape 0.25
+-- Rootless jazz voicings, voice-led (top note: E, E, D, C)
+let chords = "<[f4,a4,c5,e5] [f4,a4,b4,e5] [e4,g4,b4,d5] [e4,g4,b4,c5]>" :: Pattern Note
+    roots = "<d3 g2 c3 a2>" :: Pattern Note
 
--- crispy snare with ghost notes for that D'Angelo wonky pocket
-d2 $ stack
-  [ s "~ sn ~ sn"             # gain 0.85
-  , s "~ ~ ~ [~ sn:2*2]"      # gain 0.45 # speed 1.1   -- ghost rolls
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Rhodes: strummed chord on 1, push on the "and" of 2, tape-stop dip every 8th bar
+d1
+  $ tapeFX 30 $ human
+  $ whenmod 8 7 (within (0.5, 1) (# accelerate (-0.9)))
+  $ rolledBy "<0.05 0.08>"
+  $ struct "t ~ ~ t ~ ~ ~ ~"
+  $ note chords
+  # s "emu-vintage-piano:1"
+  # legato 3
+  # gain 0.85
+  # leslie 0.25 # lrate 0.7 # lsize 0.3
+  # room 0.25 # size 0.7
+  # orbit 0
+
+-- Solina string pad an octave up, quiet, fades in slowly
+d2
+  $ tapeFX 30
+  $ note (chords + 12)
+  # s "emu-vintage-strings:3"
+  # legato 1.05
+  # attack 0.6 # release 1.2
+  # lpf 2200
+  # gain 0.5
+  # room 0.4 # size 0.9
+  # orbit 1
+
+-- Kick: boom-bap pattern, jazz kick layered with an 808 thump for weight;
+-- every 4th bar adds a double-kick pickup
+d3
+  $ human
+  $ whenmod 4 3 (const $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ [jazz:0, 808bd:4]")
+  $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~"
+  # gain 1.05
+  # shape 0.35
+  # lpf 2800
+  # orbit 2
+
+-- Snare: jazz snare + clap layer for boom-bap crack, laid back ~10ms, soft ghosts
+d4
+  $ stack [
+    (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 1,
+    human $ degradeBy 0.4 $ s "~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ jazz:7 ~ ~ ~ jazz:7" # gain 0.55 # lpf 2500
   ]
-   # room 0.35 # sz 0.6 # hpf 180
+  # shape 0.25
+  # room 0.15 # size 0.4
+  # orbit 2
 
--- bright shimmery hats, opening up on the 4
-d3 $ s "hh*8"
-   # gain (range 0.45 0.75 "1 0.6 0.8 0.6 1 0.6 1.1 0.7")
-   # speed (choose [1, 1, 1.05, 0.97])
-   # pan (range 0.35 0.65 $ slow 5 sine)
-   # hpf 1200
-   # lpf 9000
-   # room 0.15
+-- Hats: swung 16ths, accented on the beat, every 4th bar opens up at the end
+d5
+  $ human
+  $ swingBy (1/48) 8
+  $ whenmod 4 3 (|< s "jazz:3*14 jazz:4 ~")
+  $ degradeBy 0.15
+  $ s "jazz:3*16"
+  # gain "0.8 0.55 0.65 0.55"
+  # hpf 7000
+  # pan (slow 2 $ range 0.4 0.6 sine)
+  # orbit 2
 
--- open hat / ride accent on the upbeats
-d4 $ s "~ ho ~ ~ ~ ho ~ ho?"
-   # gain 0.5
-   # lpf 7000
-   # pan 0.55
+-- Bass: round square-wave sub following the roots, with a pickup into each bar
+d6
+  $ human
+  $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ t"
+  $ note (roots |+ "<0 0 0 [0 0 0 2]>")
+  # s "supersquare"
+  # lpf 320
+  # legato 0.9
+  # gain 0.9
+  # orbit 3
 
--- finger-snap layer for human feel
-d5 $ degradeBy 0.2 $ s "~ sd:3 ~ sd:3"
-   # gain 0.8
-   # room 0.4
-   # pan 0.45
+-- Sax: sparse call over bars 3–4 of every 8, echoed with tempo-locked delay
+d7
+  $ tapeFX 30 $ human
+  $ whenmod 8 4 (const silence)
+  $ note "<~ ~ [~ e5 ~ d5] [c5 _ ~ ~ a4 _ ~ ~]>"
+  # s "sax:5"
+  # legato 1.5
+  # gain 0.9
+  # lpf 3000
+  # octave 6
+  # delay 0.3 # delayt (3/16) # delayfb 0.35 # lock 1
+  # room 0.4 # size 0.9
+  # orbit 5
 
--- ::: harmony :::
--- bright neo-soul progression in F: Fmaj9 -> Em7 -> Dm9 -> G13
--- (I -> vii -> vi -> II — that lifts instead of drags)
-d6 $ slow 4
-   $ chunk 4 (# lpf 4500)                     -- filter sweep moves around
-   $ note "<f'maj7'9 e'min7 d'min7'9 g'dom7'9>"
-   |+ 12
-   # s "superpiano"
-   # gain 0.7
-   # legato 0.95
-   # room 0.5
-   # sz 0.7
-   # pan 0.48
+-- Vocal chops: a hype shout on the last beat of every 4th bar,
+-- plus a back-and-forth "scratch" fill to close every 8 bars
+d9
+  $ stack [
+    whenmod 4 3 id $ s "<~ ~ ~ [~ ~ ~ yeah:3]>" # lpf 3500 # room 0.3 # size 0.6 # gain 0.8,
+    whenmod 8 7 id $ s "<~ ~ ~ ~ ~ ~ ~ [~ ~ yeah:7*4 ~]>"
+      # speed "[1 -1.4 1.2 -0.8]" # legato 0.5 # crush 7 # lpf 4000 # gain 0.85
+  ]
+  # orbit 6
 
--- ::: bass :::
--- bouncy bass with a chromatic walk-up into each chord
-d7 $ slow 4
-   $ note "<[f2 c3 f2 e2] [e2 b2 e2 d2] [d2 a2 d2 c#2] [g1 d2 g2 a2]>"
-   # s "superhex"
-   # gain 0.95
-   # lpf 900
-   # legato 0.85
-   # shape 0.3
-   # attack 0.005
-   # release 0.25
+-- Vinyl bed
+-- vinyl:2 (vinyl-noise); avoids the crackle file that has a B-minor loop baked in
+d8 $ s "vinyl:2" # legato 1 # gain 0.9 # hpf 1200 # orbit 4
 
--- ::: TRUMP lead — playful, call-and-response :::
--- jaunty mixolydian/blues lines, sample pitched in semitones from root
--- short answer phrases on every other bar so it converses with itself
-d8 $ slow 4
-   $ off 0.25 (|- note 7 . (# gain 0.45))     -- fifth-down harmony shadow
-   $ sometimes (fast 2)                       -- occasional double-time flurry
-   $ s "trump:4"
-   # note (cat
-       [ "12 ~ 14 17 19 ~ 17 14"              -- bright F major answer
-       , "~ 16 14 12 ~ 11 9 ~"                -- descending over Em7
-       , "9 12 14 ~ 16 14 12 9"               -- D dorian climb
-       , "~ 11 12 14 17 ~ 19 21"              -- G mixo lift into the loop
-       ])
-   # gain 0.9
-   # speed (range 0.998 1.002 $ slow 1.3 sine)  -- light vibrato
-   # lpf (range 3500 7000 $ slow 5 sine)
-   # hpf 250
-   # room 0.55
-   # sz 0.7
-   # pan (range 0.4 0.6 $ slow 9 sine)
-   # legato 1.0
+-- Breakdown: drop the drums, keep keys + vinyl
+-- mapM_ ($ silence) [d3, d4, d5, d6, d9]
 
--- ::: trump stabs — fat-back accents on the turnaround :::
-d9 $ slow 4
-   $ "~ ~ ~ ~ ~ ~ ~ [trump:2 trump:3]"
-   # note "<0 5 7 12>"
-   # gain 0.8
-   # speed 1.0
-   # lpf 5000
-   # room 0.4
-   # pan 0.55
-
--- ::: extras :::
-
--- vinyl warmth bed (quieter than before, just a kiss of dust)
-d10 $ s "noise*64"
-    # gain (range 0.03 0.07 $ slow 10 rand)
-    # hpf 6000
-    # pan rand
-
--- ::: helpers :::
--- hush                       -- stop everything
--- d8 silence                 -- mute trumpet
--- d6 $ slow 4 $ note "<bb'maj7'9 a'min7 g'min9 c'dom7'9>" |+ 12 # s "superpiano"   -- modulate up to Bb
+hush

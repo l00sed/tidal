@@ -1,0 +1,102 @@
+-- Man of Steel · C minor · 92 BPM · 96 bars ≈ 4:10
+-- Cm9 · Fm9 · Dbmaj7 · G7#9. The 1941 Fleischer Superman (The Mechanical Monsters): the narrator's intro, the hero,
+-- and the villain. Ensemble: heroic trumpet theme, Wes-style octave guitar solo, sax + trumpet in unison,
+-- piano, vibes, upright bass, boom-bap kit with double-time hats on the drop, tabla triplets, tom fills.
+--
+-- Form:  i intro 8 · a theme 16 · b DROP 16 · x pre-drop 1 · d breakdown 7 · a theme 8 · s guitar solo 16 · c horns 16 · o outro 8
+-- Tape:  the tape speeds up into each 8-bar phrase; the breakdown is VHS.
+-- HOW TO PLAY: send setcps, the form block, then `resetCycles` (starts the form at bar 1),
+-- then every d-pattern. Each part only sounds in its sections, so everything can be sent up front and the
+-- arrangement plays itself; after the outro it falls silent.
+
+setcps (92/60/4)
+
+let form = "<i!8 a!16 b!16 x d!7 a!8 s!16 c!16 o!8 ~!32>" :: Pattern String
+    inS ss p = mask (fmap (`elem` words ss) form) p
+    msChords = "<[c4,ds4,g4,as4,d5] [f3,gs3,c4,ds4,g4] [cs4,f4,gs4,c5] [g3,b3,f4,as4]>" :: Pattern Note
+    launch = whenmod 8 7 (within (0.75, 1) (# accelerate 0.5))
+    hero p = stack [inS "d" (vhs 80 p), inS "i a b x s c o" (launch $ tapeFX 30 p)]
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+resetCycles
+
+d1 $ hero $ human $ inS "i a b d s c o"
+   $ rolledBy 0.04
+   $ struct "t ~ ~ t ~ ~ t ~"
+   $ piano msChords
+   # legato 1.2 # gain 0.8
+   # room 0.3 # size 0.7
+   # orbit 0
+
+d2 $ hero $ human $ inS "a b c"
+   $ arp "updown" $ segment 8
+   $ vibes (msChords + 12)
+   # legato 1 # gain 0.65 # pan 0.7
+   # room 0.3 # size 0.8
+   # orbit 1
+
+-- Trumpet theme (a), joined by sax an octave down in unison for the horns section (c)
+d3 $ hero $ human $ stack [
+     inS "a c" $ trumpet "<[g5 ~ c6 ds6] [f6 ~ ~ ds6] [f6 ~ gs6 f6] [d6 ~ b5 ~] [g5 ~ c6 ds6] [g6 ~ f6 ds6] [cs6 c6 as5 gs5] [g5 ~ ~ ~]>" # pan 0.6,
+     inS "c" $ jsax "<[g4 ~ c5 ds5] [f5 ~ ~ ds5] [f5 ~ gs5 f5] [d5 ~ b4 ~] [g4 ~ c5 ds5] [g5 ~ f5 ds5] [cs5 c5 as4 gs4] [g4 ~ ~ ~]>" # pan 0.4 # gain 0.8
+   ]
+   # legato 1.1 |< gain 0.9
+   # room 0.3 # size 0.7
+   # orbit 5
+
+-- Guitar: off-beat comps, then a Wes Montgomery-style octave solo (melody doubled an octave up)
+d4 $ hero $ human $ stack [
+     inS "a b c" $ struct "~ t ~ t" $ eguitar msChords # legato 0.3 # gain 0.7,
+     inS "s" $ superimpose (|+ note 12) $ eguitar "<[c4 ~ ds4 g4] [gs4 ~ g4 f4] [~ f4 gs4 c5] [b4 ~ as4 g4] [c5 [as4 gs4] g4 ds4] [f4 ~ [gs4 c5] ds5] [cs5 ~ c5 gs4] [g4 b4 d5 f5]>" # legato 0.9 # gain 0.85
+   ]
+   # pan 0.35
+   # room 0.25 # size 0.6
+   # orbit 0
+
+d5 $ hero $ human $ stack [
+     inS "a b s c" $ ubass "<[c3 ds3 g3 as3] [f2 gs2 c3 ds3] [cs3 f3 gs3 c4] [g2 b2 d3 f3]>" # legato 0.9,
+     inS "d o" $ ubass "<c3 f2 cs3 g2>" # legato 1
+   ]
+   # gain 1 # lpf 1800
+   # orbit 3
+
+-- Drums: boom-bap (a, s, c), double-time hats + 808 on the drop (b), tom fills closing every 8 bars
+d6 $ human $ stack [
+     inS "a b s c" $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     inS "a b s c" $ (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 0.95,
+     inS "a s c" $ swingBy (1/48) 8 $ s "drumtraks:4*8" # gain "0.85 0.65",
+     inS "b" $ s "drumtraks:4*16" # gain "0.85 0.6 0.75 0.6" # crush 10,
+     inS "a b s c" $ mask "<0!7 1>" $ s "~ ~ ~ ~ ~ ~ ~ ~ drumtraks:11 drumtraks:11 drumtraks:12 drumtraks:12 [drumtraks:12 drumtraks:12] drumtraks:12 ~ ~" # gain 0.85
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+d7 $ human $ stack [
+     inS "b c" $ fast 2 $ s "tabla:9 tabla:12 [tabla:0 ~]" # gain 0.8 # pan 0.7,
+     inS "s" $ s "~ drumnibus-percussion:15 ~ drumnibus-percussion:15 drumnibus-percussion:15 ~ drumnibus-percussion:15 ~" # gain 0.7 # pan 0.3,
+     inS "i d o" $ s "<drumnibus-percussion:0 ~ ~ ~>" # legato 4 # gain 0.8 # room 0.5 # size 0.9
+   ]
+   # orbit 7
+
+-- Superman
+d8 $ stack [
+     inS "i" $ stack [onBar 1 $ clip "voxcartoon:12" 0 0.8, onBar 3 $ clip "voxcartoon:13" 0 1, onBar 5 $ clip "voxcartoon:14" 0 1, onBar 7 $ clip "voxcartoon:15" 0 1],
+     inS "a" $ stack [onBar 0 $ clip "voxcartoon:17" 0 1, onBar 4 $ clip "voxcartoon:21" 0 1],
+     inS "b" $ stack [
+       onBar 0 $ clip "voxcartoon:19" 0 1,
+       onBar 4 $ clip "voxcartoon:20" 0 1 # psrate 0.8,
+       onBar 6 $ struct "t t [t t] ~" $ clip "voxcartoon:22" 0 0.35 # cut 1 ],
+     inS "x" $ struct "t t t t" $ clip "voxcartoon:21" 0 0.4 # cut 1,
+     inS "d" $ echoWith 3 (3/16) ((|* gain 0.85) . (# lpf 1800)) $ onBar 1 $ clip "voxcartoon:18" 0 1,
+     inS "s" $ onBar 0 $ clip "voxcartoon:16" 0 1,
+     inS "c" $ stack [onBar 0 $ clip "voxcartoon:15" 0.55 1, onBar 4 $ struct "t t ~ ~" $ clip "voxcartoon:15" 0.55 0.75 # cut 1, (0.5 ~>) $ onBar 4 $ clip "voxcartoon:15" 0.55 1],
+     inS "o" $ onBar 3 $ clip "voxcartoon:12" 0 0.8 # psrate 0.75 # room 0.5 # size 0.9
+   ]
+   |< gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # tapewow 25 # orbit 6
+
+d9 $ inS "i a b x d s c o" $ s "vinyl:2" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

@@ -1,0 +1,63 @@
+-- Nineties Verse · B minor · 90 BPM
+-- Bm9 · Gmaj7 · Em9 · F#7b9. A cappella rap verse (recorded at 90 BPM) over a Korg Mono/Poly accordion,
+-- short choir stabs (sung in B minor), DX200 bass. Cassette idea: the vocal gets more wow than the band,
+-- and bar 8 ends in a tape stop.
+
+setcps (90/60/4)
+
+let nvChords = "<[b3,d4,fs4,a4,cs5] [g3,b3,d4,fs4] [e4,g4,b4,d5,fs5] [fs3,as3,e4,g4]>" :: Pattern Note
+    stop8 = whenmod 8 7 (within (0.5, 1) ((# accelerate (-0.9)) . (# lpf 1500)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Accordion: Korg Mono/Poly "AnalogAccordeon" (C4 0c), lazy two-hit comp
+d1 $ stop8 $ tapeFX 35 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~"
+   $ tuned 60 nvChords
+   # s "korg-monopoly-synth:1"
+   # legato 1.6 # gain 0.75 # lpf 3500
+   # room 0.3 # size 0.7
+   # orbit 0
+
+-- Rap verse: the a cappella section (25%–72% of the file, ~8 bars), once every 16 bars.
+-- If it drifts off the beat, nudge `begin` by ±0.005.
+d2 $ tapeFX 70
+   $ s "<voxrap:2 ~!15>"
+   # begin 0.25 # end 0.72 # legato 9
+   # note (-4)
+   # distort 0.15
+   # gain 1 # hpf 150 # lpf 6000
+   # room 0.15 # size 0.4
+   # orbit 6
+
+d2 $ silence
+
+-- Short choir: one stab on the "and" of 2 every other bar
+d3 $ stop8 $ tapeFX 50
+   $ s "<[~!3 voxchoir:7 ~!4] ~>"
+   # gain 0.65 # hpf 200
+   # room 0.45 # size 0.9
+   # orbit 7
+
+-- Bass: Yamaha DX200 "SoftbassC" (C2 +6c)
+d4 $ stop8 $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ tuned 36.06 "<b2 g2 e2 fs2>"
+   # s "yamaha-dx200-bass:6"
+   # tapewow 10 # legato 0.9 # gain 0.95 # lpf 600
+   # orbit 3
+
+d5 $ human
+   $ whenmod 8 7 (within (0.5, 1) (const silence))
+   $ stack [
+       s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ [jazz:0, 808bd:4] ~" # gain 1.05 # shape 0.35,
+       (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 1,
+       swingBy (1/24) 4 $ s "hh27:0*8" # gain "0.85 0.7" # hpf 6000
+     ]
+   # tapeflutter 4 # crush 10
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.9 # hpf 1500 # orbit 4
+
+hush

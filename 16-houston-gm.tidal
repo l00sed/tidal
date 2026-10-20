@@ -1,0 +1,60 @@
+-- Houston · G minor · 76 BPM
+-- Gm9 · Ebmaj7 · Cm9 · D7#9. Apollo 13 mission audio, Kawai K4 pad, Korg Mono/Poly stabs,
+-- DX200 rave bass. Cassette idea: "comms collapse" — on bar 4 of every 4 the whole band drops into a
+-- narrow, crushed radio band; vocals stay radio-filtered throughout.
+
+setcps (76/60/4)
+
+let houChords = "<[g3,as3,d4,f4,a4] [ds4,g4,as4,d5] [c4,ds4,g4,as4,d5] [d4,fs4,c5,f5]>" :: Pattern Note
+    comms = whenmod 4 3 ((# hpf 700) . (# lpf 2500) . (# crush 7))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Kawai K4 "Cornwall" (C3 −7c)
+d1 $ comms $ tapeFX 45
+   $ tuned 47.93 (houChords - 12)
+   # s "kawai-4-pad:9"
+   # legato 1.05 # attack 0.3 # gain 0.85
+   # room 0.4 # size 0.85
+   # orbit 0
+
+-- Stabs: Korg Mono/Poly (C3 −2c), short syncopated hits
+d2 $ comms $ tapeFX 45 $ human
+   $ struct "~ ~ t ~ ~ ~ t ~ ~ t ~ ~ ~ ~ ~ ~"
+   $ tuned 47.98 (houChords - 12)
+   # s "korg-monopoly-synth:10"
+   # legato 0.3 # gain 0.8 # pan 0.4
+   # orbit 1
+
+-- Mission audio, radio-filtered: "we've had a problem here" (bar 1), "Houston… we've had a problem"
+-- (bar 3), "we are venting something" (bar 5), "out into the space" (bar 7)
+d3 $ tapeFX 30 $ stack [
+     onBar 0 $ clip "voxspeech:1" 0.10 0.47,
+     onBar 2 $ clip "voxspeech:1" 0.72 1,
+     onBar 4 $ clip "voxspeech:10" 0.43 0.71,
+     (0.25 ~>) $ onBar 6 $ clip "voxspeech:10" 0.72 1
+   ]
+   # gain 1.05 # hpf 500 # lpf 3200 # crush 9
+   # delay 0.25 # delayt (3/16) # delayfb 0.3 # lock 1
+   # orbit 6
+
+-- Bass: Yamaha DX200 "RaveBassC" (C2 +3c)
+d4 $ comms $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ tuned 36.03 "<g2 ds2 c2 d2>"
+   # s "yamaha-dx200-bass:2"
+   # legato 0.85 # gain 0.95 # lpf 600
+   # orbit 3
+
+d5 $ comms $ human $ stack [
+     s "808bd:4 ~ ~ ~ ~ ~ 808bd:4 ~ ~ ~ 808bd:4 ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     (0.01 ~>) $ s "~ ~ ~ ~ [808sd:3, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [808sd:3, realclaps:1] ~ ~ ~" # gain 0.95,
+     every 2 (ply "<1 [1 1 2 1]>") $ s "808hc*8" # gain "0.85 0.7" # hpf 6000
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

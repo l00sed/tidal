@@ -1,0 +1,71 @@
+-- Yo Tape · F minor · 88 BPM
+-- Fm9 · Dbmaj7 · Bbm9 · C7b9. Old-school boom-bap: chopped "yo"s, "hey" shouts, beatbox texture,
+-- Korg Mono/Poly lead stabs, Jupiter-8 pad + Mono/Poly bass. Korg ER-1 drum machine.
+-- Cassette idea: beat-repeat — the last half-bar of every 4 stutters like a tape caught in the heads.
+
+setcps (88/60/4)
+
+let yoChords = "<[f3,gs3,c4,ds4,g4] [cs4,f4,gs4,c5] [as3,cs4,f4,gs4,c5] [c4,e4,as4,cs5]>" :: Pattern Note
+
+let caught = whenmod 4 3 (within (0.5, 1) (ply 4 . (|* gain 0.95)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Jupiter-8 (C2 −4c), low and dark
+d1 $ tapeFX 40
+   $ tuned 35.96 yoChords
+   # s "jupiter-8-pad:11"
+   # legato 1.05 # attack 0.2
+   # gain 0.75 # lpf 2500
+   # room 0.3 # size 0.8
+   # orbit 0
+
+-- Lead stabs: Korg Mono/Poly "BigLead" (C3 −6c), short off-beat chords
+d2 $ tapeFX 40 $ human $ caught
+   $ struct "~ ~ t ~ ~ t ~ ~"
+   $ tuned 47.94 (yoChords + 12)
+   # s "korg-monopoly-synth:7"
+   # legato 0.3 # gain 0.75 # lpf 3000 # pan 0.4
+   # orbit 1
+
+-- "Yo" chops: the clip is ~19 separate yos; slice 16 lands near their starts
+d3 $ tapeFX 50 $ human $ caught
+   $ slice 16 "<[0 ~ ~ 3] [~ 5 ~ 5] [8 ~ ~ [10 11]] [~ 13 ~ ~]>"
+   $ s "voxrap:3"
+   # cut 1 # gain 1 # hpf 200 # lpf 5000
+   # orbit 6
+
+-- Shouts: "hey" on the and-of-4 every 2 bars, "let's go" into every 8th bar
+d4
+  $ stack [
+    s "<~ [~ ~ ~ [~ voxrap:8]] ~ [~ ~ ~ [~ voxrap:9]]>" # gain 1,
+    s "<~!7 [~ ~ voxrap:14 ~]>" # begin 0.2 # gain 0.95 # room 0.3
+  ]
+  # hpf 150 # orbit 7
+
+-- Beatbox texture, stretched to the tempo (it was recorded at ~107 BPM, 8 bars)
+d5 $ loopAt 8 $ chop 64 $ s "voxrap:10"
+   # gain 0.75 # hpf 300 # pan 0.6
+   # orbit 8
+
+-- Bass: Korg Mono/Poly "moogeyfiltered" (C2 −9c)
+d6 $ human
+   $ struct "t ~ ~ t ~ ~ t ~ ~ ~ t ~ ~ ~ ~ ~"
+   $ tuned 35.91 "<f2 cs3 as2 c3>"
+   # s "korg-monopoly-bass:3"
+   # legato 0.8 # gain 0.95 # lpf 600
+   # orbit 3
+
+-- Korg ER-1 drum machine, boom-bap
+d7 $ human $ caught $ stack [
+     s "korg-er1-bd:0 ~ ~ ~ ~ ~ ~ korg-er1-bd:0 ~ ~ korg-er1-bd:0 ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+     s "~ ~ ~ ~ [korg-er1-sd:0, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [korg-er1-sd:0, realclaps:1] ~ ~ ~" # gain 0.95,
+     swingBy (1/24) 4 $ s "korg-er1-hh:0*8" # gain "0.85 0.7" # hpf 5000
+   ]
+   # tapeflutter 5 # crush 10
+   # orbit 2
+
+d8 $ s "vinyl:0" # legato 1 # gain 0.9 # hpf 1500 # orbit 4
+
+hush

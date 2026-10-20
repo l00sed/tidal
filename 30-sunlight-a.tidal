@@ -1,0 +1,93 @@
+-- Sunlight · A major · 92 BPM · bright boom-bap
+-- Amaj9 · F#m9 · Dmaj9 · E9sus4 (I–vi–IV–V). Ensemble: Rhodes, clean jazz guitar, vibes, upright bass,
+-- trumpet hook answered by flute, crisp DrumTraks layered with a fat boom-bap kick, shaker, claves.
+-- Vocals: old-school shouts ("yeah", "hey", "let's go").
+-- Cassette: light, bright tape (25 cents) with a tape speed-up launching into every 8-bar phrase.
+-- Form: i intro 8 · a groove 16 · x pre-drop 1 · b DROP 16 · s flute solo 16 · o outro 8 = 65 bars ≈ 2:50
+
+setcps (92/60/4)
+
+let form = "<i!8 a!16 x b!16 s!16 o!8 ~!32>" :: Pattern String
+    inS ss p = mask (fmap (`elem` words ss) form) p
+    sunChords = "<[a3,cs4,e4,gs4,b4] [fs3,a3,cs4,e4,gs4] [d4,fs4,a4,cs5,e5] [e4,a4,b4,d5,fs5]>" :: Pattern Note
+    shine = whenmod 8 7 (within (0.75, 1) (# accelerate 0.5)) . tapeFX 25
+
+knobs
+
+setF "vol" 2
+
+resetCycles
+
+-- Rhodes: bouncy off-beat stabs (emu-vintage-piano:1, recorded at C4)
+d1 $ shine $ human $ inS "i a x b s o"
+   $ struct "~ t ~ ~ ~ t ~ t"
+   $ note sunChords
+   # s "emu-vintage-piano:1"
+   # legato 0.8 # gain 0.85
+   # room 0.2 # size 0.5
+   # orbit 0
+
+-- Clean guitar: short upbeat comps
+d2 $ shine $ human $ inS "a b s"
+   $ struct "~ t ~ t"
+   $ eguitar sunChords
+   # legato 0.3 # gain 0.75 # pan 0.35
+   # orbit 0
+
+-- Vibes: sparkly up-arpeggio an octave up (drop + solo)
+d3 $ shine $ human $ inS "b s"
+   $ arp "up" $ segment 8
+   $ vibes (sunChords + 12)
+   # legato 1 # gain 0.66 # pan 0.7
+   # room 0.3 # size 0.7
+   # orbit 1
+
+-- Trumpet hook (groove + drop), flute answers on the off bars, flute solo in s
+d4 $ shine $ human $ stack [
+     inS "a b" $ trumpet "<[e6 ~ cs6 e6] ~ [fs6 ~ e6 cs6] ~ [a5 b5 cs6 e6] ~ [d6 ~ b5 ~] ~>" # pan 0.6 # gain 0.9,
+     inS "a b" $ slur $ flute "<~ [cs6 ~ b5 a5] ~ [a5 ~ cs6 e6] ~ [fs6 ~ e6 cs6] ~ [b5 ~ e6 ~]>" # pan 0.4 # gain 0.85,
+     inS "s" $ slur $ flute "<[e6 fs6 gs6 a6] [gs6 ~ e6 cs6] [~ e6 [fs6 e6] cs6] [b5 ~ ~ ~] [a5 cs6 e6 a6] [gs6 ~ fs6 e6] [fs6 e6 d6 cs6] [b5 ~ e6 ~]>" # pan 0.5 # gain 0.9
+   ]
+   # legato 1.1
+   # room 0.25 # size 0.6
+   # orbit 5
+
+-- Upright bass: bouncy roots + fifths with pickups
+d5 $ shine $ human $ inS "a x b s o"
+   $ struct "t ~ ~ t ~ ~ t ~ ~ ~ t ~ ~ ~ t ~"
+   $ ubass ("<a2 fs2 d3 e3>" + "0 0 7 0 <-1 -1 2 -1>")
+   # legato 0.8 # gain 1 # lpf 1800
+   # orbit 3
+
+-- Drums: crisp DrumTraks with a fat boom-bap kick; 808 + double hats on the drop
+d6 $ human $ stack [
+     inS "a x b s" $ s "[drumtraks:6, jazz:0] ~ ~ ~ ~ ~ ~ [drumtraks:6, jazz:0] ~ ~ [drumtraks:6, jazz:0] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.25,
+     inS "b" $ s "808bd:4 ~ ~ ~ ~ ~ ~ 808bd:4 ~ ~ 808bd:4 ~ ~ ~ ~ ~" # gain 0.95,
+     inS "a x b s" $ (0.008 ~>) $ s "~ ~ ~ ~ [drumtraks:9, drumtraks:1] ~ ~ ~ ~ ~ ~ ~ [drumtraks:9, drumtraks:1] ~ ~ ~" # gain 0.95,
+     inS "a s" $ swingBy (1/48) 8 $ s "drumtraks:4*8" # gain "0.85 0.65",
+     inS "b" $ swingBy (1/48) 8 $ s "drumtraks:4*16" # gain "0.85 0.6 0.75 0.6",
+     inS "a b s" $ s "~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ drumtraks:5 ~" # gain 0.75
+   ]
+   # orbit 2
+
+-- Shaker + claves for shine
+d7 $ human $ stack [
+     inS "i a b s o" $ swingBy (1/48) 8 $ s "emu-vintage-drums:18*16" # gain "0.6 0.45 0.7 0.45" # hpf 4000,
+     inS "b s" $ s "drumnibus-percussion:15 ~ ~ drumnibus-percussion:15 ~ ~ drumnibus-percussion:15 ~ ~ ~ drumnibus-percussion:15 ~ drumnibus-percussion:15 ~ ~ ~" # gain 0.7 # pan 0.7
+   ]
+   # orbit 7
+
+-- Shouts: "yeah" closing groove phrases, "hey" stabs on the drop, "let's go" on the pre-drop
+d8 $ stack [
+     inS "a" $ onBar 7 $ s "~ ~ ~ voxrap:5",
+     inS "x" $ s "~ ~ voxrap:7 ~" # begin 0.2,
+     inS "b" $ onBar 3 $ s "~ ~ ~ [~ voxrap:8]",
+     inS "b" $ onBar 7 $ s "~ ~ ~ [voxrap:9 voxrap:8]",
+     inS "o" $ onBar 7 $ s "voxrap:5" # room 0.5 # size 0.9
+   ]
+   |< gain 1 |< hpf 150 |< room 0.15 |< size 0.4
+   # orbit 6
+
+d9 $ inS "i a x b s o" $ s "vinyl:2" # legato 1 # gain 0.7 # hpf 1500 # orbit 4
+
+hush

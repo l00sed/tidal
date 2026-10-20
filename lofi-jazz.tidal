@@ -1,0 +1,149 @@
+-- Lofi jazz (expanded sax + high melodies): ii–V–I–vi in C (Dm9 · G13 · Cmaj9 · Am9), 78 BPM, one cycle = one bar.
+-- Send setcps and each `let` line on its own (<C-e>), then the patterns.
+
+setcps (78/60/4)
+
+-- Rootless jazz voicings, voice-led (top note: E, E, D, C)
+let chords = "<[f4,a4,c5,e5] [f4,a4,b4,e5] [e4,g4,b4,d5] [e4,g4,b4,c5]>" :: Pattern Note
+    roots = "<d3 g2 c3 a2>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+setF "vol" 0.6
+
+-- Rhodes: strummed chord on 1, push on the "and" of 2, tape-stop dip every 8th bar
+d1
+  $ tapeFX 30 $ human
+  $ whenmod 8 7 (within (0.5, 1) (# accelerate (-0.9)))
+  $ rolledBy "<0.05 0.08>"
+  $ struct "t ~ ~ t ~ ~ ~ ~"
+  $ note chords
+  # s "emu-vintage-piano:1"
+  # legato 3
+  # gain 0.85
+  # leslie 0.25 # lrate 0.7 # lsize 0.3
+  # room 0.25 # size 0.7
+  # orbit 0
+
+-- Solina string pad an octave up, quiet, fades in slowly
+d2
+  $ tapeFX 30
+  $ note (chords + 12)
+  # s "emu-vintage-strings:3"
+  # legato 1.05
+  # attack 0.6 # release 1.2
+  # lpf 2200
+  # gain 0.5
+  # room 0.4 # size 0.9
+  # orbit 1
+
+-- Kick: boom-bap pattern, jazz kick layered with an 808 thump for weight;
+-- every 4th bar adds a double-kick pickup
+d3
+  $ human
+  $ whenmod 4 3 (const $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ [jazz:0, 808bd:4]")
+  $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~"
+  # gain 1.05
+  # shape 0.35
+  # lpf 2800
+  # orbit 2
+
+-- Snare: jazz snare + clap layer for boom-bap crack, laid back ~10ms, soft ghosts
+d4
+  $ stack [
+    (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 1,
+    human $ degradeBy 0.4 $ s "~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ jazz:7 ~ ~ ~ jazz:7" # gain 0.55 # lpf 2500
+  ]
+  # shape 0.25
+  # gain 0.8
+  # room 0.15 # size 0.4
+  # orbit 2
+
+-- Hats: swung 16ths, accented on the beat, every 4th bar opens up at the end
+d5
+  $ human
+  $ swingBy (1/48) 8
+  $ whenmod 4 3 (|< s "jazz:3*14 jazz:4 ~")
+  $ degradeBy 0.15
+  $ s "jazz:3*16"
+  # gain "0.8 0.55 0.65 0.55"
+  # hpf 7000
+  # pan (slow 2 $ range 0.4 0.6 sine)
+  # orbit 2
+
+-- Bass: round square-wave sub following the roots, with a pickup into each bar
+d6
+  $ human
+  $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ ~ t"
+  $ note (roots |+ "<0 0 0 [0 0 0 2]>")
+  # s "supersquare"
+  # lpf 320
+  # legato 0.9
+  # gain 0.9
+  # orbit 3
+
+-- Sax helper: the sax folder has one sample per note (tenor range, ~A2–A#3).
+-- saxPick maps a note to the sample with the same pitch class and only shifts
+-- by whole octaves, so the tone stays natural. Write melodies around g3–a4.
+
+-- Tenor sax: 8-bar call (bars 1–4) and answer (bars 5–7), bar 8 left open for the scratch.
+-- Chord tones plus passing notes, with a d# blue note sliding into bar 4.
+-- Realism: soft breathy attack, overlapping notes, phrase swells + beat accents,
+-- a fast subtle Leslie for vibrato, tube warmth, and a detuned double for body
+-- on long notes only (doubling fast runs sounds like a chorus pedal).
+d9 $ tapeFX 30 $ human
+   $ superimpose ((|+ note 0.1) . (0.012 ~>) . (|* gain 0.55) . (# pan 0.6) . filterEvents (not . isShort))
+   $ slur
+   $ sax "<[~ [~ a4] [c5 d5] [f5 ~ e5 ~]] [[d5 ~ ~ b4] ~ [~ g4] [a4 b4 d5 f5]] [e5 ~ ~ [~ d5]] [[a5 ~ g5 e5] [~ ds5 d5 c5] a4 ~] [[~ ~ f5 a5] [g5 f5 ~ e5] d5 ~] [~ [b4 d5] [f5 ~ e5 ~] d5] [[c5 e5 g5 ~] a5 ~ ~] ~>"
+   # legato 1.4
+   # attack 0.025 # release 0.4
+   # gain (range 0.68 0.7 $ slow 4 sine)
+   |* gain "1.4 1.3 1.6 1.4"
+   # leslie 0.15 # lrate 5.5 # lsize 0.12
+   # triode 0.2
+   # hpf 140
+   # pan 0.45
+   # delay 0.2 # delayt (3/16) # delayfb 0.3 # lock 1
+   # room 0.75 # size 0.95
+   # orbit 5
+
+-- Vibes: light, high counter-melody that answers in the sax's gaps
+d10 $ human
+   $ note "<~ ~ [~ ~ e6 g6] [b6 ~ a6 ~] [~ g6 ~ e6] [d6 ~ ~ ~] ~ [c6 d6 e6 g6]>"
+   # s "supervibe"
+   # legato 1.5
+   # gain 0.6
+   # pan 0.65
+   # delay 0.3 # delayt (3/8) # delayfb 0.4 # lock 1
+   # room 0.35 # size 0.8
+   # orbit 7
+
+-- Rhodes sparkle: a 4-note high fill on the last beat of every 4th bar
+d11 $ tapeFX 30 $ human
+   $ whenmod 4 3 id
+   $ note "<~ ~ ~ [~ ~ ~ [e5 g5 b5 d6]] ~ ~ ~ [~ ~ ~ [g5 e5 d5 c5]]>"
+   # s "superhammond:1"
+   # legato 2
+   # gain 0.6
+   # pan 0.35
+   # room 0.3 # size 0.7
+   # orbit 0
+
+-- Vocal chops: a hype shout on the last beat of every 4th bar,
+-- plus a back-and-forth "scratch" fill to close every 8 bars
+d12 $ stack [
+    whenmod 4 3 id $ s "<~ ~ ~ [~ ~ ~ yeah:3]>" # lpf 3500 # room 0.3 # size 0.6 # gain 0.8,
+    whenmod 8 7 id $ s "<~ ~ ~ ~ ~ ~ ~ [~ ~ yeah:7*4 ~]>"
+      # speed "[1 -1.4 1.2 -0.8]" # legato 0.5 # crush 7 # lpf 4000 # gain 0.85
+  ]
+  # orbit 6
+
+-- Vinyl bed
+-- vinyl:2 (vinyl-noise); avoids the crackle file that has a B-minor loop baked in
+d13 $ s "vinyl:2" # legato 1 # gain 0.7 # hpf 1200 # orbit 4
+
+-- Breakdown: drop the drums, keep keys + vinyl
+-- mapM_ ($ silence) [d3, d4, d5, d6, d9]
+
+hush

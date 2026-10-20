@@ -1,49 +1,91 @@
-d1 $ s "jungbass*1 - - - jungbass*2 - - -"
-d2 $ s "hh*16"
-d3
-  $ n "b a c d"
-  # octave 2
-  # s "trump"
-  # legato 10
-  # slide 10
-  # room 10
-  # gain 0.5
-d3 $ silence
-d4 $ s "glitch - - -"
-  # gain 2
-d5
-  $ n "b4 d3"
-  # s "speakspell"
-  # gain 1
-d6
-  $ n "b5 - - - a2 - - - c8"
-  # s "moog"
-  # distort 0.4
-  # slide 5.5
-d1 $ "reverbkick:1 - - - reverbkick:5*2 - - -"
-d4 $ "rave:4 rave:6 rave:3"
-d6 $ "kurt:3 - - kurt:2"
-d5 $ "odx:1"
-hush
-d2 $ "sitar:1 - - - sitar:2 - - - sitar:3 - - -"
-d13 $ "monsterb:3"
-  # gain 1.5
-d14 $ "alphabet:17 alphabet:4 alphabet:18 alphabet:15 alphabet:4 alphabet:2 alphabet:19"
-  # lpf (range 800 1200 $ slow 2 sine)
-d15 $ "breaks157:2"
-d6 $ silence
-d16 $ "bass1:2 - - - bass1:2*2 - - -"
-  # gain 1.5
-d7 $ "breaks125:4"
-d8
-  $ n "c5 e5 f5 g5"
-  # s "arp"
-  # distort 2
-  # gain 0.8
-  # fshift (range 0 5 $ fast 4 sine)
-d9
-  $ n "c4 - - - b4 - - -"
-  # s "ravemono"
-  # gain 1
-d7 $ silence
+setcps(1)
 
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Beat
+d1 $ slow 3
+  $ s "bd:1 [bd:1!2] - - [bd:1!3] bd:1 - - bd:1 [bd:1*2 bd:1] - -"
+  # room 0.3
+  # distort 0.01
+  # gain 1
+
+d2 $ s "- - ab:10 -"
+d3 $ s "[dr:19!16]"
+  # legato 1
+  # room 0.5
+  # gain 0.7
+d3 $ silence
+
+d1 $ "hh*8"
+
+d2 $ s "- - dr:1 [dr:2|-]"
+  # room 1
+  # legato 1
+
+d8 $ cat [
+    note "c5 d5 [c5!2] c5"
+  ]
+  # s "[dr:2|dr:6]"
+  # legato 1.5
+  # room 4
+  # gain 0.5
+
+d2 $ silence
+
+-- Atmos
+d2 $ cat [
+    note "c5 _ _ b5 _ _",
+    note "c5 _ _ b5 _ _",
+    note "[c5!4] _ _ b5 _ _"
+  ]
+  # s "roland-jd800-synth:19"
+  # accelerate "0.1"
+  # legato 1
+  # room 1
+  # gain 0.7
+
+d5
+  $ slow 2
+  $ cat [
+    note "c4 _ _ _",
+    note "e4 _ _ _"
+  ]
+  # s "roland-jv2080-synth:3"
+  # accelerate "0.05"
+  # release 4
+  # room 2
+  # legato 10
+  # gain 0.9
+
+d6 $ cat [
+    note "[c4*[4|1]] c4 c4 c4",
+    note "c3'maj c3'maj c3'maj c3'maj",
+    note "d4 d4 c4 c4"
+  ]
+  # s "roland-jd800-synth:10"
+  # distort 0.5
+  # legato 1
+  # room 1.8
+  # gain 0.7
+
+d6 $ silence
+
+-- Vinyl
+d3 $ s "vinyl"
+  # gain 1
+
+-- Bass
+d4 $ slow 4
+  $ cat [
+    note "<c5 g5>"
+  ]
+  # s "roland-jd800-bass:5"
+  # legato 1.2
+  # sustain 4
+  # release 4
+  # distort 1.4
+  # room 1.3
+  # gain 0.6
+
+hush

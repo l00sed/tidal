@@ -1,0 +1,99 @@
+-- Night Shift · F# minor · 78 BPM
+-- F#m9 · Dmaj7 · Bm9 · C#7b9 (i–VI–iv–V). Ensemble: piano, clean jazz guitar, vibes, upright bass,
+-- tenor sax lead answered by muted trumpet, jazz kit + DrumTraks ride, congas.
+-- Vocals: Night of the Living Dead ("they're coming for you, Barbara", "you're still afraid").
+-- Cassette: tape wobble deepens bar by bar through each 8 (`creep`); VHS in the breakdown; tape stop into the drop.
+-- Form: i intro 8 · a groove 16 · x pre-drop 1 · b DROP 16 · d breakdown 8 · o outro 8 = 57 bars ≈ 2:55
+
+setcps (78/60/4)
+
+let form = "<i!8 a!16 x b!16 d!8 o!8 ~!32>" :: Pattern String
+    inS ss p = mask (fmap (`elem` words ss) form) p
+    nsChords = "<[fs3,a3,cs4,e4,gs4] [d4,fs4,a4,cs5] [b3,d4,fs4,a4,cs5] [cs4,f4,b4,d5]>" :: Pattern Note
+    creep p = stack [inS "d" (vhs 85 p), inS "i a x b o" (tapeFX "<25 30 35 40 50 60 80 110>" p)]
+    dropStop = inS "x" . within (0.5, 1) ((# accelerate (-0.9)) . (# lpf 1500))
+
+knobs
+
+resetCycles
+
+-- Piano: rolled chords on 1 and the "a" of 2; alone in the intro and outro
+d1 $ creep $ human $ inS "i a x b d o"
+   $ rolledBy 0.06
+   $ struct "t ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~ ~"
+   $ piano nsChords
+   # legato 2 # gain 0.82
+   # room 0.35 # size 0.8
+   # orbit 0
+
+-- Clean jazz guitar: off-beat comps (groove + drop)
+d2 $ creep $ human $ inS "a b"
+   $ struct "~ t ~ [~ t]"
+   $ eguitar nsChords
+   # legato 0.35 # gain 0.75 # pan 0.35
+   # room 0.2 # size 0.5
+   # orbit 0
+
+-- Vibes: arpeggios an octave up (drop only)
+d3 $ creep $ human $ inS "b"
+   $ arp "<up down>" $ segment 8
+   $ vibes (nsChords + 12)
+   # legato 1.2 # gain 0.68 # pan 0.7
+   # room 0.3 # size 0.8
+   # orbit 1
+
+-- Sax lead (odd bars) and muted trumpet answers (even bars) — groove and drop
+d4 $ creep $ human $ slur $ inS "a b"
+   $ jsax "<[cs5 ~ e5 fs5] ~ [fs5 ~ e5 cs5] ~ [a4 [b4 cs5] e5 ~] ~ [gs4 ~ b4 d5] ~>"
+   # legato 1.3 # gain 0.9 # pan 0.6
+   # room 0.3 # size 0.75
+   # orbit 5
+
+d5 $ creep $ human $ inS "a b"
+   $ trumpet "<~ [a5 ~ gs5 fs5] ~ [d6 ~ cs6 a5] ~ [fs5 a5 b5 ~] ~ [cs6 ~ b5 f5]>"
+   # legato 1.1 # gain 0.85 # lpf 2200 # pan 0.4
+   # room 0.3 # size 0.7
+   # orbit 5
+
+-- Upright bass: walking in groove/drop, long roots in breakdown
+d6 $ dropStop $ human $ stack [
+     inS "a x b" $ ubass "<[fs3 a3 cs4 e3] [d3 fs3 a3 cs3] [b2 d3 fs3 a3] [cs3 f3 gs3 b3]>" # legato 0.9,
+     inS "d o" $ ubass "<fs3 d3 b2 cs3>" # legato 1
+   ]
+   # gain 1 # lpf 1800
+   # orbit 3
+
+-- Drums: swung ride + boom-bap (groove), 808 layer + crushed hats (drop), tape stop on the pre-drop
+d7 $ dropStop $ human $ stack [
+     inS "a x b" $ swingBy (1/6) 4 $ s "drumtraks:7 [~ drumtraks:7] drumtraks:7 [~ drumtraks:7]" # gain 0.75,
+     inS "a x" $ s "jazz:0 ~ ~ ~ ~ ~ ~ jazz:0 ~ ~ jazz:0 ~ ~ ~ ~ ~" # gain 1,
+     inS "b" $ s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~" # gain 1.1 # shape 0.35,
+     inS "a x b" $ (0.012 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 0.95,
+     inS "b" $ swingBy (1/24) 8 $ s "hh27:0*16" # gain "0.8 0.55 0.7 0.55" # hpf 6000 # crush 9
+   ]
+   # tapeflutter 4
+   # orbit 2
+
+-- Congas in the groove and drop; a singing bowl in the quiet sections
+d8 $ human $ stack [
+     inS "a b" $ s "~ drumnibus-percussion:18 ~ [~ drumnibus-percussion:19]" # gain 0.8 # pan 0.3,
+     inS "i d o" $ s "<drumnibus-percussion:2 ~ ~ ~>" # legato 4 # gain 0.85 # room 0.5 # size 0.9
+   ]
+   # orbit 7
+
+-- Night of the Living Dead
+d9 $ stack [
+     inS "i" $ onBar 3 $ clip "voxfilm:9" 0 1,
+     inS "a" $ stack [onBar 0 $ clip "voxfilm:14" 0 1, onBar 4 $ struct "t t ~ ~" $ clip "voxfilm:9" 0 0.35 # cut 1,
+                      (0.5 ~>) $ onBar 4 $ clip "voxfilm:9" 0 1],
+     inS "x" $ clip "voxfilm:10" 0 1,
+     inS "b" $ onBar 0 $ clip "voxfilm:9" 0 1 # psrate 0.75,
+     inS "d" $ echoWith 3 (3/16) ((|* gain 0.85) . (# lpf 1800)) $ onBar 1 $ clip "voxfilm:14" 0 1,
+     inS "o" $ onBar 3 $ clip "voxfilm:18" 0 1 # room 0.6 # size 0.95
+   ]
+   |< gain 1.05 |< hpf 150 |< lpf 6500 |< room 0.15 |< size 0.4
+   # tapewow 30 # orbit 6
+
+d10 $ inS "i a x b d o" $ s "vinyl:0" # legato 1 # gain 0.85 # hpf 1500 # orbit 4
+
+hush

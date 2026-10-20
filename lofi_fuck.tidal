@@ -1,0 +1,99 @@
+setcps(0.2)
+do
+  let bd_pattern = 2
+      sn_pattern = 3
+      hc_pattern = 4
+      bdpat = case bd_pattern of
+        1 -> "t*4";
+        2 -> "t t t [t ~ ~ <- t>]";
+        3 -> "t - - - - t - -";
+        4 -> "~"
+      snpat = case sn_pattern of
+        1 -> "- - t -";
+        2 -> "t(2,4,1)";
+        3 -> "- t - [t - - t] ";
+        4 -> "~"
+      hcpat = case hc_pattern of
+        1 -> "t(4,8,1)";
+        2 -> "t(8,8)";
+        3 -> "t*16";
+        4 -> "~"
+  d1
+    $ stack [
+      struct bdpat $ s "bd",
+      struct snpat $ s "sn:2",
+      struct hcpat $ s "hc"
+    ]
+
+do
+  let sroll = "f"                    -- t: snare roll on  f: off
+  let sfillenable = "f"                    -- t: snare fill on  f: off
+  let sfill = struct "- t - <t t*[0|1|2|3|4]>"
+  d1
+    $ whenmod 4 3 (while sroll (const (struct "t*16" $ s "sn:2" )))
+    $ stack [
+      s "bd*4",
+      while sfillenable (sfill) $ s "sn:2(2,4,1)"
+    ]
+
+setcps(0.75)
+
+d1
+	$ struct "t - - - t*[0|2] - t*[0|1] -"
+  $ s "jungbass:0"
+  # octave 5
+  # room 1.3
+  # gain 1.5
+
+d1
+  $ slow 2
+  $ sound "synths:11"
+  # n "d5'maj ~ ~ ~ a2'maj ~ ~ ~"
+  # room 5
+  # legato 4
+  # gain 0.5
+
+d1 $ stack [
+  s "<ab:4*308 ab:4*246>" # amp 0.2,
+  s "<ab:4*738 ab:4*1230>" # amp 0.2 # hpf 400
+] # end 0.3
+# lpf (segment (8/0.5) $ fast (8/0.75) $ range 200 400 $ sine)
+# end (segment (8/1.5) $ fast (8) $ range 0.02 0.3 $ sine)
+d1 $ sound "arpy arpy arpy:1 arpy:2"
+d1 $ hurry 2 $ sound "arpy arpy arpy:1 arpy:2"
+d1 $ hurry 0.5 $ sound "arpy arpy arpy:1 arpy:2"
+d1 $ rev $ sound "arpy arpy:1 arpy:2 arpy:3"
+
+d1 $ iter 4 $ sound "arpy arpy:1 arpy:2 arpy:3"
+d1
+  $ chunk 4 (hurry 0.75)
+  $ struct "t*[1|2] t - -"
+  $ s "jvbass"
+  # gain 3
+d2
+  $ chunk 4 (hurry 1.5)
+  $ struct "t t*[2|1] t*3 -"
+  $ s "superhammond"
+  # room 2
+  # legato 2
+  # n "d4'min"
+  # gain 0.5
+d1 $ s "moog" # n "<0 1 2>" # legato 1 # cutoffbus 1 (segment 32 $ range 200 2400 $ saw) # resonance 0.2
+d1 $ n "0 1 2 3" # sound "jvbass"
+
+d1
+  $ struct "t(2,2) t(2,2) t(2,2)"
+  $ sound "jvbass"
+  # gain 1
+
+d1 $ chunk 4 (hurry 2) $ sound  "arpy arpy:1 arpy:2 arpy:3"
+d1 $ chunk 4 (# speed 2) $ sound  "alphabet:0 alphabet:1 alphabet:2 alphabet:3"
+
+d1 $ every 4 (# vowel "a o") $ sound "arpy arpy:1 arpy:2 arpy:3"
+d1 $ sound "arpy arpy:1 arpy:2 arpy:3"
+d1 $ jux (rev) $ sound "arpy arpy:1 arpy:2 arpy:3"
+d1 $ jux (hurry 2) $ sound "arpy arpy arpy:1 arpy:2"
+
+d1 $ silence
+
+hush

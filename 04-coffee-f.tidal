@@ -1,0 +1,67 @@
+-- Coffee Shop · F major · 88 BPM
+-- Fmaj7 · Am7 · Bbmaj7 · C7sus4 (I–iii–IV–V). Strummed acoustic, flute hook, vibes, shaker groove.
+
+setcps (88/60/4)
+
+
+let cafeChords = "<[f3,c4,e4,a4] [a3,e4,g4,c5] [as3,f4,a4,d5] [c4,g4,as4,f5]>" :: Pattern Note
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+setF "vol" 1
+setF "vol" 0.85
+setF "filt" 0.05 -- lowpass (dark)
+setF "filt" 0.5 -- off
+setF "filt" 0.95 -- highpass (thin)
+
+-- Slides: rampF name from to bars (straight line starting now, then holds)
+rampF "filt" 0.5 0.1 4 -- darken over 4 bars
+rampF "filt" 0.1 0.5 1 -- open back up
+rampF "filt" 0.5 0.9 2 -- thin out
+rampF "filt" 0.9 0.5 1
+rampF "vol" 1 0 16 -- 16-bar fade-out
+
+noKnobs
+
+d1 $ tape $ human $ stack [
+     rolledBy 0.05 $ struct "t ~ ~ t ~ ~ t ~" $ aguitar cafeChords # gain 0.85 # legato 2,
+     rolledBy "-0.03" $ struct "~ ~ t ~ ~ t ~ t" $ aguitar cafeChords # gain 0.55 # legato 0.6
+   ]
+   # pan 0.4 # room 0.2 # size 0.35
+   # orbit 0
+
+-- Flute hook: repeats bars 1–2, answers in 3–4, rests every other 4 bars
+d2 $ tape $ human
+   $ mask "<1!4 0!4>"
+   $ slur
+   $ flute "<[c6 ~ a5 c6] [~ e6 [d6 c6] ~] [d6 ~ c6 a5] [as5 ~ [a5 g5] [c5 e5]] [d5 _ _ _]>"
+   # legato 1.5
+   # gain 0.9 # pan 0.6
+   # delay 0.2 # delayt (3/16) # delayfb 0.3 # lock 1
+   # room 0.3 # size 0.7
+   # orbit 5
+
+-- Vibes fill the gaps when the flute rests
+d3 $ human
+   $ mask "<0!4 1!4>"
+   $ note "<[~ a6 ~ c7] [~ ~ g6 e6] [~ f6 ~ a6] [g6 ~ ~ ~]>"
+   # s "supervibe" # legato 1.5 # gain 0.5 # pan 0.7
+   # room 0.35 # size 0.8
+   # orbit 7
+
+d4 $ human
+   $ note ("<f2 a2 as2 c3>" + "0 ~ ~ 0 ~ ~ 7 ~")
+   # s "supersquare" # lpf 320 # legato 0.85 # gain 0.85
+   # orbit 3
+
+d5 $ human $ stack [
+     s "jazz:0 ~ ~ ~ ~ ~ jazz:0 ~ ~ ~ jazz:0 ~ ~ ~ ~ ~" # gain 1 # shape 0.2,
+     (0.006 ~>) $ s "~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~ ~ ~ ~ ~ [jazz:7, rs:0] ~ ~ ~" # gain 0.85,
+     swingBy (1/48) 8 $ s "emu-vintage-drums:18*16" # gain "0.5 0.4 0.65 0.4" # hpf 4000
+   ]
+   # orbit 2
+
+d6 $ s "vinyl:2" # legato 1 # gain 0.95 # hpf 1200 # orbit 4
+
+hush

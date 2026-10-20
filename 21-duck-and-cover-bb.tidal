@@ -1,0 +1,64 @@
+-- Duck and Cover · Bb major · 84 BPM
+-- Bbmaj9 · Gm9 · Cm9 · F13. Bert the Turtle (1951 civil-defense film — the jingle is sung in Bb, so it sits
+-- natively), muted trumpet, tonejs piano, clean DrumTraks + boom-bap kick.
+-- Cassette idea: "atomic flash" — on bar 8, as Bert says "brighter than the sun", the whole band whites out
+-- (high-pass sweep + bit-crush) and then a tape stop drops back into bar 1.
+
+setcps (84/60/4)
+
+let dcChords = "<[as3,d4,f4,a4,c5] [g3,as3,d4,f4,a4] [c4,ds4,g4,as4,d5] [f3,a3,ds4,g4,d5]>" :: Pattern Note
+    flash = whenmod 8 7 ((# hpf (range 200 4000 saw)) . (# crush 6) . within (0.75, 1) (# accelerate (-1)))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Piano: tonejs grand, warm two-hand comp
+d1 $ flash $ tapeFX 35 $ human
+   $ rolledBy 0.03
+   $ struct "t ~ ~ t ~ ~ t ~"
+   $ piano dcChords
+   # legato 1.3 # gain 0.85
+   # room 0.25 # size 0.6
+   # orbit 0
+
+-- Muted trumpet (low-passed like a Harmon mute), bars 5–7
+d2 $ flash $ tapeFX 35 $ human
+   $ mask "<0!4 1 1 1 0>"
+   $ trumpet "<[d6 ~ f6 ~] [~ d6 c6 as5] [g5 ~ as5 ~] [a5 ~ ~ ~]>"
+   # legato 1.2 # gain 0.85 # lpf 2200 # pan 0.6
+   # room 0.3 # size 0.7
+   # orbit 5
+
+-- Bert: the jingle opens every 8 bars; "first you duck, and then you cover" (bar 3);
+-- "you and you and you and you" (bar 5); "duck… and cover" stutters (bars 6–7); the flash line on bar 8
+d3 $ tapeFX 30 $ stack [
+     onBar 0 $ clip "voxcartoon:5" 0 1 # legato 4,
+     onBar 2 $ clip "voxcartoon:3" 0 1,
+     onBar 4 $ clip "voxcartoon:1" 0.07 0.42,
+     onBar 5 $ clip "voxcartoon:0" 0.64 1,
+     onBar 6 $ struct "t ~ t ~" $ clip "voxcartoon:0" 0.64 0.80 # cut 1,
+     (0.5 ~>) $ onBar 6 $ clip "voxcartoon:0" 0.64 1,
+     onBar 7 $ clip "voxcartoon:2" 0 1
+   ]
+   |< gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Yamaha DX200 "SoftbassC" (C2 +6c)
+d4 $ flash $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ t ~"
+   $ tuned 36.06 "<as2 g2 c3 f2>"
+   # s "yamaha-dx200-bass:6"
+   # legato 0.85 # gain 0.95 # lpf 650
+   # orbit 3
+
+-- Clean DrumTraks with a fat boom-bap kick layered in; cabasa for shuffle
+d5 $ flash $ human $ stack [
+     s "[drumtraks:6, jazz:0] ~ ~ ~ ~ ~ ~ [drumtraks:6, jazz:0] ~ ~ [drumtraks:6, jazz:0] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.2,
+     (0.008 ~>) $ s "~ ~ ~ ~ [drumtraks:9, drumtraks:1] ~ ~ ~ ~ ~ ~ ~ [drumtraks:9, drumtraks:1] ~ ~ ~" # gain 0.95,
+     swingBy (1/48) 8 $ s "drumtraks:0*16" # gain "0.75 0.6 0.7 0.6"
+   ]
+   # orbit 2
+
+d6 $ s "vinyl:2" # legato 1 # gain 0.8 # hpf 1500 # orbit 4
+
+hush

@@ -1,0 +1,80 @@
+-- Cassette Ghost · C minor · 74 BPM
+-- Cm9 · Abmaj7 · Fm9 · G7b9 (i–VI–iv–V). Vintage-synth palette with dramatic tape that stays in key.
+--
+-- The wobble comes from the new `tapewow` SuperDirt module: a modulated delay that bends pitch
+-- around the true note in real time, phase-locked across all parts (needs SuperDirt restarted).
+-- Drama per bar, via tapeFX's depth pattern (cents):
+--   normal 40 · bar 4 warble 120 · bar 7 warble 80 · bar 8 second half = tape stop (accelerate dip)
+-- Every sample below is recorded on C; `tuned` gets the measured root (MIDI + cents).
+
+setcps (74/60/4)
+
+let ghostChords = "<[c4,ds4,g4,as4,d5] [gs3,c4,ds4,g4] [f3,gs3,c4,ds4,g4] [g3,b3,f4,gs4]>" :: Pattern Note
+    drama = (whenmod 4 3 (# tapewowrate 0.9)) . (whenmod 8 7 (within (0.5, 1) ((# accelerate (-0.9)) . (# lpf 1500)))) . tapeFX "<40 40 40 120 40 40 80 40>"
+    dropout = sometimesBy 0.08 ((|* gain 0.55) . (# lpf 900))
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Jupiter-8 (C3, 0c), long and slow, carries the harmony
+d1 $ drama $ dropout
+   $ tuned 48 ghostChords
+   # s "jupiter-8-pad:19"
+   # legato 1.05 # attack 0.4 # release 1.5
+   # gain 0.7
+   # room 0.4 # size 0.9
+   # orbit 0
+
+-- Strings: Oberheim Matrix-1000 "LushString3" (C3 +8c), short off-beat stabs an octave up
+d2 $ drama $ human
+   $ struct "~ t ~ ~ t ~ ~ [~ t]"
+   $ tuned 48.08 (ghostChords + 12)
+   # s "oberheim-matrix-1000-strings:20"
+   # legato 0.4 # gain 0.55
+   # hpf 300
+   # pan 0.35
+   # room 0.3 # size 0.7
+   # orbit 1
+
+-- Lead: Kawai K4 "Bellerion" (C4 −6c), melody in bars 5–8, ends on G7's B pulling home
+d3 $ drama $ human
+   $ mask "<0!4 1!4>"
+   $ tuned 59.94 "<~ ~ ~ ~ [g5 ~ ds5 ~] [f5 ~ ~ [ds5 d5]] [c5 ~ gs4 ~] [b4 ~ d5 ~]>"
+   # s "kawai-4-synth:21"
+   # legato 1.5 # gain 0.6
+   # pan 0.65
+   # delay 0.3 # delayt (3/8) # delayfb 0.4 # lock 1
+   # room 0.35 # size 0.85
+   # orbit 5
+
+-- Bass: Yamaha DX200 "SoftbassC" (C2 +6c), roots with an octave pop. Wobble kept light so the
+-- low end stays solid, but it still dips with the tape stop.
+d4 $ (whenmod 8 7 (within (0.5, 1) (# accelerate (-0.9))))
+   $ human
+   $ struct "t ~ ~ ~ ~ ~ t ~ ~ ~ t ~ ~ ~ t ~"
+   $ tuned 36.06 ("<c3 gs2 f2 g2>" + "0 0 12 0")
+   # s "yamaha-dx200-bass:6"
+   # tapewow 10 # tapeflutter 3
+   # legato 0.9 # gain 0.9
+   # lpf 600
+   # orbit 3
+
+-- Drums: dusty boom-bap; only flutter (no wow) so the groove stays tight, drops out for the tape stop
+d5 $ human
+   $ whenmod 8 7 (within (0.5, 1) (const silence))
+   $ stack [
+       s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.3,
+       (0.008 ~>) $ s "~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~" # gain 0.9,
+       swingBy (1/48) 8 $ degradeBy 0.2 $ s "hh27:0*16" # gain "0.65 0.42 0.52 0.42" # hpf 6000
+     ]
+   # tapeflutter 4
+   # lpf 3200 # crush 10
+   # orbit 2
+
+-- Hiss
+d6 $ s "vinyl:2" # legato 1 # gain 0.65 # hpf 1500 # orbit 4
+
+-- Tweak the drama live, e.g. full seasick:
+-- let drama = tapeFX "<90 140>" . (# tapewowrate 0.7)
+
+hush

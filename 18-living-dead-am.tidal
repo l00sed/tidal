@@ -1,0 +1,62 @@
+-- Living Dead · A minor · 70 BPM
+-- Am9 · Dm9 · Fmaj7#11 · E7b9. Night of the Living Dead (1968) dialogue + reversed screams,
+-- Oberheim "Padmood", Kawai bell as a music-box hook, Korg Mono/Poly acid bass.
+-- Cassette idea: warped VHS — very slow, very deep wow (90 cents at 0.15 Hz) plus dropouts.
+
+setcps (70/60/4)
+
+let ldChords = "<[a3,c4,e4,g4,b4] [d4,f4,a4,c5,e5] [f3,a3,c4,e4,b4] [e3,gs3,d4,f4]>" :: Pattern Note
+    deadVhs = (sometimesBy 0.1 ((|* gain 0.6) . (# lpf 700))) . (|< tapewowrate 0.15) . tapeFX 90
+
+-- Master controls (global): `knobs` turns them on; then setF "vol" / setF "filt" / rampF live; `noKnobs` off.
+knobs
+
+-- Pad: Oberheim "PacificHorizonPadmood" (D2 +13c), two octaves under the voicings
+d1 $ deadVhs
+   $ tuned 38.13 (ldChords - 24)
+   # s "oberheim-matrix-1000-pad:10"
+   # legato 1.05 # attack 0.4 # gain 0.85
+   # room 0.45 # size 0.9
+   # orbit 0
+
+-- Music box: Kawai K4 "Bellerion" (C4 −6c)
+d2 $ deadVhs $ human
+   $ tuned 59.94 "<[e5 ~ ~ ~] [~ ~ f5 e5] [c5 ~ ~ ~] [b4 ~ gs4 ~]>"
+   # s "kawai-4-synth:21"
+   # legato 1.5 # gain 0.75 # pan 0.6
+   # delay 0.35 # delayt (3/8) # delayfb 0.45 # lock 1
+   # room 0.4 # size 0.9
+   # orbit 5
+
+-- Dialogue: "Night of the living dead" (1), "…who cannot die?" (3), "whose bodies are the only food
+-- for these" (5), "it's ten minutes to three" (7). Screams, reversed and darkened, swell into bar 1.
+d3 $ (|< tapewowrate 0.15) $ tapeFX 60 $ stack [
+     onBar 0 $ clip "voxfilm:1" 0 1,
+     (0.25 ~>) $ onBar 2 $ clip "voxfilm:2" 0 1,
+     onBar 4 $ clip "voxfilm:3" 0.31 0.80,
+     (0.25 ~>) $ onBar 6 $ clip "voxfilm:4" 0.39 1,
+     (0.5 ~>) $ onBar 7 $ clip "voxfilm:6" 0 0.2 # speed (-1) # gain 0.85 # lpf 1500 # room 0.5 # size 0.9
+   ]
+   |< gain 1.05 # hpf 150 # lpf 6500 # room 0.15 # size 0.4
+   # orbit 6
+
+-- Bass: Korg Mono/Poly "1VCOacidic2" (C2 −15c)
+d4 $ human
+   $ struct "t ~ ~ ~ ~ ~ ~ ~ t ~ ~ ~ ~ ~ ~ ~"
+   $ tuned 35.85 "<a2 d2 f2 e2>"
+   # s "korg-monopoly-bass:0"
+   # tapewow 15 # tapewowrate 0.15 # legato 1 # gain 0.95 # lpf 450
+   # orbit 3
+
+-- Slow, heavy half-time drums
+d5 $ human $ stack [
+     s "[jazz:0, 808bd:4] ~ ~ ~ ~ ~ ~ ~ ~ ~ [jazz:0, 808bd:4] ~ ~ ~ ~ ~" # gain 1.05 # shape 0.35,
+     (0.012 ~>) $ s "~ ~ ~ ~ ~ ~ ~ ~ [jazz:7, realclaps:1] ~ ~ ~ ~ ~ ~ ~" # gain 1 # room 0.4 # size 0.8,
+     degradeBy 0.3 $ s "hh27:0*8" # gain 0.75 # hpf 7000
+   ]
+   # tapeflutter 6 # crush 10
+   # orbit 2
+
+d6 $ s "vinyl:0" # legato 1 # gain 0.85 # hpf 1500 # orbit 4
+
+hush
